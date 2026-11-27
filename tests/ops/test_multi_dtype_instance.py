@@ -1,9 +1,4 @@
-"""One op instance, two element types.
-
-The rest of the suite parametrizes dtype but builds a fresh op per case, so it
-never drives a second dtype through an instance that already holds an entry.
-This covers the invariant every family owes its L1 kernel slots.
-"""
+"""One op instance serves two element types, each on its own entry."""
 
 import pytest
 import torch
@@ -102,9 +97,7 @@ def test_mismatched_input_dtypes_are_rejected():
         op(x, w)
 
 
-# One instance alternating between bool and non-bool operands: the two are served
-# by different kernels, so anything derived from one must not survive into the
-# other.
+# One instance alternating between bool and non-bool operands, served by different kernels.
 
 
 @pytest.mark.smoke
@@ -176,11 +169,7 @@ def test_masked_fill_alternates_between_bool_and_float_input():
 
 
 def _single_tensor_elementwise_ops():
-    """Every concrete elementwise op a flat tensor alone can drive.
-
-    Selected off the manifest — one declared input, no declared params — rather than
-    off the constructor, which no longer says anything about arity.
-    """
+    """Every concrete elementwise op whose manifest entry declares one input and no params."""
     import inspect
 
     import tileops._ops.elementwise as ew
@@ -206,11 +195,7 @@ _SINGLE_TENSOR_OPS = _single_tensor_elementwise_ops()
 @pytest.mark.smoke
 @pytest.mark.parametrize("name", sorted(_SINGLE_TENSOR_OPS))
 def test_single_tensor_op_completes_every_declared_dtype(name):
-    """Every declared dtype completes a call, on whichever path serves it.
-
-    An op answering on its own path — an integer identity, a predicate fallback — is
-    driven too, not just float32.
-    """
+    """Every declared dtype completes a call, on whichever path serves it."""
     union = load_manifest()[name]["signature"]["forall"]["T"]
     dtypes = [getattr(torch, d.strip()) for d in union[len("DType[") : -1].split("|")]
 
@@ -222,7 +207,7 @@ def test_single_tensor_op_completes_every_declared_dtype(name):
             x = torch.rand(64, device=run_device(), dtype=dtype) + 0.5
         else:
             x = torch.arange(1, 65, device=run_device(), dtype=dtype)
-        op(x)  # an unexpected failure here is a real defect, not a skip
+        op(x)
         assert op.last_call.tensors["input"][1] == str(dtype).removeprefix("torch."), name
 
 

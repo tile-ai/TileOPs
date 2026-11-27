@@ -109,7 +109,7 @@ def _tilekernels_mhc_pre(params: dict):
     return run
 
 
-@pytest.mark.parametrize("case", bench.cases(HyperConnectionPreFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(HyperConnectionPreFwdOp))
 def test_hyper_connection_pre_bench(case) -> None:
     op = HyperConnectionPreFwdOp(**case.arguments)
     bench.Runner(op, case).compare(
@@ -128,7 +128,7 @@ def test_hyper_connection_pre_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(HyperConnectionPostFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(HyperConnectionPostFwdOp))
 def test_hyper_connection_post_bench(case) -> None:
     op = HyperConnectionPostFwdOp(**case.arguments)
     wrappers = baseline_module("vllm.model_executor.kernels.mhc.tilelang", VLLM_TAG)
@@ -159,7 +159,7 @@ def test_hyper_connection_post_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(HyperConnectionHeadFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(HyperConnectionHeadFwdOp))
 def test_hyper_connection_head_bench(case) -> None:
     op = HyperConnectionHeadFwdOp(**case.arguments)
     wrappers = baseline_module("vllm.model_executor.kernels.mhc.tilelang", VLLM_TAG)

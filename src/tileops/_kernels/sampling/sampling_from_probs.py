@@ -35,17 +35,11 @@ def _sampling_from_probs_kernel(
 ):
     """Build the draw over ``batch`` rows of ``vocab`` weights, ``parts`` blocks to a row.
 
-    A thread folds the ``vec`` weights of one 16-byte vector and a warp folds its 32 threads,
-    leaving one entry of ``seg`` per (slot, warp), a slot being one vector per thread. Those
-    entries are the leaves the search descends: the row's blocks, then the block's ``seg``
-    entries, then the winning warp's lanes, then that lane's weights. Only the last of those
-    re-reads the row, and it re-reads 32 vectors of it. ``pace`` vectors are in flight before
-    any of them is folded, so a thread's loads overlap rather than wait on the fold between.
-
-    The two folds a warp does are float32 over groups that ``vocab`` and ``threads`` fix
-    between them; every sum above them is float64. A launch that splits the row differently
-    therefore regroups float64 sums only, and the token a seed draws moves only where the
-    draw point sits within a float64 rounding of a token boundary.
+    A thread folds one 16-byte vector a slot and a warp its 32 threads, leaving one ``seg`` entry
+    per (slot, warp); the search descends the row's blocks, then ``seg``, then the winning warp's
+    lanes, then that lane's weights, re-reading 32 vectors. ``pace`` vectors are in flight before
+    any is folded. Warp folds are float32 over groups ``vocab`` and ``threads`` fix; every sum
+    above them is float64.
     """
     full = vocab // vec
     row_tiles = -(-full // threads)
@@ -63,11 +57,7 @@ def _sampling_from_probs_kernel(
         @T.macro
         def take(dst, slot, src, spot, inside):
             """Read the ``vec`` weights of ``src`` at element offset ``spot`` into
-            ``dst[slot]``, and zero where that vector is past the row.
-
-            Nothing reads a vector from memory twice but the 32 the last descent walks, so
-            every read is evict-first.
-            """
+            ``dst[slot]``, evict-first, and zero where that vector is past the row."""
             for c in T.unroll(vec):
                 dst[slot, c] = T.float32(0)
             if inside:
@@ -82,30 +72,10 @@ def _sampling_from_probs_kernel(
 
         @T.macro
         def locate(src, n, span, frac, base, lane, pick, edge, acc, idx):
-            """Leave in ``pick[0]`` the entry of ``src[0:n]`` the draw lands on and in
-            ``edge[0]`` how much of the draw point is left inside that entry.
-
-            Lane ``l`` of warp 0 owns ``src[l * span : (l + 1) * span)`` and sums it into
-            ``lane[l]``; lane 0 turns those sums into the exclusive prefixes ``edge[1:]``;
-            every lane then walks its own entries against a draw point of
-            ``frac * total + base``. The entry taken is the first whose inclusive prefix
-            passes that point, and the last entry carrying weight when none does.
-
-            A zero-weight entry is never the first to pass: it leaves the inclusive prefix
-            where the entry before it left it, so whenever it would pass, that one already
-            did. The first-exceeding test therefore needs no weight test of its own; the
-            fallback does, or it would land on a trailing zero.
-
-            The point handed to the level below is never negative, and needs no clamp. The
-            entry taken either passes the point, and then its own exclusive prefix does not;
-            or it is the fallback, reached only when no entry passes the point, and then
-            every exclusive prefix is below it.
-
-            What the fallback is for is the other end. A level's entries are re-derived
-            where the level above folded them: the warp sums ``seg`` holds are float32
-            butterflies, while the 32 lanes below one of them are summed in float64. The
-            point can therefore land past a level's total by a float32 rounding of that
-            entry, and the last entry carrying weight is where it belongs.
+            """Leave in ``pick[0]`` the entry of ``src[0:n]`` the draw lands on and in ``edge[0]`` how
+            much of the draw point is left inside it: the first entry whose inclusive prefix passes
+            ``frac * total + base``, else the last entry carrying weight (a point rounded past the
+            total). Lane ``l`` of warp 0 sums ``src[l * span : (l + 1) * span)``.
             """
             tx = T.get_thread_binding()
             if tx < WARP_LANES:
@@ -279,18 +249,14 @@ def _sampling_from_probs_kernel(
 
 
 class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
-    """Draw one token per row of probabilities, reading the row once and 32 vectors twice.
+    """Draw one token per row of probabilities: the first index whose inclusive prefix sum passes
+    ``u * total``, ``u`` the row's Philox uniform of seed, offset and row index.
 
-    The token is the first index whose inclusive prefix sum passes ``u * total``, with ``u``
-    the row's Philox uniform. One streaming pass folds the row into per-(slot, warp) sums and
-    keeps them on chip, so the search that follows descends those sums instead of the row and
-    re-reads only the 32 vectors the winning warp holds. A batch that leaves blocks idle
-    splits each row across several of them, whose totals meet across one grid barrier.
-
-    ``u`` is a function of the seed, the offset and the row index alone, so it does not move
-    when the launch does; the sums the search descends are float32 over groups that the
-    vocabulary fixes and float64 above them, so the token does not move either, except where
-    the draw point sits within a float64 rounding of a token boundary.
+    One pass folds the row into per-(slot, warp) sums kept on chip; the search descends those and
+    re-reads only the winning warp's 32 vectors. A batch that leaves blocks idle splits each row
+    across blocks meeting at one grid barrier. Sums are float32 over groups the vocabulary fixes
+    and float64 above, so the token moves with the launch only where the draw point sits within a
+    float64 rounding of a token boundary.
 
     Args:
         call: The call's shape, dtype and device facts.
@@ -309,9 +275,8 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
     def _plan(cls, vocab: int, itemsize: int, batch: int, sm_count: int) -> tuple[int, int, int]:
         """The vector width of a row, how many blocks share one, and a block's ``seg`` entries.
 
-        The block size is fixed, so the tile count a row's vectors make is fixed with it;
-        the two logit filters that take the same split reach it through a thread count that
-        the batch lowers, which this cannot do without moving the token a seed draws.
+        The block size stays fixed whatever the batch: a different one would move the token a
+        seed draws.
         """
         vec = vector_width(vocab, itemsize)
         row_tiles = max(1, -(-(vocab // vec) // cls._THREADS))
@@ -326,10 +291,8 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
         if call.batch * call.vocab > 2**31 - 1:
             return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
         _vec, parts, leaves = cls._plan(call.vocab, call.dtype.itemsize, call.batch, call.sm_count)
-        # ``seg`` holds one float64 entry per (slot, warp) of a block's chunk. Every shared
-        # buffer costs its size rounded up to an alignment, so the six the descent takes
-        # cost one alignment each whatever ``parts`` is, and ``seg`` is read against what
-        # the budget has left.
+        # ``seg``, one float64 entry per (slot, warp) of a block's chunk, against the budget
+        # less one alignment for each of the descent's six other buffers.
         budget = BLOCK_SHARED_BYTES_OPT_IN[call.arch] - 6 * SHARED_BUFFER_ALIGN_BYTES
         held = -(-8 * leaves // SHARED_BUFFER_ALIGN_BYTES) * SHARED_BUFFER_ALIGN_BYTES
         if held > budget:

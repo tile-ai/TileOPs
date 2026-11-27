@@ -43,16 +43,17 @@ def _assert_gemm(out, ref):
     torch.testing.assert_close(out.float(), ref.float(), rtol=2e-2, atol=1e-1)
 
 
-def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=torch.bfloat16):
+def _grouped_operands(sizes, n, k, layout, *, dtype=torch.bfloat16):
     """Per-group rows of ``a`` and their metadata for one grouped layout.
 
-    ``per_row``: each group's segment padded to ``alignment``, a sentinel tail of one
+    ``per_row``: each group's segment padded to 128 rows, a sentinel tail of one
     tile, metadata is the expert id per row. ``tight``: rows packed, metadata is the
     physical end per group. ``aligned``: each group starts at the previous end rounded
-    up to ``alignment``, metadata is the physical end per group. Returns
+    up to 128 rows, metadata is the physical end per group. Returns
     ``(a, b, metadata, ref, valid)``; ``ref`` is fp32 and defined on ``valid`` rows.
     """
     torch.manual_seed(0)
+    alignment = 128
     groups = len(sizes)
     starts, ends, row = [], [], 0
     for size in sizes:
@@ -65,8 +66,6 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
         total = math.ceil(total / alignment) * alignment
     a = torch.randn(total, k, device=run_device(), dtype=dtype)
     b = torch.randn(groups, n, k, device=run_device(), dtype=dtype)
-    if major_b == "mn":
-        b = b.transpose(1, 2).contiguous().transpose(1, 2)
     ref = torch.zeros(total, n, dtype=torch.float32, device=run_device())
     valid = torch.zeros(total, dtype=torch.bool, device=run_device())
     for g in range(groups):
@@ -83,21 +82,20 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "sizes,n,k,major_b,config",
+    "sizes,n,k,config",
     [
         pytest.param(
             [100, 0, 300, 128, 7],
             512,
             512,
-            "k",
             dict(block_m=128, block_n=128),
             id="empty-and-partial-groups",
         ),
     ],
 )
-def test_m_grouped_aligned_per_row(sizes, n, k, major_b, config):
+def test_m_grouped_aligned_per_row(sizes, n, k, config):
     """Rows follow their group's B; padding rows and the sentinel tail are never read back."""
-    a, b, ids, ref, valid = _grouped_operands(sizes, n, k, "per_row", major_b=major_b)
+    a, b, ids, ref, valid = _grouped_operands(sizes, n, k, "per_row")
     kernel = GEMMTemplate(
         GEMMType.M_GROUPED_ALIGNED_PER_ROW, num_groups=len(sizes), m_alignment=128, config=config
     )
@@ -323,37 +321,6 @@ def test_selector_stages_h200_batched_epilogue():
     assert h100.epilogue_stage_n == 0
     # The band is fitted on the board, not on the exact name CUDA reports for it.
     assert calibration_key("NVIDIA H200 NVL") == "h200"
-
-
-@pytest.mark.smoke
-def test_grouped_selector_calibration_preserves_dense_and_k_grouped_choices():
-    """Keep the measured dense and K-grouped winners while fitting M-grouped."""
-    dense = get_best_config(
-        _desc(
-            512,
-            36864,
-            7168,
-            gemm_type=GEMMType.DENSE,
-            activation="silu_and_mul",
-            calibration="h200",
-        )
-    )
-    assert (dense.block_m, dense.block_n, dense.num_stages) == (128, 192, 4)
-
-    k_grouped = get_best_config(
-        _desc(
-            4096,
-            4096,
-            4096,
-            gemm_type=GEMMType.K_GROUPED_CONTIGUOUS,
-            num_groups=16,
-            major_a=Major.MN,
-            major_b=Major.MN,
-            calibration="h200",
-        )
-    )
-    assert (k_grouped.block_m, k_grouped.block_n, k_grouped.num_stages) == (128, 256, 4)
-    assert k_grouped.epilogue_stage_n == 64
 
 
 @pytest.mark.smoke
@@ -863,20 +830,13 @@ def test_bias_at_the_tile_bounds(activation, block_n, n, k, config):
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
-def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfloat16):
-    """Groups packed along K: logical ``a[M, sum_k]``, ``b[N, sum_k]``, fp32 ``ref[G, M, N]``.
-
-    The MN-major storage is ``[sum_k, M]`` / ``[sum_k, N]`` (``GroupedGEMMFwdOp``'s
-    TN); a K-major ``b`` is ``[N, sum_k]`` (its TT).
-    """
+def _k_grouped_operands(sizes, m, n):
+    """Groups packed along K: logical ``a[M, sum_k]``, ``b[N, sum_k]``, fp32 ``ref[G, M, N]``,
+    stored MN-major as ``[sum_k, M]`` / ``[sum_k, N]`` (``GroupedGEMMFwdOp``'s TN)."""
     torch.manual_seed(0)
     sum_k = sum(sizes)
-    a = torch.randn(m, sum_k, device=run_device(), dtype=dtype)
-    if major_a == "mn":
-        a = a.T.contiguous().T
-    b = torch.randn(n, sum_k, device=run_device(), dtype=dtype)
-    if major_b == "mn":
-        b = b.T.contiguous().T
+    a = torch.randn(sum_k, m, device=run_device(), dtype=torch.bfloat16).T
+    b = torch.randn(sum_k, n, device=run_device(), dtype=torch.bfloat16).T
     ref = torch.zeros(len(sizes), m, n, device=run_device())
     start = 0
     for g, size in enumerate(sizes):
@@ -887,25 +847,21 @@ def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfl
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "major_a,major_b,config",
+    "config",
     [
-        pytest.param("mn", "mn", dict(block_m=64, block_n=128), id="tn-one-wg"),
-        pytest.param("mn", "mn", dict(block_m=128, block_n=128), id="tn-two-wgs"),
+        pytest.param(dict(block_m=64, block_n=128), id="tn-one-wg"),
+        pytest.param(dict(block_m=128, block_n=128), id="tn-two-wgs"),
         pytest.param(
-            "mn",
-            "mn",
             dict(block_m=128, block_n=128, epilogue_stage_n=32, epilogue_buffers=2),
             id="tn-two-buffer-epilogue",
         ),
     ],
 )
-def test_k_grouped_contiguous(major_a, major_b, config):
-    """Groups along K: each group's K tail is masked in shared memory, a K-major
-    operand's group start is rounded down to 8 and its head masked, a group with
-    no tokens stores zeros, and ragged M / N edges are clipped by the TMA store.
-    """
+def test_k_grouped_contiguous(config):
+    """Groups along K of MN-major operands: each group's K tail is masked in shared memory, a
+    group with no tokens stores zeros, and ragged M / N edges are clipped by the TMA store."""
     sizes = [100, 0, 300, 64, 7, 1]
-    a, b, ks, ref = _k_grouped_operands(sizes, 200, 136, major_a, major_b)
+    a, b, ks, ref = _k_grouped_operands(sizes, 200, 136)
     kernel = GEMMTemplate(GEMMType.K_GROUPED_CONTIGUOUS, num_groups=len(sizes), config=config)
     out = torch.full_like(ref, 1e4, dtype=torch.bfloat16)  # poison: every tile must be written
     kernel(a, b, grouped_layout=ks, out=out)

@@ -1,21 +1,19 @@
-"""Task walk and launch-config plumbing shared by the persistent M-grouped GEMM kernels.
+"""Task walk and launch-config checks shared by the persistent M-grouped GEMM kernels.
 
-A persistent CTA walks tasks a grid apart, ``num_sms * wave + pid``, or ``grid * wave + worker``
-over the working CTAs of a grid that balances its tasks at run time; each task is one
-``block_m``-row tile of one expert's rows by one ``block_n``-column tile. ``task_walk`` builds
-the TileLang pieces that resolve a task id to its expert and tile for masked slabs and for tight
-or aligned contiguous runs, store a task's output tile, and describe row and expert-weight tiles
-to TMA; ``table_task_walk`` finds the same tasks' experts from a per-CTA prefix of the experts'
-row tiles instead; ``GroupedGEMMConfigMixin`` holds the config checks the kernels share.
+A task is one ``block_m``-row tile of one expert's rows by one ``block_n``-column tile; a
+persistent CTA runs tasks a grid apart.
 """
 
-from collections.abc import Mapping
+import math
+from collections.abc import Callable, Mapping
 from types import SimpleNamespace
 
 import tilelang
 import tilelang.language as T
+import torch
 
 from tileops._kernels.constants import TMA_INTERLEAVE_NONE, TMA_OOB_FILL_NONE
+from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = [
     "CURSOR",
@@ -24,10 +22,16 @@ __all__ = [
     "task_walk",
     "walk_refusal",
     "walk_smem_bytes",
+    "warp_uniform",
 ]
 
 # Cursor fields: expert, preceding M tiles, expert tiles, first row, row count.
 CURSOR = SimpleNamespace(g=0, m=1, tiles=2, row0=3, rows=4)
+
+
+def warp_uniform(value):
+    """``value`` shuffled from lane 0, so NVCC keeps it on the uniform datapath."""
+    return T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), value, 0, 32, 32)
 
 
 def task_walk(
@@ -57,11 +61,12 @@ def task_walk(
 
     Returns:
         A namespace of the launch extents (``m``, the dynamic row count of contiguous rows;
-        ``rows_shape``, ``ragged_slab``, ``max_waves``, ``cursor_len``),
+        ``rows_shape``, ``max_waves``, ``cursor_len``),
         ``walk(layout_or_ends, task_id, cursor)`` (resolves a task to an expert, ``num_groups``
         marking exhaustion), ``tile_of(task_id, cursor, tile)``, ``slab_tiles(count)`` (a
         masked slab's row tiles, its count clamped to ``[0, max_m]``), the task's clamped
         ``expert(cursor)``, ``first_row(cursor, tile)`` and ``first_col(tile)``,
+        ``rows_index(g, row)``, ``row_coords(g, row)``, ``clamp_row(row)``,
         ``store_tile(...)``, ``row_tiles_descriptor(...)``, ``expert_rows_descriptor(...)``,
         ``recover_ends(layout, ends, tx, threads)`` and the flag ``recover`` (tight per-row
         ids need each expert's end recovered first).
@@ -174,6 +179,24 @@ def task_walk(
 
     def first_col(tile):
         return T.max(T.min(tile[1], n_tiles - 1), 0) * block_n
+
+    def rows_index(g, row):
+        """The leading indices of row ``row`` of expert ``g`` in a tensor laid out like ``a``."""
+        return (row,) if contiguous else (g, row)
+
+    def row_coords(g, row):
+        """The TMA coordinates after the column of row ``row`` of expert ``g`` in a
+        ``row_tiles_descriptor``, without the trailing 0."""
+        return (row,) if contiguous else (row, g)
+
+    def clamp_row(row):
+        """``row`` clamped to the rows a tensor laid out like ``a`` holds; a masked slab of whole
+        tiles needs no clamp."""
+        if contiguous:
+            return T.min(row, m - 1)
+        if ragged_slab:
+            return T.min(row, max_m - 1)
+        return row
 
     @T.macro
     def store_tile(output_desc, shared_c, C, cursor, tile, box_cols, box_count, tx, threads):
@@ -317,7 +340,6 @@ def task_walk(
     return SimpleNamespace(
         m=m,
         rows_shape=rows_shape,
-        ragged_slab=ragged_slab,
         max_waves=max_waves,
         cursor_len=5 if contiguous else 3,
         walk=walk,
@@ -326,6 +348,9 @@ def task_walk(
         expert=expert,
         first_row=first_row,
         first_col=first_col,
+        rows_index=rows_index,
+        row_coords=row_coords,
+        clamp_row=clamp_row,
         store_tile=store_tile,
         recover_ends=recover_ends,
         row_tiles_descriptor=row_tiles_descriptor,
@@ -369,22 +394,17 @@ def table_task_walk(
     metadata_kind: str | None,
     alignment: int,
 ):
-    """``task_walk``'s tasks and tiles, each task's expert found from shared memory.
-
-    A CTA first sums the experts' row tiles into shared memory, unless aligned per-row ids name
-    each row tile's expert; a walk then passes up to a warp's width of experts a step, and over
-    contiguous rows the CTA runs as many waves as its tasks, so neither grows with experts that
-    hold no rows. The FP8 kernel keeps ``task_walk``: the table's prologue runs between the
-    layout load and its first TMA load, where ``task_walk`` compares one expert's tiles, and
-    costs its decode rows more than the walk saves.
+    """``task_walk``'s tasks and tiles, each task's expert found from a per-CTA prefix of the
+    experts' row tiles in shared memory, so the walk does not grow with experts that hold no
+    rows.
 
     Takes ``task_walk``'s arguments.
 
     Returns:
-        ``task_walk``'s launch extents (``m``, ``rows_shape``, ``ragged_slab``,
-        ``cursor_len``), ``tile_of``, ``expert``, ``first_row``, ``first_col``, ``store_tile``
-        and descriptors, with ``prepare(layout, tx, threads)`` (the walk's ``source``, filled
-        by all of the block's ``threads``), ``waves(source, worker, grid)``,
+        ``task_walk``'s launch extents (``m``, ``rows_shape``, ``cursor_len``), ``tile_of``,
+        ``expert``, ``first_row``, ``first_col``, ``rows_index``, ``row_coords``, ``clamp_row``,
+        ``store_tile`` and descriptors, with ``prepare(layout, tx, threads)`` (the walk's
+        ``source``, filled by all of the block's ``threads``), ``waves(source, worker, grid)``,
         ``walk(source, task_id, cursor)`` (walks a zeroed ``cursor`` on to a task's expert,
         ``num_groups`` marking exhaustion; a cursor's tasks come in increasing order) and
         ``walk_to_running(source, task_id, cursor, tile)`` (the first running task a wave apart
@@ -424,13 +444,7 @@ def table_task_walk(
 
     @T.macro
     def tile_prefix(rows, tile_ends, tx, threads):
-        """``tile_ends[g]``, the row tiles of experts ``0 .. g``: each warp scans runs of a warp's
-        width of experts by shuffles, then each expert adds the totals of the runs before its
-        own. With no more experts than threads, each thread loads those totals for its expert;
-        with more, one warp first scans the runs' totals the same way, a warp's width of runs a
-        step, so each run's last expert holds its sum, and every other expert adds the sum of
-        the last expert of the run before its own. The loads cost less than the scan's dependent
-        shuffles on most calls while a thread holds one expert, and more once it holds two."""
+        """Fill ``tile_ends[g]`` with the row tiles of experts ``0 .. g``."""
         warps = threads // 32
         lane = tx % 32
         tiles = T.alloc_var("int32")
@@ -513,9 +527,7 @@ def table_task_walk(
     def walk_tile_ends(source, task_id, cursor):
         """Walk ``cursor`` on to a task's expert, retaining its tile count and, for contiguous
         rows, its row bounds; ``num_groups`` marks a task past every expert's tiles. Every lane
-        of the warp runs this: each step, lane ``i`` compares the ``i``-th expert's tile end
-        from the cursor on, and every expert ending at or before the task's row tile is passed,
-        up to a warp's width a step."""
+        of the warp runs this."""
         row_tile = task_id // n_tiles
         lane = T.get_lane_idx()
         passed = T.alloc_var("int32", init=32)
@@ -560,7 +572,6 @@ def table_task_walk(
     return SimpleNamespace(
         m=tasks.m,
         rows_shape=tasks.rows_shape,
-        ragged_slab=tasks.ragged_slab,
         cursor_len=tasks.cursor_len,
         prepare=prepare,
         waves=waves,
@@ -570,6 +581,9 @@ def table_task_walk(
         expert=tasks.expert,
         first_row=tasks.first_row,
         first_col=tasks.first_col,
+        rows_index=tasks.rows_index,
+        row_coords=tasks.row_coords,
+        clamp_row=tasks.clamp_row,
         store_tile=tasks.store_tile,
         row_tiles_descriptor=tasks.row_tiles_descriptor,
         expert_rows_descriptor=tasks.expert_rows_descriptor,
@@ -577,13 +591,14 @@ def table_task_walk(
 
 
 class GroupedGEMMConfigMixin:
-    """Launch-config checks of a persistent M-grouped GEMM kernel.
+    """Launch-config checks, tuning inputs and launch of a persistent M-grouped GEMM kernel.
 
     The kernel class defines ``_CONFIG_KEYS`` (``block_m``, ``block_n``, ``num_stages`` and
     ``num_sms`` first), their domains ``_BLOCK_M``, ``_BLOCK_N`` and ``_NUM_STAGES``,
-    ``config_refusal(config, **inputs)`` and ``_refusal_inputs()`` (the device and layout facts
-    ``config_refusal`` takes beside the config), and sets ``call``, ``sm_count`` before
-    configuring.
+    ``config_refusal(config, **inputs)``, ``_refusal_inputs()`` (the device and layout facts
+    ``config_refusal`` takes beside the config) and ``_tuning_operands(rows, device)`` (``a``,
+    ``a_scale``, ``b`` and ``b_scale`` for rows of shape ``rows``), and sets ``call``,
+    ``sm_count`` and ``kernel`` before configuring.
     """
 
     _CONFIG_KEYS: tuple[str, ...]
@@ -658,3 +673,48 @@ class GroupedGEMMConfigMixin:
         if tiles == 0:
             return 1
         return -(-tiles // -(-tiles // self.sm_count))
+
+    @property
+    def autotune_supply_prog(self) -> Callable:
+        """Supply masked full/half slabs or evenly distributed contiguous rows for tuning."""
+        from tilelang.utils.device import get_current_device
+
+        call = self.call
+
+        def supply_prog(params: list) -> list:
+            if len(params) != 6:
+                raise RuntimeError(
+                    f"autotuning {type(self).__name__} expects 6 parameters "
+                    f"(a, a_scale, b, b_scale, layout, c), got {len(params)}"
+                )
+            device = get_current_device()
+            rows = (call.m,) if call.kind == "contiguous" else (call.num_groups, call.max_m)
+            metadata = moe_layout_metadata(call, math.prod(rows), call.num_groups)
+            return [
+                *self._tuning_operands(rows, device),
+                torch.tensor(metadata, dtype=torch.int32, device=device),
+                torch.empty(*rows, call.n, dtype=torch.bfloat16, device=device),
+            ]
+
+        return supply_prog
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        a_scale: torch.Tensor,
+        b: torch.Tensor,
+        b_scale: torch.Tensor,
+        layout_metadata: torch.Tensor,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run each expert's block-scaled product over its rows, into *out* if given."""
+        if out is None:
+            out = torch.empty((*a.shape[:-1], self.call.n), dtype=torch.bfloat16, device=a.device)
+        if out.numel() == 0:
+            return out
+        self.program(self._compile)(a, a_scale, b, b_scale, layout_metadata, out)
+        return out
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)

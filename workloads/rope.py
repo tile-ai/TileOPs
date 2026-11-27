@@ -4,12 +4,11 @@ import math
 
 import torch
 
+from workloads.numerics import Exact
 from workloads.workload_base import CallWorkload
 
 
 def rope_verification():
-    from workloads.numerics import Exact
-
     return Exact()
 
 
@@ -190,9 +189,6 @@ def rope_cos_sin_reference(
 class RoPECosSinCall(CallWorkload):
     """A manifest call of ``RoPECosSinFwdOp`` checked against :func:`rope_cos_sin_reference`."""
 
-    def verification(self, *inputs):
-        return rope_verification()
-
     def ref_program(self, x, cos, sin, cu_seqlens=None, seqlen_offsets=0):
         params = self.arguments()
         return rope_cos_sin_reference(
@@ -224,9 +220,6 @@ class RoPECosSinViewCall(RoPECosSinCall):
 
 class RoPECall(CallWorkload):
     """A manifest rotation checked against independently computed cos/sin caches."""
-
-    def verification(self, *inputs):
-        return rope_verification()
 
     def ref_program(self, positions, query, key=None, offsets=None):
         name, params = self.call.signature.name, self.arguments()

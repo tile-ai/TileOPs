@@ -516,11 +516,6 @@ def _fp8_lightning_indexer_ws_kernel(
 ):
     """Warp-specialized logits over 64-key tiles.
 
-    Warpgroups 0 and 1 take alternate tiles: one m64n``rows`` WGMMA each, then the
-    relu-weighted head sums, stored. Warpgroup 2 serves them: warp 0 loads q and the key tiles
-    by TMA, and warps 1 to 3 write -inf over the keys outside every window. The helper states
-    the head-sum formula.
-
     ``mixed`` builds the one-batch-row launch that runs some query blocks whole and splits the
     rest: the launch arguments ``whole``, ``shift`` and ``per`` give its CTA mapping. Without
     it the launch arguments go unread.
@@ -754,11 +749,8 @@ def _fp8_lightning_indexer_ws_kernel(
 class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
     """SM90 warp-specialized lightning indexer over one key group.
 
-    A thread block (CTA) holds 256 query-head rows, ``256 // heads`` queries, in shared memory.
-    A producer warp streams 64-key tiles by TMA; two consumer warpgroups score alternate tiles,
-    one m64n256 WGMMA each, and store the relu-weighted head sums. The producer warpgroup's
-    other warps write -inf over the keys outside every window, so no clean pass follows. When
-    the query blocks fall short of the multiprocessors, each block's keys split over CTAs.
+    A CTA holds 256 query-head rows, ``256 // heads`` queries. When the query blocks fall short
+    of the multiprocessors, each block's keys split over CTAs.
     """
 
     supported_archs: list[int] = [90]

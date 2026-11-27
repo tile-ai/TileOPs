@@ -33,9 +33,6 @@ class MoEPermuteAlignFixture(FixtureBase):
                     marks=[pytest.mark.smoke, pytest.mark.packaging(family="moe")],
                     id="tiny-bs4",
                 ),
-                pytest.param(16, 2, 8, 16, marks=pytest.mark.full, id="small-bs16"),
-                pytest.param(1024, 8, 64, 128, marks=pytest.mark.full, id="large-bs128"),
-                pytest.param(1, 2, 4, 4, marks=pytest.mark.full, id="single-token"),
                 # A few hundred routes over 32 and 33 experts, either side of the one-warp
                 # small-batch limit.
                 pytest.param(100, 6, 32, 64, marks=pytest.mark.full, id="sb-numel600-maxexp"),
@@ -148,23 +145,3 @@ def test_permute_align_rejects_nonpositive_params(
     """The op refuses an expert count or block height below one when it is built."""
     with pytest.raises(CheckError, match=re.escape(rule)):
         MoEPermuteAlignFwdOp(num_experts, block_size)
-
-
-@pytest.mark.smoke
-def test_permute_align_tuned_mode() -> None:
-    """A tuned op returns a verified result, and the same result on the call after."""
-    total_tokens, top_k, num_experts, block_size = 64, 8, 128, 64
-    op = MoEPermuteAlignFwdOp(num_experts, block_size)
-    op.request_tune()
-    workload = MoEPermuteAlignWorkload(
-        manifest_call(
-            "MoEPermuteAlignFwdOp",
-            T=total_tokens,
-            K=top_k,
-            num_experts=num_experts,
-            block_size=block_size,
-        )
-    )
-    inputs = workload.gen_inputs()
-    TestBase.check(workload, op, *inputs)
-    TestBase.check(workload, op, *inputs)

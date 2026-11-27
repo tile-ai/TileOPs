@@ -213,7 +213,7 @@ design, calling conventions — live in
   [`roofline.md` §4.4](./roofline.md#44-op-codegen). It is defined only after at least one
   `forward()`.
 - **Common mistakes.** Class-level roofline expression strings parsed at runtime, any `ast.parse`
-  or shared `_safe_eval` path — prohibited by
+  or shared string evaluator — prohibited by
   [`roofline.md` §4.4.5](./roofline.md#445-evaluator-surface-boundary); returning `float` or
   `numpy` types when the contract is `tuple[int, int]`.
 

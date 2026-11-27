@@ -15,12 +15,7 @@ __all__ = [
 
 @target_cache(maxsize=32)
 def _make_sinusoidal_kernel(seq_len, d_model, dtype):
-    """Build sinusoidal positional encoding kernel.
-
-    PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
-    PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
-    Output shape: (seq_len, d_model).
-    """
+    """Build sinusoidal positional encoding kernel: ``(seq_len, d_model)``."""
     half = d_model // 2
     # Positions and dimension pairs one block covers. The divisor depends on the pair
     # and not the position, so a block spanning several positions calls ``pow`` once

@@ -33,30 +33,20 @@ def _clamp(x, lo, hi):
 
 
 class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
-    """Clamp: y = clamp(x, min, max) with optional bounds.
+    """Clamp: y = clamp(x, min, max); a ``None`` bound is not applied.
 
-    Compares in the input's dtype against the bounds rounded to it. Rounding is
-    monotone, so this equals torch's float32 comparison rounded at the store, and a
-    float16 or bfloat16 body is one NaN-propagating min or max a bound. A bound the
-    caller omitted is not applied. A NaN input or bound gives NaN, as in
-    ``torch.clamp``.
+    Compares in the input's dtype against the bounds rounded to it, which equals torch's
+    float32 comparison rounded at the store, since rounding is monotone. A NaN input or
+    bound gives NaN, as in ``torch.clamp``.
     """
 
     @classmethod
     def entry_for(cls, call: BoundsCall) -> Entry:
-        return call, lambda: cls(call.n_total, call.dtype, call.min_val, call.max_val)
+        return call, lambda: cls(
+            call.n_total, call.dtype, min_val=call.min_val, max_val=call.max_val
+        )
 
-    def __init__(self, N_total, dtype, min_val=None, max_val=None, config=None):
-        self.min_val = min_val
-        self.max_val = max_val
-        super().__init__(N_total, dtype, config=config)
-
-    def _param_key(self):
-        return f"min_val={self.min_val!r}|max_val={self.max_val!r}"
-
-    def _make_op_func(self):
-        min_val, max_val = self.min_val, self.max_val
-
+    def _make_op_func(self, min_val, max_val):
         def op_func(x):
             lo = None if min_val is None else T.cast(min_val, x.dtype)
             hi = None if max_val is None else T.cast(max_val, x.dtype)
@@ -67,15 +57,8 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
 
 @target_cache(maxsize=32)
 def _make_clamp_tensor_kernel(N, dtype, has_min, has_max):
-    """Build the Tensor-bound clamp kernel: ``y = clamp(x, lo, hi)``.
-
-    Inputs are flat and of length *N*: this program serves the calls whose operands each
-    hold the output's element count. ``has_min`` / ``has_max`` select the three forms
-    the Tensor clamp, clamp_min and clamp_max ops take.
-
-    The result is written back into ``x``'s fragment rather than a third
-    data-typed one.
-    """
+    """Build the Tensor-bound clamp kernel: ``y = clamp(x, lo, hi)`` over flat operands of
+    length *N*; ``has_min`` / ``has_max`` say which bounds are parameters."""
     if has_min and has_max:
 
         @tilelang.jit(out_idx=[3])
@@ -132,19 +115,11 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max):
 
 
 class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface):
-    """Tensor-bound clamp: ``y = clamp(x, lo, hi)``.
-
-    ``has_min`` / ``has_max`` select between the three forms used by the Tensor
-    clamp, clamp_min and clamp_max ops; the bound a form omits is not a
+    """Tensor-bound clamp: ``y = clamp(x, lo, hi)``; the bound a call omits is not a
     PrimFunc parameter.
 
-    Compares in the input's dtype, which the bounds share. A max or a min returns one of
-    its operands, so this equals torch's float32 comparison rounded at the store, and a
-    float16 or bfloat16 body is one NaN-propagating max or min per bound.
-
-    NaN semantics match ``torch.clamp`` / ``torch.clamp_min`` /
-    ``torch.clamp_max``: a NaN in ``x``, ``lo`` or ``hi`` makes the output NaN
-    at that position.
+    Compares in the input's dtype, which equals torch's float32 comparison rounded at the
+    store. A NaN in ``x``, ``lo`` or ``hi`` makes the output NaN, as in ``torch.clamp``.
     """
 
     @classmethod
@@ -163,9 +138,7 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface)
         )
         super().__init__(N_total, dtype, config=config)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_clamp_tensor_kernel
+    _builder = staticmethod(_make_clamp_tensor_kernel)
 
     def _builder_args(self):
         return (self.has_min, self.has_max)

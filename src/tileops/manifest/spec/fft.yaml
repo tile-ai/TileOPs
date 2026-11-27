@@ -28,8 +28,7 @@ FFTC2CFwdOp:
   - {B: [256], n: 1024, dtype_cases: [{T: complex64}], label: spectrogram-1k}
   # FNet token mixing along a 512-token sequence, batch x hidden flattened into 4096 rows.
   - {B: [4096], n: 512, dtype_cases: [{T: complex64}], label: fnet-512}
-  # Per-channel short convolution; its batch exceeds CUDA's 65535 grid.y limit, so the
-  # kernels put the batch on grid.x.
+  # Per-channel short convolution: a batch above CUDA's 65535 grid.y limit.
   - {B: [65536], n: 64, dtype_cases: [{T: complex64}], label: shortconv-64}
   # Double-precision scientific transform: 2**20 at complex128, decomposed 1024*1024.
   - {B: [4], n: 1048576, dtype_cases: [{T: complex128}], label: scientific-1m}

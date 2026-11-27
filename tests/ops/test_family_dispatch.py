@@ -7,6 +7,7 @@ and its reason, before anything is built.
 import pytest
 import torch
 
+from tileops._kernels.attention.call_spec import AttentionCall
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.linear_attention import (
     DeltaNetCall,
@@ -19,6 +20,7 @@ from tileops._kernels.linear_attention import (
 from tileops._kernels.linear_attention.gla.call_spec import GLACall
 from tileops._kernels.norm.call_spec import FusedQKNormRoPECall
 from tileops._kernels.sampling.call_spec import SamplingCall
+from tileops._ops.attention.gqa.dense import GQADenseFwdOp
 from tileops._ops.gemm.gemm import GEMMFwdOp
 from tileops._ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops._ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
@@ -41,17 +43,17 @@ pytestmark = [
 ]
 
 _SM90 = 90
+# Multiprocessors of the SM90 board the inference regions are read against.
+_SM_COUNT = 132
 
 
 @pytest.mark.smoke
 def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
-    """``k = 1`` fp16 spans 2 bytes, under the 4-byte load both mainloops issue.
-
-    Neither implementation can serve it. The refusal states the reason during
-    selection rather than letting a builder be entered and raise.
-    """
+    """``k = 1`` fp16 spans 2 bytes, under the 4-byte load both mainloops issue."""
     op = GEMMFwdOp()
-    call = GEMMCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
+    call = GEMMCall(
+        arch=_SM90, sm_count=_SM_COUNT, m=64, n=64, k=1, dtype=torch.float16, trans_b=True
+    )
 
     with pytest.raises(OpNotAvailableError, match="k must span at least one"):
         op.key_for("gemm", call)
@@ -60,10 +62,10 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
 @pytest.mark.smoke
 def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
     """A full batch folds each row of 926463 weights into 28952 float64 entries, which with the
-    block's other shared buffers, each starting at a multiple of 16 bytes, compile to 232464
-    bytes. Counting the entries and only part of the rest admitted it."""
+    block's other shared buffers, each starting at a multiple of 16 bytes, exceed the SM90
+    shared memory."""
     call = SamplingCall(
-        arch=_SM90, sm_count=132, batch=132, num_draft=1, vocab=926463, dtype=torch.float32
+        arch=_SM90, sm_count=_SM_COUNT, batch=132, num_draft=1, vocab=926463, dtype=torch.float32
     )
 
     with pytest.raises(OpNotAvailableError, match="shared float64 entries"):
@@ -106,12 +108,14 @@ def test_fused_qk_norm_rope_refuses_what_no_kernel_serves(dim: int, rot: int, re
         FusedQKNormRoPEFwdOp(4, 1).key_for("fused_qk_norm_rope", call)
 
 
-def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64) -> GLAChunkCall:
+def _chunk_call(
+    dim_k: int, dim_v: int, chunk_size: int = 64, batch: int = 2, heads: int = 8
+) -> GLAChunkCall:
     return GLAChunkCall(
-        arch=arch,
-        batch=2,
+        arch=_SM90,
+        batch=batch,
         seq_len=512,
-        heads=8,
+        heads=heads,
         dim_k=dim_k,
         dim_v=dim_v,
         chunk_size=chunk_size,
@@ -153,7 +157,6 @@ def test_gla_chunked_refuses_what_no_kernel_serves(
             ops[interface](chunk_size=call.chunk_size).key_for(interface, call)
 
 
-@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("dim_k", "dim_v", "reason"),
@@ -173,11 +176,9 @@ def test_gla_bwd_refuses_what_this_device_cannot_place(dim_k: int, dim_v: int, r
 def _gla_call(
     seq_len: int, varlen: bool = False, dim: int = 64, heads: int = 4, sequences: int = 1
 ) -> GLACall:
-    # Multiprocessors of the board the GLA inference regions are read against.
-    sm_count = 132
     return GLACall(
         arch=_SM90,
-        sm_count=sm_count,
+        sm_count=_SM_COUNT,
         batch=1,
         seq_len=seq_len,
         heads=heads,
@@ -207,18 +208,9 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> GDNCa
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    ("call", "reason"),
-    [
-        pytest.param(
-            _gated_call(1, True, dim_k=256, dim_v=256),
-            "K and V other than matching 64 or 128",
-            id="decode-wide-state",
-        ),
-    ],
-)
-def test_gdn_refuses_what_no_kernel_serves(call: GDNCall, reason: str) -> None:
-    with pytest.raises(OpNotAvailableError, match=reason):
+def test_gdn_decode_refuses_a_wide_state() -> None:
+    call = _gated_call(1, True, dim_k=256, dim_v=256)
+    with pytest.raises(OpNotAvailableError, match="K and V other than matching 64 or 128"):
         GDNFwdOp().key_for("gdn", call)
 
 
@@ -263,17 +255,7 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
         dim_v=128,
         dtype=torch.bfloat16,
     )
-    gla_chunk = GLAChunkCall(
-        arch=_SM90,
-        batch=1,
-        seq_len=512,
-        heads=heads,
-        dim_k=128,
-        dim_v=128,
-        chunk_size=64,
-        scale=0.125,
-        dtype=torch.bfloat16,
-    )
+    gla_chunk = _chunk_call(128, 128, batch=1, heads=heads)
     decode = {"arch": _SM90, "batch": 1, "heads": heads, "dim_k": 128, "dim_v": 128}
     return [
         (DeltaNetChunkFwdOp(), "deltanet_chunk_fwd", chunk),
@@ -342,75 +324,95 @@ def test_gdn_refuses_an_odd_value_head_count(seq_len: int) -> None:
         GDNFwdOp().key_for("gdn", call)
 
 
-_GQA_DENSE_GAPS = [
-    # (dtype, batch, seq_len_q, heads, heads_kv, dim, seq_len_kv, window, rope, softcap)
-    (
-        ("fp8", 1, 1, 32, 4, 128, 2048, (64, 0), False, 0.0),
-        "fp8-window",
-        r"does not serve sliding windows",
-    ),
-    (
-        ("fp8", 1, 1, 32, 4, 128, 2048, (-1, -1), True, 0.0),
-        "fp8-rope",
-        r"does not serve RoPE with one query position",
-    ),
-    (
-        ("fp16", 1, 1, 32, 4, 144, 2048, (-1, -1), False, 0.0),
-        "decode-dim-144",
-        r"multiple of 16 in \[16, 128\]",
-    ),
-    (
-        ("fp16", 1, 4, 32, 4, 128, 2048, (64, 0), False, 0.0),
-        "window-unequal-lengths",
-        r"requires equal Q and KV lengths",
-    ),
-    (
-        ("fp16", 1, 4, 32, 4, 72, 2048, (-1, -1), False, 0.0),
-        "prefill-dim-72",
-        r"requires head dimension a multiple of 16",
-    ),
-    (
-        ("fp16", 1, 65, 8, 1, 256, 2048, (-1, -1), False, 0.0),
-        "prefill-dim-256",
-        r"key/value stages exceed shared memory",
-    ),
-]
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("row", "reason"), [pytest.param(row, reason, id=name) for row, name, reason in _GQA_DENSE_GAPS]
+    ("is_fp8", "seq_q", "heads", "heads_kv", "dim", "window", "rope", "reason"),
+    [
+        pytest.param(
+            True, 1, 32, 4, 128, 64, False, "does not serve sliding windows", id="fp8-window"
+        ),
+        pytest.param(
+            True,
+            1,
+            32,
+            4,
+            128,
+            -1,
+            True,
+            "does not serve RoPE with one query position",
+            id="fp8-rope",
+        ),
+        pytest.param(
+            False, 1, 32, 4, 144, -1, False, r"multiple of 16 in \[16, 128\]", id="decode-dim-144"
+        ),
+        pytest.param(
+            False,
+            4,
+            32,
+            4,
+            128,
+            64,
+            False,
+            "requires equal Q and KV lengths",
+            id="window-unequal-lengths",
+        ),
+        pytest.param(
+            False,
+            4,
+            32,
+            4,
+            72,
+            -1,
+            False,
+            "requires head dimension a multiple of 16",
+            id="prefill-dim-72",
+        ),
+        pytest.param(
+            False,
+            65,
+            8,
+            1,
+            256,
+            -1,
+            False,
+            "key/value stages exceed shared memory",
+            id="prefill-dim-256",
+        ),
+    ],
 )
-def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple, reason: str) -> None:
-    from tileops._kernels.attention.call_spec import AttentionCall
-    from tileops._ops.attention.gqa.dense import GQADenseFwdOp
-
-    dtype_name, batch, seq_q, heads, heads_kv, dim, seq_kv, window, rope, softcap = row
-    dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}
-    is_fp8 = dtype_name == "fp8"
+def test_gqa_dense_refuses_what_no_kernel_serves(
+    is_fp8: bool,
+    seq_q: int,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    window: int,
+    rope: bool,
+    reason: str,
+) -> None:
+    """``window`` is the left window, -1 for none; every call is causal over 2048 keys."""
     op = GQADenseFwdOp(
         is_causal=True,
-        window_size_left=window[0],
-        window_size_right=window[1],
-        softcap=softcap,
+        window_size_left=window,
+        window_size_right=0 if window >= 0 else -1,
         pos_encoding_mode="rope" if rope else "none",
         out_dtype=torch.float16 if is_fp8 else None,
     )
     call = AttentionCall(
         arch=_SM90,
-        sm_count=132,
+        sm_count=_SM_COUNT,
         smem_budget=232448,
-        dtype=torch.float16 if is_fp8 else dtypes[dtype_name],
-        batch=batch,
+        dtype=torch.float16,
+        batch=1,
         heads=heads,
         heads_kv=heads_kv,
         dim=dim,
         max_seqlen_q=seq_q,
-        seqlen_kv=seq_kv,
+        seqlen_kv=2048,
         is_causal=True,
-        softcap=softcap,
-        window_size_left=window[0],
-        window_size_right=window[1],
+        softcap=0.0,
+        window_size_left=window,
+        window_size_right=0 if window >= 0 else -1,
         is_fp8=is_fp8,
         fuse_rope=rope,
     )

@@ -17,7 +17,7 @@ FAST_HADAMARD_TAG = "fast-hadamard-transform"
 HADACORE_TAG = "hadacore"
 
 
-@pytest.mark.parametrize("case", bench.cases(HadamardTransformFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(HadamardTransformFwdOp))
 def test_hadamard_transform_bench(case) -> None:
     op = HadamardTransformFwdOp(**case.arguments)
     base_order = case.arguments.get("base_order", 1)

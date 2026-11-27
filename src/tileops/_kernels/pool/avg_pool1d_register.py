@@ -18,9 +18,8 @@ from tileops._kernels.constants import (
     SM_RESIDENT_BLOCKS,
     VECTOR_ACCESS_BYTES,
 )
-from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
-from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
+from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolKernelBase, AvgPoolWindow
 from tileops._utils import WARP_LANES
 
 __all__ = ["AvgPool1dRegisterKernel"]
@@ -38,15 +37,14 @@ def _one_block_an_sm_covers(warps: int, sm_count: int) -> bool:
 
 
 def _runs_a_thread(itemsize: int, stride_l: int, units: int, sm_count: int) -> int:
-    """The runs one thread pools for a launch of ``units`` runs: two, half the launch
-    apart, where one run's outputs take at most 4 bytes and one block an SM cannot cover
-    the launch even at two runs a thread; otherwise one. Where one block an SM covers it,
-    every thread is resident from the start, and a second run a thread only halves the
-    warps each SM issues from. Past the one-axis grid's int32 thread index, one run on the
-    row grid still serves the launch."""
-    # 4 bytes is one 32-bit register: a run storing that little leaves its thread mostly
-    # index math, which a second run shares; two runs a thread also double the loads each
-    # thread keeps in flight and halve the threads the launch dispatches.
+    """The runs one thread pools for a launch of ``units`` runs.
+
+    Two, half the launch apart, where one run's outputs take at most 4 bytes and one block
+    an SM cannot cover the launch even at two runs a thread; otherwise one, as also past
+    the one-axis grid's int32 thread index.
+    """
+    # A run storing one 32-bit register's worth leaves its thread mostly index math, which
+    # a second run shares.
     paired_store_bytes = 4
     if units > AvgPool1dRegisterKernel._FLAT_UNITS_MAX:
         return 1
@@ -56,25 +54,30 @@ def _runs_a_thread(itemsize: int, stride_l: int, units: int, sm_count: int) -> i
 
 
 @target_cache(maxsize=32)
-def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, counted, dtype):
-    """Build the program for ``rows`` rows of ``l_in`` elements.
+def _avg_pool1d_register_kernel(spec: AvgPoolWindow, dtype: str):
+    """Build the program for ``spec.rows`` rows of ``l_in`` elements.
 
     A run is ``VECTOR_ACCESS_BYTES`` of the row, ``outputs`` outputs; a thread pools
-    ``runs`` runs, ``span`` groups apart on the flat grid. The windows of a
-    run's outputs start ``pad_l`` elements before it and end ``after`` past it; ``window``
-    holds them in float32, zero outside the row. ``counted`` is the span ``(lo, hi)`` of
-    positions a window counts in its divisor, or ``None`` where every window divides by
-    ``kernel_l``. The program takes ``threads`` a block, and ``flat`` lays every row's
-    groups along one grid axis; otherwise the grid is ``(groups, rows)`` and a thread
-    pools one run.
+    ``runs`` runs, ``span`` groups apart on the flat grid. The windows of a run's outputs
+    start ``pad_l`` elements before it and end ``after`` past it; ``window`` holds them in
+    float32, zero outside the row. Where one divisor does not cover every window, a window
+    divides by the positions of ``[lo, hi)`` it covers. ``flat`` lays every row's groups
+    along one grid axis; otherwise the grid is ``(groups, rows)`` and a thread pools one run.
     """
+    rows = spec.rows
+    (l_in,), (kernel_l,), (stride_l,), (pad_l,), (out_l,) = (
+        spec.size,
+        spec.kernel,
+        spec.stride,
+        spec.pad,
+        spec.out,
+    )
+    whole = spec.whole_window_divides
+    ((lo,), (hi,)) = ((0,), (0,)) if whole else spec.overlap
     run, outputs = _run(getattr(torch, dtype).itemsize, stride_l)
     after = max(kernel_l - stride_l - pad_l, 0)
     groups = out_l // outputs
     units = rows * groups
-    # The builder closes over scalars only, so the span is unpacked here.
-    whole = counted is None
-    lo, hi = (0, 0) if whole else counted
     # An input of 2**31 elements or more takes int64 extents: int32 cannot hold an extent of
     # exactly 2**31, and TileLang widens the offsets of a longer input by itself.
     wide = rows * l_in >= 2**31
@@ -195,7 +198,42 @@ def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, out_l, co
     return build
 
 
-class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
+def _launch(call: AvgPoolCall) -> dict:
+    """The block width, the grid and the runs a thread for *call* on its device."""
+    window = AvgPoolWindow.of(call)
+    # A group of outputs a run, ``groups`` a row; ``runs`` runs a thread, ``lanes``
+    # threads in all.
+    _, outputs = _run(call.dtype.itemsize, call.stride[0])
+    groups = window.out[0] // outputs
+    units = window.rows * groups
+    runs = _runs_a_thread(call.dtype.itemsize, call.stride[0], units, call.sm_count)
+    lanes = -(-units // runs)
+    warps = -(-lanes // WARP_LANES)
+    # The row grid: 128-thread blocks along each row. Past one block an SM, the threads
+    # resident on an SM, not the block width, set the bytes it has in flight; four warps
+    # a block leave a row's last block at most 127 idle threads.
+    multi_wave_threads = 128
+    row_blocks = window.rows * -(-groups // multi_wave_threads)
+    # A row of fewer groups than a block has threads leaves the rest idle, and an SM holds
+    # at most SM_RESIDENT_BLOCKS blocks. Where the row grid has more blocks than the SMs
+    # hold at once and those blocks cannot keep threads_per_sm threads busy, the blocks
+    # span rows on one grid axis.
+    resident = SM_RESIDENT_BLOCKS[call.arch]
+    row_idles_sm = (
+        row_blocks > call.sm_count * resident
+        and resident * min(groups, multi_wave_threads) < call.threads_per_sm
+    )
+    # One block an SM, of the fewest whole warps that cover the launch, where the row grid
+    # puts a second block on some SM and one block of at most MAX_BLOCK_THREADS covers an
+    # SM's share: with every block resident at once, no later wave hides a block's dispatch.
+    one_block_an_sm = row_blocks > call.sm_count and _one_block_an_sm_covers(warps, call.sm_count)
+    # Two runs a thread lie half the launch apart, so they take the one-axis grid.
+    flat = runs > 1 or one_block_an_sm or row_idles_sm or window.rows > MAX_GRID_YZ_BLOCKS
+    threads = -(-warps // call.sm_count) * WARP_LANES if one_block_an_sm else multi_wave_threads
+    return {"threads": threads, "flat": flat, "runs": runs}
+
+
+class AvgPool1dRegisterKernel(AvgPoolKernelBase, AvgPool1dFwdInterface):
     """Average pooling over rows, a thread's windows read into registers.
 
     Serves every divisor but ``divisor_override``: a window cut by the row's edge, or by
@@ -206,11 +244,11 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     most 4 bytes.
     """
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     preferred_over = frozenset({"avg_pool1d_kernel"})
     # The most runs the one-axis grid indexes: its int32 thread index must hold the last
     # run's thread and the rest of its block.
     _FLAT_UNITS_MAX: ClassVar[int] = 2**31 - 1 - MAX_BLOCK_THREADS
+    _build = staticmethod(_avg_pool1d_register_kernel)
 
     @classmethod
     def refusal(cls, call: AvgPoolCall) -> str | None:
@@ -225,10 +263,8 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
         if run % stride_l:
             return f"requires a stride dividing the {run}-element load, got {stride_l}"
         (out_l,) = AvgPoolWindow.of(call).out
-        # A side's elements are one load of at most 4 bytes, one fp32 element, so a side of
-        # two 16-bit elements costs a thread the one load a side of one fp32 element does.
-        # The run starts on a 16-byte boundary, so a side of two or four bytes starts on its
-        # own width.
+        # A side's elements are one load of at most 4 bytes, one fp32 element; the run
+        # starts on a 16-byte boundary, so a side of two or four bytes starts on its width.
         side_load_bytes = 4
         for side, reach in (("before", pad_l), ("after", kernel_l - stride_l - pad_l)):
             if reach * call.dtype.itemsize > side_load_bytes:
@@ -248,110 +284,10 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
             return f"serves at most {cls._FLAT_UNITS_MAX} groups of outputs"
         return super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: AvgPoolCall) -> Entry:
-        window = AvgPoolWindow.of(call)
-        (l_in,), (kernel_l,), (stride_l,), (pad_l,), (out_l,) = (
-            window.size,
-            window.kernel,
-            window.stride,
-            window.pad,
-            window.out,
-        )
-        counted = None
-        if not window.whole_window_divides:
-            ((lo,), (hi,)) = window.overlap
-            counted = (lo, hi)
-        # A group of outputs a run, ``groups`` a row; ``runs`` runs a thread, ``lanes``
-        # threads in all.
-        _, outputs = _run(call.dtype.itemsize, stride_l)
-        groups = out_l // outputs
-        units = window.rows * groups
-        runs = _runs_a_thread(call.dtype.itemsize, stride_l, units, call.sm_count)
-        lanes = -(-units // runs)
-        warps = -(-lanes // WARP_LANES)
-        # The row grid: 128-thread blocks along each row. Past one block an SM, the threads
-        # resident on an SM, not the block width, set the bytes it has in flight; four warps
-        # a block leave a row's last block at most 127 idle threads.
-        multi_wave_threads = 128
-        row_blocks = window.rows * -(-groups // multi_wave_threads)
-        # A row of fewer groups than a block has threads leaves the rest idle, and an SM
-        # holds at most SM_RESIDENT_BLOCKS blocks. Where the row grid has more blocks than
-        # the SMs hold at once, that cap binds; where the blocks it lets an SM hold cannot
-        # keep threads_per_sm threads busy, the launch runs its blocks spanning rows on one
-        # grid axis. Such a row takes one row-grid block, so that launches fewer blocks.
-        resident = SM_RESIDENT_BLOCKS[call.arch]
-        row_idles_sm = (
-            row_blocks > call.sm_count * resident
-            and resident * min(groups, multi_wave_threads) < call.threads_per_sm
-        )
-        # One block an SM, of the fewest whole warps that cover the launch: every block an
-        # SM runs past its first is one more to dispatch, and with all of them resident at
-        # once no later wave hides the dispatch. It applies where the row grid puts a second
-        # block on some SM (more row blocks than SMs), so that it launches fewer blocks, at
-        # most one an SM; and where a block of at most MAX_BLOCK_THREADS covers an SM's
-        # share, the block limit rather than the SM's residency, since past it an SM needs
-        # a second block anyway.
-        one_block_threads = -(-warps // call.sm_count) * WARP_LANES
-        one_block_an_sm = row_blocks > call.sm_count and _one_block_an_sm_covers(
-            warps, call.sm_count
-        )
-        # Two runs a thread lie half the launch apart, so they take the one-axis grid; one
-        # block an SM never covers such a launch.
-        flat = runs > 1 or one_block_an_sm or row_idles_sm or window.rows > MAX_GRID_YZ_BLOCKS
-        threads = one_block_threads if one_block_an_sm else multi_wave_threads
-        identity = (
-            window.rows,
-            l_in,
-            kernel_l,
-            stride_l,
-            pad_l,
-            out_l,
-            counted,
-            call.dtype,
-            threads,
-            flat,
-            runs,
-        )
-        return identity, lambda: cls(*identity)
-
-    def __init__(
-        self,
-        rows: int,
-        l_in: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: int,
-        out_l: int,
-        counted: "tuple[int, int] | None",
-        dtype: torch.dtype,
-        threads: int,
-        flat: bool,
-        runs: int,
-    ) -> None:
-        super().__init__()
-        self.rows, self.l_in, self.dtype = rows, l_in, dtype
-        self._launch = {"threads": threads, "flat": flat, "runs": runs}
-        self.kernel = _avg_pool1d_register_kernel(
-            rows, l_in, kernel_l, stride_l, pad_l, out_l, counted, self.dtype_str
-        )
-        self.init_config()
-
     @property
     def default_config(self) -> dict:
-        """The launch ``entry_for`` derived from the call and the device."""
-        return dict(self._launch)
+        return _launch(self.call)
 
     @property
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
-
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled for the launch in *cfg*."""
-        return self.kernel(cfg["threads"], cfg["flat"], cfg["runs"])
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_devices(x=x)
-        x = x.contiguous()
-        y = self.program(self._compile)(x.view(self.rows, self.l_in))
-        return y.view(*x.shape[:-1], y.shape[-1])

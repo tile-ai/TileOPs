@@ -1,8 +1,10 @@
+from dataclasses import dataclass
+
 import torch
 
 from workloads.device import run_device
-from workloads.linear_attention.common import log_gates, small
-from workloads.numerics import Custom, Exact, assert_close, assert_rounded, compare_outputs
+from workloads.linear_attention.common import log_gates, recurrence_verification, small
+from workloads.numerics import Custom, Exact, compare_outputs
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
@@ -19,22 +21,14 @@ __all__ = [
 ]
 
 
+@dataclass(eq=False)
 class GLADecodeWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        scale: float | None = None,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
-        self.scale = scale
+    batch: int
+    heads: int
+    dim_k: int
+    dim_v: int
+    dtype: torch.dtype
+    scale: float | None = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, DK, DV = self.batch, self.heads, self.dim_k, self.dim_v
@@ -60,28 +54,18 @@ class GLADecodeWorkload(WorkloadBase):
         return decode_verification(inputs[0].dtype)
 
 
+@dataclass(eq=False)
 class GLAFwdWorkload(WorkloadBase):
     """Inference GLA prefill with a caller-owned optional recurrent state."""
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-        has_initial_state: bool = False,
-        scale: float | None = None,
-    ) -> None:
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
-        self.has_initial_state = has_initial_state
-        self.scale = scale
+    batch: int
+    seq_len: int
+    heads: int
+    dim_k: int
+    dim_v: int
+    dtype: torch.dtype
+    has_initial_state: bool = False
+    scale: float | None = None
 
     def gen_inputs(self):
         B, T, H, K, V = self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v
@@ -340,26 +324,10 @@ def decode_verification(dtype):
 
 
 def inference_verification(dtype, *, decode=False):
-    if decode:
-
-        def validate_decode(got, expected):
-            # A single step keeps its state in FP32: prefill's accumulation bound
-            # does not apply. The stored output may straddle a half/bfloat rounding
-            # boundary after two FP32 reduction orders; allow one adjacent value,
-            # then apply the original absolute bound to the remaining error.
-            assert_rounded(got[0], expected[0], atol=3e-7)
-            assert_close(got[1], expected[1], atol=3e-7, rtol=3e-7)
-
-        return Custom(validate_decode, "single-step FP32 state and one-rounding-unit output")
-
     tol = {torch.float32: 3e-07, torch.float16: 1e-3, torch.bfloat16: 1.6e-2}[dtype]
-    state_tol = 0.0025 if dtype == torch.float16 else tol
-
-    def validate(got, expected):
-        assert_close(got[0], expected[0], atol=tol, rtol=tol)
-        assert_close(got[1], expected[1], atol=state_tol, rtol=tol)
-
-    return Custom(validate, "output and accumulated FP32 state")
+    return recurrence_verification(
+        tol, 0.0025 if dtype == torch.float16 else tol, single_step=3e-7 if decode else None
+    )
 
 
 def chunkwise_verification(dtype, *, backward=False):

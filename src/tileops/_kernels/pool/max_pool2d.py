@@ -1,6 +1,4 @@
 import itertools
-from collections.abc import Callable
-from typing import Any, ClassVar
 
 import tilelang
 import tilelang.language as T
@@ -8,7 +6,7 @@ import torch
 
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.pool.call_spec import (
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
@@ -17,8 +15,8 @@ from tileops._kernels.pool.call_spec import (
 from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
     MaxPoolKernelBase,
-    axis_inside,
-    pool_output_dim,
+    axes_inside,
+    max_pool_out,
 )
 from tileops._utils import WARP_LANES
 
@@ -31,27 +29,13 @@ def _band(tile: int, stride: int, kernel: int, dilation: int) -> int:
 
 
 @target_cache(maxsize=32)
-def _max_pool2d_kernel(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_h: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-):
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    rows = n * c_in
-    rows_inside = axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-    cols_inside = axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
+def _max_pool2d_kernel(call: MaxPoolCall, dtype: str):
+    (h_in, w_in), (kernel_h, kernel_w), (stride_h, stride_w) = call.size, call.window, call.stride
+    (pad_h, pad_w), (dilation_h, dilation_w) = call.pad, call.dilation
+    out = max_pool_out(call)
+    out_h, out_w = out
+    rows_inside, cols_inside = axes_inside(call, out)
+    rows = call.n * call.c_in
 
     @tilelang.jit(out_idx=[1], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _max_pool2d_func(block_m: int, threads: int, tile_h: int, tile_w: int):
@@ -148,29 +132,15 @@ def _max_pool2d_kernel(
 
 
 @target_cache(maxsize=32)
-def _max_pool2d_with_indices_kernel(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    kernel_h: int,
-    kernel_w: int,
-    stride_h: int,
-    stride_w: int,
-    pad_h: int,
-    pad_w: int,
-    dilation_h: int,
-    dilation_w: int,
-    ceil_mode: bool,
-    dtype: str,
-):
-    out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-    out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-    rows = n * c_in
+def _max_pool2d_with_indices_kernel(call: MaxPoolCall, dtype: str):
+    (h_in, w_in), (kernel_h, kernel_w), (stride_h, stride_w) = call.size, call.window, call.stride
+    (pad_h, pad_w), (dilation_h, dilation_w) = call.pad, call.dilation
+    out = max_pool_out(call)
+    out_h, out_w = out
+    rows_inside, cols_inside = axes_inside(call, out)
+    rows = call.n * call.c_in
     plane = out_h * out_w
     total = rows * plane
-    rows_inside = axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-    cols_inside = axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
     def _max_pool2d_with_indices_func(block_m: int, threads: int):
@@ -225,68 +195,6 @@ def _max_pool2d_with_indices_kernel(
         return _max_pool2d_with_indices_main
 
     return _max_pool2d_with_indices_func
-
-
-class _MaxPool2dKernelBase(MaxPoolKernelBase):
-    """The constructor both 2d max-pool kernels share; a subclass names its ``_build``."""
-
-    _build: ClassVar[Callable[..., Any]]
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_h: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: torch.dtype,
-        config: dict | None = None,
-    ) -> None:
-        super().__init__()
-        if dtype not in {torch.float16, torch.bfloat16, torch.float32}:
-            raise ValueError(
-                f"{type(self).__name__} supports float16, bfloat16, and float32, got {dtype}"
-            )
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.kernel_h = kernel_h
-        self.kernel_w = kernel_w
-        self.stride_h = stride_h
-        self.stride_w = stride_w
-        self.pad_h = pad_h
-        self.pad_w = pad_w
-        self.dilation_h = dilation_h
-        self.dilation_w = dilation_w
-        self.dtype = dtype
-        self.out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-        self.out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        self.kernel = type(self)._build(
-            n,
-            c_in,
-            h_in,
-            w_in,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            ceil_mode,
-            self.dtype_str,
-        )
-        self.init_config(config)
 
 
 @T.macro
@@ -394,32 +302,25 @@ class MaxPool2dWarpKernel(Kernel, MaxPool2dFwdInterface):
             return "requires fewer than 2**31 input elements for 32-bit indexing"
         return super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: MaxPoolCall) -> Entry:
-        index = call.device_index
-        args = (call.n * call.c_in, *call.size, call.dtype)
-        return (*args, index), lambda: cls(*args, device_index=index)
-
-    def __init__(self, planes, h_in, w_in, dtype, *, device_index=None):
-        super().__init__(device_index=device_index)
-        self.planes, self.h_in, self.w_in = planes, h_in, w_in
-        self.dtype = dtype
-        self.half_warp = (h_in, w_in) == (33, 33)
+    def __init__(self, call: MaxPoolCall) -> None:
+        super().__init__(device_index=call.device_index)
+        self.call = call
+        self.dtype = call.dtype
+        planes, (h_in, w_in) = call.n * call.c_in, call.size
         self.kernel = (
             _max_pool2d_half_warp_kernel(planes)
-            if self.half_warp
+            if call.size == (33, 33)
             else _max_pool2d_warp_kernel(planes, h_in, w_in, self.dtype_str)
         )
         self.init_config()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.program(lambda config: self.kernel(**config))(
-            x.reshape(self.planes, self.h_in, self.w_in)
-        )
-        return y.view(x.shape[0], x.shape[1], (self.h_in - 1) // 2, (self.w_in - 1) // 2)
+        h_in, w_in = self.call.size
+        y = self.program(lambda config: self.kernel(**config))(x.reshape(-1, h_in, w_in))
+        return y.view(x.shape[0], x.shape[1], (h_in - 1) // 2, (w_in - 1) // 2)
 
 
-class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
+class MaxPool2dKernel(MaxPoolKernelBase, MaxPool2dFwdInterface):
     """Max pooling forward kernel (return_indices=False).
 
     One thread owns a ``tile_h`` by ``tile_w`` block of outputs. The input band
@@ -428,56 +329,38 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
     down them. A tile of 1 by 1 is the plain one-output-per-thread schedule.
     """
 
-    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
-        planes = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
-        return planes.view(self.n, self.c_in, self.out_h, self.out_w)
-
     _build = staticmethod(_max_pool2d_kernel)
 
-    def _tiles(self, axis: str) -> tuple[int, ...]:
+    def _tiles(self, axis: int) -> tuple[int, ...]:
         """Tile extents worth trying on one axis.
 
         A tile only pays where the band it reads is the band its outputs use.
         Once the stride outruns the kernel, or the dilation outruns the stride,
         the band holds positions no window reaches and the extra reads are lost.
         """
-        if axis == "h":
-            extent, stride, kernel, dilation = (
-                self.out_h,
-                self.stride_h,
-                self.kernel_h,
-                self.dilation_h,
-            )
-        else:
-            extent, stride, kernel, dilation = (
-                self.out_w,
-                self.stride_w,
-                self.kernel_w,
-                self.dilation_w,
-            )
-        if not (dilation <= stride <= kernel):
+        call = self.call
+        if not (call.dilation[axis] <= call.stride[axis] <= call.window[axis]):
             return (1,)
-        return tuple(t for t in (1, 2, 4, 8) if t <= extent)
+        return tuple(t for t in (1, 2, 4, 8) if t <= self.out[axis])
 
     @property
     def default_config(self) -> dict:
+        call = self.call
         if (
             self.build_target.arch == 90
             and self.dtype == torch.bfloat16
-            and self.kernel_h == self.kernel_w == 3
-            and self.stride_h == self.stride_w == 2
-            and self.pad_h == self.pad_w == 0
-            and self.dilation_h == self.dilation_w == 1
-            and self.h_in == self.w_in == 65
+            and call.window == (3, 3)
+            and call.stride == (2, 2)
+            and call.pad == (0, 0)
+            and call.dilation == (1, 1)
+            and call.size == (65, 65)
         ):
             return {"block_m": 128, "threads": 128, "tile_h": 8, "tile_w": 1}
-        tiles_h = self._tiles("h")
-        tiles_w = self._tiles("w")
         return {
             "block_m": 256,
             "threads": 256,
-            "tile_h": max(t for t in tiles_h if t <= 4),
-            "tile_w": max(t for t in tiles_w if t <= 2),
+            "tile_h": max(t for t in self._tiles(0) if t <= 4),
+            "tile_w": max(t for t in self._tiles(1) if t <= 2),
         }
 
     @property
@@ -485,31 +368,23 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
         # Accumulators one thread holds for its output tile: the band row plus the row
         # maxima the column pass consumes.
         max_tile_registers = 64
+        (stride_h, stride_w), (kernel_h, kernel_w) = self.call.stride, self.call.window
+        (dilation_h, dilation_w) = self.call.dilation
         space = itertools.product(
-            (64, 128, 256, 512), (64, 128, 256), self._tiles("h"), self._tiles("w")
+            (64, 128, 256, 512), (64, 128, 256), self._tiles(0), self._tiles(1)
         )
         configs = [
-            {
-                "block_m": block_m,
-                "threads": threads,
-                "tile_h": tile_h,
-                "tile_w": tile_w,
-            }
+            {"block_m": block_m, "threads": threads, "tile_h": tile_h, "tile_w": tile_w}
             for block_m, threads, tile_h, tile_w in space
             if threads <= block_m
-            and _band(tile_h, self.stride_h, self.kernel_h, self.dilation_h) * tile_w
-            + _band(tile_w, self.stride_w, self.kernel_w, self.dilation_w)
+            and _band(tile_h, stride_h, kernel_h, dilation_h) * tile_w
+            + _band(tile_w, stride_w, kernel_w, dilation_w)
             <= max_tile_registers
         ]
         return configs or [self.default_config]
 
 
-class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase, MaxPool2dIndicesFwdInterface):
+class MaxPool2dWithIndicesKernel(MaxPoolKernelBase, MaxPool2dIndicesFwdInterface):
     """Max pooling forward-with-indices kernel."""
-
-    def _launch(self, program, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        values, positions = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
-        shape = (self.n, self.c_in, self.out_h, self.out_w)
-        return values.view(shape), positions.view(shape)
 
     _build = staticmethod(_max_pool2d_with_indices_kernel)

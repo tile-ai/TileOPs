@@ -28,13 +28,9 @@ Header zeroing: the output buffer is adapter-allocated via ``torch.empty`` (not
 zeroed), so the elected writer of each group zeroes its header ``word[0]`` in the
 kernel prologue before any marker fires.
 
-Host-map registry
-------------------
-``trace.lower`` stashes the host-side decode maps in the module-level
-``_META_REGISTRY`` dict, keyed by an integer meta id stamped onto the
-returned ``PrimFunc`` as the ``tl.trace_meta_id`` attr. The attr rides through
-``tilelang.jit`` onto ``kernel.prim_func``, so ``lookup_meta`` resolves a
-compiled kernel back to its maps without relying on object identity.
+Host maps: ``lower`` stores each build's decode maps in ``_META_REGISTRY`` under an id
+stamped on the returned ``PrimFunc`` as the ``tl.trace_meta_id`` attr, which
+``tilelang.jit`` carries onto ``kernel.prim_func``; ``lookup_meta`` reads it back.
 """
 
 from pathlib import Path
@@ -49,17 +45,11 @@ from tileops._csrc import csrc_path
 from tileops.trace._record import MAX_EVENTS_DEFAULT, pack_w1_tir
 from tileops.trace._state import MARKER, begin_build_epoch, build_state
 
-__all__ = ["MAX_EVENTS_DEFAULT", "is_traced", "lookup_meta", "lower", "strip"]
+__all__ = ["is_traced", "lookup_meta", "lower", "strip"]
 
 _HELPER = Path(csrc_path("trace_helper.h")).read_text()
 
-# PrimFunc attr that carries the host-map registry key onto the lowered func; it
-# rides through tilelang.jit onto kernel.prim_func so lookup_meta resolves a
-# compiled kernel back to its decode maps.
 _META_ATTR = "tl.trace_meta_id"
-
-# Module-level host-map registry: meta_id (int) -> host_maps dict. Populated by
-# lower(), read by lookup_meta().
 _META_REGISTRY: dict[int, dict] = {}
 _NEXT_META_ID = 0
 
@@ -73,22 +63,12 @@ def _is_marker(node) -> bool:
 
 
 def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
-    """Rewrite trace placeholders into emit code; append the ``slots`` output param.
+    """Rewrite each placeholder into writer-gated, clamped event writes and append the
+    ``slots`` param (layout in the module docstring).
 
-    See the module docstring for the slots layout and the no-stomp clamp
-    contract. The CTA dimension is the launch grid's size (the product of the blockIdx
-    extents), and a CTA's row is its hardware block index.
-
-    Args:
-        primfunc: The built kernel; body may contain ``tl_trace_marker`` markers.
-        max_events: Compile-time per-slot event capacity (cursor bound).
-        num_groups: Logical groups per CTA (gid range).
-        lead_fn: ``gid -> lead`` lookup electing each group's writer (``tx == lead``).
-
-    Returns:
-        A ``(primfunc, num_cta)`` pair: the new ``PrimFunc`` with a trailing
-        ``slots`` int64 param and every marker rewritten into writer-gated,
-        clamped emit code, plus the derived flat CTA count.
+    The CTA dimension is the launch grid's size and a CTA's row its hardware block
+    index. ``lead_fn`` maps a gid to the thread that writes its markers. Returns the new
+    ``PrimFunc`` and the CTA count.
     """
     # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
     header_words = 2
@@ -193,59 +173,12 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
     return lowered, num_cta
 
 
-def _strip_markers(primfunc):
-    """Drop every ``tl_trace_marker`` placeholder from ``primfunc`` (zero-cost path).
-
-    The always-emit markers are no-opped before codegen so the generated CUDA is
-    byte-identical to an un-instrumented build (no ``slots`` param, no
-    ``tileops::trace_now``). Backs the public ``strip`` escape hatch.
-
-    Args:
-        primfunc: A built kernel whose body may contain marker placeholders.
-
-    Returns:
-        A ``PrimFunc`` with every ``Evaluate(tl_trace_marker)`` replaced by a
-        no-op ``Evaluate(0)``; unchanged in every other respect.
-    """
-
-    def post(node):
-        if isinstance(node, tx.Evaluate) and _is_marker(node.value):
-            return tx.Evaluate(tx.IntImm("int32", 0))
-        return node
-
-    new_body = ir_transform(primfunc.body, None, post)
-    return tx.PrimFunc(
-        params=list(primfunc.params),
-        body=new_body,
-        ret_type=primfunc.ret_type,
-        buffer_map=dict(primfunc.buffer_map),
-        attrs=primfunc.attrs,
-    )
-
-
 def lower(primfunc, max_events: int = MAX_EVENTS_DEFAULT):
-    """Lower the always-emit markers in ``primfunc`` and append the ``slots`` output.
+    """Lower the markers in ``primfunc`` and append the ``slots`` int64 output param.
 
-    The explicit build-time transform: call it inside a builder, return its
-    result, and decorate the builder with a *vanilla* ``@tilelang.jit`` whose
-    ``out_idx`` already accounts for the trailing ``slots`` param (e.g.
-    ``out_idx=[-2, -1]`` when the kernel has one own output ``C`` and ``slots``).
-
-    The host decode maps go into ``_META_REGISTRY`` under a fresh meta id, stamped on the
-    returned func as the ``tl.trace_meta_id`` attr, which ``tilelang.jit`` carries onto
-    ``kernel.prim_func`` for ``lookup_meta``. The build epoch is retired, so the next build
-    starts fresh.
-
-    Args:
-        primfunc: The built kernel; its body carries ``tl_trace_marker`` markers.
-        max_events: Per-slot event capacity (compile-time cursor bound). Defaults
-            to ``tileops.trace._record.MAX_EVENTS_DEFAULT``.
-
-    Returns:
-        The lowered ``PrimFunc`` with the trailing ``slots`` int64 output param
-        and the ``tl.trace_meta_id`` attr set. A vanilla ``@tilelang.jit`` over a
-        builder returning this func compiles it; ``extract_params`` then sees
-        ``slots`` as the last param.
+    The builder's ``@tilelang.jit`` ``out_idx`` must count the trailing ``slots``. The
+    decode maps are registered under the ``tl.trace_meta_id`` attr set on the result, and
+    the build epoch is retired.
     """
     global _NEXT_META_ID
 
@@ -277,24 +210,26 @@ def lower(primfunc, max_events: int = MAX_EVENTS_DEFAULT):
 
 
 def strip(primfunc):
-    """No-op the always-emit markers so ``primfunc`` compiles WITHOUT tracing.
+    """Replace every marker with a no-op so ``primfunc`` compiles without tracing.
 
-    The escape hatch: a kernel written with ``trace.*`` markers can be compiled
-    zero-cost by passing it through ``strip`` instead of ``lower``. The
-    returned func has no ``slots`` param and emits no ``tileops::trace_now``, so the
-    generated CUDA is byte-identical to an un-instrumented build.
-
-    Args:
-        primfunc: A built kernel whose body may contain ``trace.*`` markers.
-
-    Like ``lower``, it retires the build epoch, so the names this build interned do not
-    reach the next one.
-
-    Returns:
-        A ``PrimFunc`` with every marker replaced by a no-op; otherwise unchanged.
+    The result has no ``slots`` param and the generated CUDA is identical to an
+    un-instrumented build. Like ``lower``, it retires the build epoch, so the names this
+    build interned do not reach the next one.
     """
     begin_build_epoch()
-    return _strip_markers(primfunc)
+
+    def post(node):
+        if isinstance(node, tx.Evaluate) and _is_marker(node.value):
+            return tx.Evaluate(tx.IntImm("int32", 0))
+        return node
+
+    return tx.PrimFunc(
+        params=list(primfunc.params),
+        body=ir_transform(primfunc.body, None, post),
+        ret_type=primfunc.ret_type,
+        buffer_map=dict(primfunc.buffer_map),
+        attrs=primfunc.attrs,
+    )
 
 
 def _meta_id(kernel) -> "int | None":
@@ -310,24 +245,9 @@ def is_traced(kernel) -> bool:
 
 
 def lookup_meta(kernel) -> dict:
-    """Resolve a compiled kernel back to its host decode maps.
+    """The host decode maps ``lower`` registered for *kernel*.
 
-    Reads the ``tl.trace_meta_id`` attr that ``lower`` stamped onto the
-    transformed ``PrimFunc`` (exposed as ``kernel.prim_func``) and looks the maps
-    up in ``_META_REGISTRY``.
-
-    Args:
-        kernel: A compiled kernel from a vanilla ``@tilelang.jit`` over a builder
-            that returned ``lower``'s result.
-
-    Returns:
-        The host-map dict (``id_to_name`` / ``group_id_to_name`` /
-        ``group_id_to_lead`` / ``lane_id_to_name`` / ``flows`` /
-        ``max_events`` / ``num_groups`` / ``num_cta``).
-
-    Raises:
-        ValueError: If the kernel's ``prim_func`` carries no ``tl.trace_meta_id``
-            attr (it was not produced by ``lower``), or the id is unknown.
+    Raises ``ValueError`` when *kernel* was not built from ``lower``'s result.
     """
     meta_id = _meta_id(kernel)
     if meta_id is None:

@@ -446,7 +446,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
     def autotune_configs(self) -> list[dict]:
         # Varies block_s and threads around the default, plus a block_n sweep.
         block_n = min(128, -(-self.d_state // self._gemm_k_step) * self._gemm_k_step)
-        return (
+        configs = (
             [
                 {
                     "block_l": 64,
@@ -485,6 +485,8 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
                 if bn <= self.d_state
             ]
         )
+        # The block_n sweep repeats the first group's entry where block_n rounds to 64.
+        return [dict(items) for items in dict.fromkeys(tuple(c.items()) for c in configs)]
 
     def forward(
         self,

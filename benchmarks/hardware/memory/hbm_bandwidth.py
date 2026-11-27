@@ -34,7 +34,7 @@ _MIXES = ("copy", "triad", "read", "write")
 
 
 def _compile(cu_path, binary_path, arch="sm_90"):
-    """Compile the CUDA source. Raises on failure."""
+    """Compile the CUDA source; exit the process on failure."""
     cmd = [
         "nvcc",
         "-O3",

@@ -1,8 +1,4 @@
-"""Benchmark for the block-scaled FP8 quantization op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the block-scaled FP8 quantization op."""
 
 import functools
 
@@ -13,7 +9,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference
 from tileops.quantization import FP8QuantPerBlockFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(FP8QuantPerBlockFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FP8QuantPerBlockFwdOp))
 def test_fp8_quant_per_block_bench(case) -> None:
     op = FP8QuantPerBlockFwdOp(**case.arguments)
     op.request_tune()

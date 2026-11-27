@@ -15,7 +15,6 @@ Saved for backward:
     alpha, rrms_h, rrms_k, rrms_v  — all (M, T) scalars per position
 
 Grid: (T, M) — one thread block per (batch, position).
-Uses 2D fragments (1, d_padded) to leverage T.reduce_sum for safe reductions.
 """
 
 import tilelang

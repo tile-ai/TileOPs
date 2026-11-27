@@ -5,35 +5,36 @@ covers. For each input row its windows span, it loads that run and the few eleme
 the windows reach past it on either side; no block stages the plane in shared memory.
 """
 
-from typing import ClassVar
-
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
-from tileops._kernels.pool.common import ACCUM_DTYPE, register_plane_refusal
+from tileops._kernels.pool.common import (
+    ACCUM_DTYPE,
+    AvgPoolKernelBase,
+    AvgPoolWindow,
+    register_plane_refusal,
+)
 
 __all__ = ["AvgPool2dRegisterKernel"]
 
 
 @target_cache(maxsize=32)
-def _avg_pool2d_register_kernel(
-    planes, h_in, w_in, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, dtype
-):
-    """Build the program for ``planes`` planes of ``h_in`` x ``w_in`` elements.
+def _avg_pool2d_register_kernel(spec: AvgPoolWindow, dtype: str):
+    """Build the program for ``spec.rows`` planes.
 
     A thread owns ``outputs`` outputs of one output row: a ``run`` of each input row
     its windows span, ``pad_w`` elements before it and ``after`` past it, held in
     ``window`` in float32, zero outside the plane.
     """
+    planes = spec.rows
+    (h_in, w_in), (kernel_h, kernel_w) = spec.size, spec.kernel
+    (stride_h, stride_w), (pad_h, pad_w), (out_h, out_w) = spec.stride, spec.pad, spec.out
     run = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     outputs = run // stride_w
-    out_h = (h_in + 2 * pad_h - kernel_h) // stride_h + 1
-    out_w = (w_in + 2 * pad_w - kernel_w) // stride_w + 1
     after = max(kernel_w - stride_w - pad_w, 0)
     groups = out_w // outputs
     total = planes * out_h * groups
@@ -102,7 +103,7 @@ def _avg_pool2d_register_kernel(
     return build
 
 
-class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
+class AvgPool2dRegisterKernel(AvgPoolKernelBase, AvgPool2dFwdInterface):
     """Average pooling over planes, a thread's windows read into registers.
 
     Serves windows whose every divisor is ``kernel_h * kernel_w``: padding counted or
@@ -112,8 +113,8 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
     element past a load on either side. Windows are at most 16 rows tall.
     """
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     preferred_over = frozenset({"avg_pool2d_kernel"})
+    _build = staticmethod(_avg_pool2d_register_kernel)
 
     @classmethod
     def refusal(cls, call: AvgPoolCall) -> str | None:
@@ -123,61 +124,6 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
             return "requires count_include_pad where it pads"
         return register_plane_refusal(call) or super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: AvgPoolCall) -> Entry:
-        identity = (
-            call.n * call.c_in,
-            *call.size,
-            *call.window,
-            *call.stride,
-            *call.pad,
-            call.dtype,
-        )
-        return identity, lambda: cls(*identity)
-
-    def __init__(
-        self,
-        planes: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dtype: torch.dtype,
-    ) -> None:
-        super().__init__()
-        self.planes, self.h_in, self.w_in, self.dtype = planes, h_in, w_in, dtype
-        self.kernel = _avg_pool2d_register_kernel(
-            planes,
-            h_in,
-            w_in,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            self.dtype_str,
-        )
-        self.init_config()
-
-    @property
-    def default_config(self) -> dict:
-        return {}
-
     @property
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
-
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches; its builder takes no configuration."""
-        return self.kernel()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_devices(x=x)
-        x = x.contiguous()
-        y = self.program(self._compile)(x.view(self.planes, self.h_in, self.w_in))
-        return y.view(*x.shape[:-2], *y.shape[-2:])

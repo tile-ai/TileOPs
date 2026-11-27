@@ -26,7 +26,7 @@ from tileops.attention import (
 )
 
 
-@pytest.mark.parametrize("case", bench.cases(MLADenseDecodeFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MLADenseDecodeFwdOp))
 def test_mla_decode_bench(case) -> None:
     q, q_pe, k, _ = case.inputs
     batch, heads, dim = q.shape
@@ -131,7 +131,7 @@ def _flashinfer_paged(inputs, op):
     return run
 
 
-@pytest.mark.parametrize("case", bench.cases(MLAPagedFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MLAPagedFwdOp))
 def test_mla_paged_bench(case) -> None:
     op = MLAPagedFwdOp(**case.arguments)
     q, kv_cache = case.inputs[0], case.inputs[1]
@@ -155,7 +155,7 @@ def _expanded_key(k_nope, k_pe):
     return torch.cat([k_nope, k_pe[:, None].expand(-1, k_nope.shape[1], -1)], dim=-1)
 
 
-@pytest.mark.parametrize("case", bench.cases(MLAVarlenFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MLAVarlenFwdOp))
 def test_mla_varlen_fwd_bench(case) -> None:
     """Neither library takes ``k_pe`` once per token, so each call builds the per-head key
     first, as vLLM's MLA prefill does before calling FA3."""
@@ -204,7 +204,7 @@ def test_mla_varlen_fwd_bench(case) -> None:
     bench.Runner(op, case).compare({"fa3": fa3_fn, FLASHINFER_TAG: flashinfer_fn})
 
 
-@pytest.mark.parametrize("case", bench.cases(MLADenseBwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MLADenseBwdOp))
 def test_mla_dense_bwd_bench(case) -> None:
     """Backward is timed in training, so the kernels tune. ``o`` and ``lse`` are case
     inputs made once outside the timed call, in the layout FA3 takes, so no forward and no
@@ -256,7 +256,7 @@ def test_mla_dense_bwd_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(MLAVarlenBwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MLAVarlenBwdOp))
 def test_mla_varlen_bwd_bench(case) -> None:
     """Backward is timed in training, so the kernels tune. ``o`` and ``lse`` are case
     inputs made once outside the timed call, in the head-major layout FA3 takes, so no

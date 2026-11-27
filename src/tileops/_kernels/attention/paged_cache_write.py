@@ -1,9 +1,6 @@
 """Scatter new K/V rows into the page pool their slots name.
 
-A thread owns one vector of a token's row: it loads the token's slot and the vector of the
-key and of the value row together, then stores both where the slot names, or nothing for a
-slot of ``-1``. An FP8 cache divides by the scale and uses a saturating cast that preserves
-NaN.
+An FP8 cache divides by the scale and uses a saturating cast that preserves NaN.
 """
 
 import math
@@ -228,7 +225,6 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
         k_scale: torch.Tensor | None = None,
         v_scale: torch.Tensor | None = None,
     ) -> None:
-        """Write the rows the slots name into both pools; see the interface for the contract."""
         # A call of no tokens writes nothing. The page pools it is handed still hold
         # elements, so the generated empty-call rule does not skip the launch, and a
         # zero-extent grid is not a legal one; the launch is skipped here instead.

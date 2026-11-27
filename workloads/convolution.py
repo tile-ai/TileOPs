@@ -1,11 +1,13 @@
 """Workload definitions for the convolution op family."""
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
+from workloads.numerics import Exact, reference_tolerance
 from workloads.workload_base import WorkloadBase
 
 
@@ -67,34 +69,21 @@ class _ConvWorkload(WorkloadBase):
         )
 
 
+@dataclass(eq=False)
 class Conv1dWorkload(_ConvWorkload):
     _conv = staticmethod(F.conv1d)
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        c_out: int,
-        kernel_size: int,
-        stride: int,
-        padding: int | str,
-        dilation: int,
-        groups: int,
-        dtype: torch.dtype,
-        bias: bool = True,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.l_in = l_in
-        self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.dtype = dtype
-        self.bias = bias
+    n: int
+    c_in: int
+    l_in: int
+    c_out: int
+    kernel_size: int
+    stride: int
+    padding: int | str
+    dilation: int
+    groups: int
+    dtype: torch.dtype
+    bias: bool = True
 
     @classmethod
     def from_call(cls, call: Any) -> "Conv1dWorkload":
@@ -118,36 +107,22 @@ class Conv1dWorkload(_ConvWorkload):
         return (self.l_in,), (self.kernel_size,)
 
 
+@dataclass(eq=False)
 class Conv2dWorkload(_ConvWorkload):
     _conv = staticmethod(F.conv2d)
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        kernel_size: tuple[int, int],
-        stride: tuple[int, int],
-        padding: tuple[int, int],
-        dilation: tuple[int, int],
-        groups: int,
-        dtype: torch.dtype,
-        bias: bool = True,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.dtype = dtype
-        self.bias = bias
+    n: int
+    c_in: int
+    h: int
+    w: int
+    c_out: int
+    kernel_size: tuple[int, int]
+    stride: tuple[int, int]
+    padding: tuple[int, int]
+    dilation: tuple[int, int]
+    groups: int
+    dtype: torch.dtype
+    bias: bool = True
 
     @classmethod
     def from_call(cls, call: Any) -> "Conv2dWorkload":
@@ -172,38 +147,23 @@ class Conv2dWorkload(_ConvWorkload):
         return (self.h, self.w), tuple(self.kernel_size)
 
 
+@dataclass(eq=False)
 class Conv3dWorkload(_ConvWorkload):
     _conv = staticmethod(F.conv3d)
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        d: int,
-        h: int,
-        w: int,
-        c_out: int,
-        kernel_size: tuple[int, int, int],
-        stride: tuple[int, int, int],
-        padding: tuple[int, int, int],
-        dilation: tuple[int, int, int],
-        groups: int,
-        dtype: torch.dtype,
-        bias: bool = True,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.d = d
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.dtype = dtype
-        self.bias = bias
+    n: int
+    c_in: int
+    d: int
+    h: int
+    w: int
+    c_out: int
+    kernel_size: tuple[int, int, int]
+    stride: tuple[int, int, int]
+    padding: tuple[int, int, int]
+    dilation: tuple[int, int, int]
+    groups: int
+    dtype: torch.dtype
+    bias: bool = True
 
     @classmethod
     def from_call(cls, call: Any) -> "Conv3dWorkload":
@@ -237,8 +197,6 @@ def convolution_verification(dtype, *, padding=0, kernel_shape=(), inputs=None):
     and keeps their accumulation error. A normalized-error bound then rejects an
     output lost to that cancellation.
     """
-    from workloads.numerics import Exact, reference_tolerance
-
     tolerance = reference_tolerance(dtype)
     # An even filter under "same" padding needs an asymmetric explicit pad. The
     # reference and explicit-pad kernels can choose different reduction orders.

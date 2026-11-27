@@ -45,14 +45,9 @@ def _csrc_digest(names: tuple[str, ...]) -> str:
 def csrc_include(*names: str) -> list[str]:
     """Return the nvcc flags that pre-include ``names`` from ``tileops/csrc``.
 
-    TileLang keys its kernel and binary caches on the flag strings, not on the
-    files they name, so an edited header would otherwise reuse a binary built
-    from the old one. The trailing ``-D`` define carries a hash of ``names`` and
-    of every csrc header they include; no source reads it, but it changes the
-    flags whenever one of those headers does. An edit to a header the kernel
-    does not include leaves the flags, and so the cached binary, unchanged.
-    An edit takes effect in the next process: kernel builders keep the flags
-    they were built with for the life of one.
+    TileLang keys its caches on the flag strings, not the files they name, so the trailing
+    ``-D`` define carries a hash of ``names`` and every csrc header they include: editing
+    one of them changes the flags. Builders keep their flags for the life of a process.
 
     Args:
         names: Header file names under ``tileops/csrc``, included in order.

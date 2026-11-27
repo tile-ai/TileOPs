@@ -1,9 +1,7 @@
-"""In-kernel trace ``EventRecord`` packing (16-byte / 2x u64 layout).
+"""In-kernel trace record packing.
 
 Each record is two 64-bit words: ``w0`` holds the ``clock64()`` timestamp and
-``w1`` packs ``event_id`` / ``kind`` / ``lane`` / ``payload``. This module owns
-the host-side pack/unpack helpers plus a device-side (TIR) packer for the emit
-path.
+``w1`` packs ``event_id`` / ``kind`` / ``lane`` / ``payload``.
 """
 
 from enum import IntEnum
@@ -23,15 +21,15 @@ __all__ = [
 
 # Per-slot record capacity (config default; callers may override).
 MAX_EVENTS_DEFAULT = 768
-# Field widths and bit offsets within w1.
+# Field widths within w1; each field starts where the previous one ends.
 _EVENT_ID_BITS = 24
 _KIND_BITS = 4
 _LANE_BITS = 4
 _PAYLOAD_BITS = 32
 _EVENT_ID_SHIFT = 0
-_KIND_SHIFT = 24
-_LANE_SHIFT = 28
-_PAYLOAD_SHIFT = 32
+_KIND_SHIFT = _EVENT_ID_SHIFT + _EVENT_ID_BITS
+_LANE_SHIFT = _KIND_SHIFT + _KIND_BITS
+_PAYLOAD_SHIFT = _LANE_SHIFT + _LANE_BITS
 _EVENT_ID_MASK = (1 << _EVENT_ID_BITS) - 1
 _KIND_MASK = (1 << _KIND_BITS) - 1
 _LANE_MASK = (1 << _LANE_BITS) - 1
@@ -48,22 +46,8 @@ class EventKind(IntEnum):
     INSTANT = 2
 
 
-def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:
-    """Pack the four ``w1`` fields into a single unsigned 64-bit word.
-
-    Args:
-        event_id: Interned event id, must fit 24 bits (0..2**24-1).
-        kind: Event kind, must fit 4 bits (an ``EventKind`` or its int).
-        lane: Interned lane id, must fit 4 bits.
-        payload: Raw unsigned 32-bit bit-pattern of an i32/f32 payload. Must fit
-            32 bits; no silent truncation.
-
-    Returns:
-        The packed 64-bit word as a Python int.
-
-    Raises:
-        ValueError: If any field is negative or exceeds its bit width.
-    """
+def _header_bits(event_id: int, kind: int, lane: int) -> int:
+    """The low 32 bits of ``w1``; raises ``ValueError`` when a field exceeds its width."""
     kind = int(kind)
     if not 0 <= event_id <= _EVENT_ID_MASK:
         raise ValueError(f"event_id {event_id} does not fit {_EVENT_ID_BITS} bits")
@@ -71,28 +55,23 @@ def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:
         raise ValueError(f"kind {kind} does not fit {_KIND_BITS} bits")
     if not 0 <= lane <= _LANE_MASK:
         raise ValueError(f"lane {lane} does not fit {_LANE_BITS} bits")
+    return (event_id << _EVENT_ID_SHIFT) | (kind << _KIND_SHIFT) | (lane << _LANE_SHIFT)
+
+
+def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:
+    """Pack the four ``w1`` fields into one unsigned 64-bit word.
+
+    ``payload`` is the raw unsigned 32-bit pattern of an i32/f32 value. Raises
+    ``ValueError`` when any field is negative or exceeds its bit width.
+    """
+    base = _header_bits(event_id, kind, lane)
     if not 0 <= payload <= _PAYLOAD_MASK:
         raise ValueError(f"payload {payload} does not fit {_PAYLOAD_BITS} bits")
-
-    return (
-        (event_id << _EVENT_ID_SHIFT)
-        | (kind << _KIND_SHIFT)
-        | (lane << _LANE_SHIFT)
-        | (payload << _PAYLOAD_SHIFT)
-    )
+    return base | (payload << _PAYLOAD_SHIFT)
 
 
 def unpack_w1(w1: int) -> tuple[int, int, int, int]:
-    """Unpack a ``w1`` word into ``(event_id, kind, lane, payload)``.
-
-    Inverse of ``pack_w1`` over the full field ranges.
-
-    Args:
-        w1: A packed 64-bit word.
-
-    Returns:
-        Tuple of ``(event_id, kind, lane, payload)``.
-    """
+    """Unpack a ``w1`` word into ``(event_id, kind, lane, payload)``; inverse of ``pack_w1``."""
     event_id = (w1 >> _EVENT_ID_SHIFT) & _EVENT_ID_MASK
     kind = (w1 >> _KIND_SHIFT) & _KIND_MASK
     lane = (w1 >> _LANE_SHIFT) & _LANE_MASK
@@ -101,35 +80,13 @@ def unpack_w1(w1: int) -> tuple[int, int, int, int]:
 
 
 def pack_w1_tir(event_id: int, kind: int, lane: int, payload_expr: PrimExpr) -> PrimExpr:
-    """Build the device-side ``w1`` packed word as an int64 TIR expression.
+    """The device-side ``w1`` word as an int64 TIR expression.
 
-    The ``event_id`` / ``kind`` / ``lane`` fields are compile-time Python ints
-    and fold into a constant base occupying the low 32 bits. ``payload_expr`` is a
-    runtime i32 PrimExpr whose raw bits are shifted into bits 32..63. The i32 is
-    reinterpreted as uint32 before widening so a negative i32 does not
-    sign-extend into the high half.
-
-    Args:
-        event_id: Interned event id, must fit 24 bits.
-        kind: Event kind, must fit 4 bits (an ``EventKind`` or its int).
-        lane: Interned lane id, must fit 4 bits.
-        payload_expr: TIR i32 PrimExpr carrying the raw payload bits.
-
-    Returns:
-        An int64 PrimExpr equal to the packed ``w1`` word.
-
-    Raises:
-        ValueError: If ``event_id`` / ``kind`` / ``lane`` exceed their widths.
+    ``event_id`` / ``kind`` / ``lane`` are compile-time ints folded into the low 32 bits;
+    ``payload_expr`` is a runtime i32 shifted into bits 32..63. The i32 is reinterpreted
+    as uint32 before widening so a negative payload does not sign-extend into the high half.
     """
-    kind = int(kind)
-    if not 0 <= event_id <= _EVENT_ID_MASK:
-        raise ValueError(f"event_id {event_id} does not fit {_EVENT_ID_BITS} bits")
-    if not 0 <= kind <= _KIND_MASK:
-        raise ValueError(f"kind {kind} does not fit {_KIND_BITS} bits")
-    if not 0 <= lane <= _LANE_MASK:
-        raise ValueError(f"lane {lane} does not fit {_LANE_BITS} bits")
-
-    base = (event_id << _EVENT_ID_SHIFT) | (kind << _KIND_SHIFT) | (lane << _LANE_SHIFT)
+    base = _header_bits(event_id, kind, lane)
     payload_u32 = T.reinterpret(payload_expr, "uint32")
     payload_i64 = T.Cast("int64", payload_u32)
     payload_hi = T.shift_left(payload_i64, T.Cast("int64", _PAYLOAD_SHIFT))

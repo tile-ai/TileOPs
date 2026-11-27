@@ -181,11 +181,10 @@ ChainSpeculativeSamplingFwdOp:
   - {B: 17, N: 8, V: 128256, label: llama-8b-b17-n8}
   - {B: 256, N: 1, V: 32000, label: llama2-7b-b256-n1}
   roofline:
-    # The work depends on where the chain stops, which the random draws decide, so both
-    # counts are the cheaper of the two extreme outcomes. All accepted: N ratio tests (a
-    # multiply and a compare), a draw from target row N (3 per token, 1 per row), reading
-    # the N token ids, 2 N probabilities and one target row. Rejected at the first: one
-    # test, the residual max(0, t - d) (2 per token) and a draw from it, reading one id and
+    # Where the chain stops is random, so both counts take the cheaper extreme. All
+    # accepted: N ratio tests (2 each) and a draw from target row N (3 per token, 1 per
+    # row). Rejected at the first: one test, the residual max(0, t - d) (2 per token) and
+    # a draw from it. Bytes: N ids, 2 N probabilities and the target row, or one id and
     # the two rows.
     flops: "B * (2 * N + 3 * V + 1 if 2 * N + 3 * V + 1 < 5 * V + 3 else 5 * V + 3)"
     bytes: >-

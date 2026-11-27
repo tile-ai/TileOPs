@@ -155,6 +155,23 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
 
 
 _SILU = _ENTRIES["SiLUAndMulFwdOp"]["signature"]
+_VEC = {
+    "forall": {"M": "Dim", "T": "DType[float16]"},
+    "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+}
+# `x -> y` of one shape and dtype.
+_UNARY = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
+# `x -> y` into the caller's `out`.
+_OUT = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}}}
+# `x -> y`, written into `x` when the param `inplace` holds.
+_INPLACE = {
+    **_VEC,
+    "params": {"inplace": {"type": "bool"}},
+    "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
+    "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
+}
+# `x -> y` with a bool param `flag`.
+_FLAG = {**_UNARY, "params": {"flag": {"type": "bool"}}}
 
 
 def test_op_call_runs_the_check_and_keeps_its_binding():
@@ -184,12 +201,7 @@ def test_the_returned_value_is_checked_before_the_call_is_kept():
 
 
 def test_an_out_buffer_is_held_to_the_call_device():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}},
-    }
-    op = _probe("ProbeOutFwdOp", signature, lambda self, x, out=None: out)()
+    op = _probe("ProbeOutFwdOp", _OUT, lambda self, x, out=None: out)()
     x = torch.zeros(3, dtype=torch.float16)
     with pytest.raises(ValueError, match="out is not on the call device"):
         op(x, torch.empty(3, dtype=torch.float16, device="meta"))
@@ -198,15 +210,9 @@ def test_an_out_buffer_is_held_to_the_call_device():
 
 
 def test_each_effect_branch_registers_its_own_operator():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "params": {"inplace": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
-    }
     probe = _probe(
         "ProbeInplaceFwdOp",
-        signature,
+        _INPLACE,
         lambda self, x: x.add_(1) if self.inplace else x + 1,
         boundary=True,
     )
@@ -221,8 +227,7 @@ def test_each_effect_branch_registers_its_own_operator():
 
 
 def test_a_traced_boundary_call_is_one_graph():
-    signature = _UNARY
-    op = _probe("ProbeTracedFwdOp", signature, lambda self, x: x + 1, boundary=True)()
+    op = _probe("ProbeTracedFwdOp", _UNARY, lambda self, x: x + 1, boundary=True)()
     x = torch.zeros(4, dtype=torch.float16)
     torch._dynamo.reset()
     compiled = torch.compile(op, fullgraph=True)
@@ -256,9 +261,8 @@ def test_the_fake_leaves_an_absent_output_absent():
     from torch._subclasses.fake_tensor import FakeTensorMode
 
     signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
+        **_VEC,
         "params": {"with_aux": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
         "outputs": {
             "y": {"dtype": "T", "shape": "[M]"},
             "aux": {"dtype": "T", "shape": "[M]", "nullable": "with_aux"},
@@ -272,13 +276,7 @@ def test_the_fake_leaves_an_absent_output_absent():
 
 
 def test_construction_holds_parameters_to_their_type():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "params": {"flag": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    probe = _probe("ProbeFlagFwdOp", signature, lambda self, x: x)
+    probe = _probe("ProbeFlagFwdOp", _FLAG, lambda self, x: x)
     with pytest.raises(ValueError, match="flag = 1 is not a bool"):
         probe(flag=1)
 
@@ -298,14 +296,6 @@ def test_roofline_expressions_read_only_ix():
     ]
 
 
-_VEC = {
-    "forall": {"M": "Dim", "T": "DType[float16]"},
-    "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-}
-# `x -> y` of one shape and dtype.
-_UNARY = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
-
-
 class _Passthrough(TorchDispatchMode):
     """Sends every call through the dispatcher, which runs it unchanged."""
 
@@ -317,25 +307,18 @@ def test_execution_parameters_cross_the_compile_boundary():
     def eager(self, x, scale: int = 1):
         return x * scale
 
-    signature = _UNARY
-    op = _probe("ProbeScaleFwdOp", signature, eager, boundary=True)()
+    op = _probe("ProbeScaleFwdOp", _UNARY, eager, boundary=True)()
     assert op(torch.ones(2, dtype=torch.float16), 3).tolist() == [3, 3]
 
 
 def test_a_returned_out_buffer_is_checked_after_the_call():
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}}}
-    op = _probe("ProbeResizeFwdOp", signature, lambda self, x, out=None: out.resize_(4))()
+    op = _probe("ProbeResizeFwdOp", _OUT, lambda self, x, out=None: out.resize_(4))()
     with pytest.raises(ValueError, match="y has shape"):
         op(torch.zeros(3, dtype=torch.float16), torch.empty(3, dtype=torch.float16))
 
 
 def test_a_domain_restriction_on_parameters_is_checked_at_construction():
-    signature = {
-        **_VEC,
-        "params": {"flag": {"type": "bool"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-        "shape_rules": ["flag"],
-    }
+    signature = {**_FLAG, "shape_rules": ["flag"]}
     probe = _probe("ProbeFlaggedFwdOp", signature, lambda self, x=None: x)
     with pytest.raises(ValueError, match="refinement fails: flag"):
         probe(flag=False)
@@ -353,13 +336,7 @@ def test_a_contiguous_input_must_be_contiguous():
 
 
 def test_an_alias_is_priced_as_a_fresh_output_where_its_input_is_not_written():
-    signature = {
-        **_VEC,
-        "params": {"inplace": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
-    }
-    probe = _probe("ProbeAliasFwdOp", signature, lambda self, x: x + 1)
+    probe = _probe("ProbeAliasFwdOp", _INPLACE, lambda self, x: x + 1)
     op = probe(inplace=False)
     op(torch.zeros(4, dtype=torch.float16))
     assert op.eval_roofline()[1] == 4 * 2 + 4 * 2
@@ -379,8 +356,7 @@ def test_an_adt_parameter_must_be_its_declared_class():
 
 
 def test_every_manifest_construction_point_emits():
-    """A point's checks are emitted on the first construction there; emitting every point of
-    every manifest entry keeps one that no other test constructs compiling."""
+    """Every construction point of every manifest entry emits checks that compile."""
     adts = load_adts()
     for name, entry in load_manifest().items():
         try:
@@ -433,10 +409,7 @@ def test_an_output_present_with_out_has_its_own_operator():
 
 
 def test_one_instance_takes_its_own_branch_per_presence():
-    """An effect branch is a function of what the call passed, not of the instance. One
-    instance that first omits two optional inputs, then passes them, takes the branch that
-    writes one and emits the output the other gates, and takes the first branch again when
-    the next call omits them."""
+    """An effect branch follows what each call passes, not the instance."""
     signature = {
         "forall": {"M": "Dim", "T": "DType[float16]"},
         "inputs": {
@@ -477,10 +450,9 @@ def test_a_roofline_func_must_yield_two_ints(monkeypatch):
     import tileops._perf.formulas
 
     monkeypatch.setattr(tileops._perf.formulas, "probe_float", lambda call: (1.5, 2), raising=False)
-    signature = _UNARY
     op = _probe(
         "ProbeFloatRoofFwdOp",
-        signature,
+        _UNARY,
         lambda self, x: x.clone(),
         roofline={"func": "tileops._perf.formulas.probe_float"},
     )()
@@ -543,14 +515,10 @@ def test_a_kw_only_input_is_taken_by_name_after_out():
 
 
 def test_a_roofline_reads_the_presence_of_out():
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}}}
-
     def eager(self, x, out=None):
         return x + 1 if out is None else out.copy_(x + 1)
 
-    op = _probe(
-        "ProbeOutRoofFwdOp", signature, eager, roofline={"flops": "1 if present(out) else 2"}
-    )()
+    op = _probe("ProbeOutRoofFwdOp", _OUT, eager, roofline={"flops": "1 if present(out) else 2"})()
     x = torch.zeros(2, dtype=torch.float16)
     op(x)
     assert op.eval_roofline()[0] == 2
@@ -571,8 +539,7 @@ def test_one_output_at_most_takes_the_out_buffer():
 
 
 def test_a_non_tensor_out_fails_by_name():
-    signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}}}
-    op = _probe("ProbeIntOutFwdOp", signature, lambda self, x, out=None: x.clone())()
+    op = _probe("ProbeIntOutFwdOp", _OUT, lambda self, x, out=None: x.clone())()
     with pytest.raises(ValueError, match="'out' is not a tensor"):
         op(torch.zeros(2, dtype=torch.float16), 3)
 
@@ -797,11 +764,10 @@ def test_the_operator_name_keeps_each_abbreviation_one_word(
 
 
 def test_fresh_output_accepts_disjoint_dlpack_storage():
-    signature = _UNARY
     buffer = torch.zeros(8, dtype=torch.float16)
     x = torch.from_dlpack(buffer[:4])
     separate = torch.from_dlpack(buffer[4:])
-    op = _probe("ProbeImportedDisjointFwdOp", signature, lambda self, x: separate)()
+    op = _probe("ProbeImportedDisjointFwdOp", _UNARY, lambda self, x: separate)()
     assert op(x) is separate
 
 
@@ -821,20 +787,10 @@ def test_storage_ownership_matches_enumerated_imported_bytes():
             assert shared is bool(first_bytes & second_bytes)
 
 
-def _inplace_probe():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "params": {"inplace": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
-    }
-    return _probe("ProbeEagerInplaceFwdOp", signature, lambda self, x: x.add_(1), boundary=True)(
+def test_an_eager_call_outside_any_mode_versions_its_written_input_as_the_dispatcher_does():
+    op = _probe("ProbeEagerInplaceFwdOp", _INPLACE, lambda self, x: x.add_(1), boundary=True)(
         inplace=True
     )
-
-
-def test_an_eager_call_outside_any_mode_versions_its_written_input_as_the_dispatcher_does():
-    op = _inplace_probe()
     x = torch.zeros(2, dtype=torch.float16)
     before = x._version
     with _Passthrough():
@@ -895,13 +851,7 @@ def test_an_eager_call_missing_a_written_input_raises_its_check():
 
 
 def test_a_param_changed_after_construction_is_checked_on_the_next_call():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "params": {"flag": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-        "shape_rules": ["flag"],
-    }
+    signature = {**_FLAG, "shape_rules": ["flag"]}
     op = _probe("ProbeParamRuleFwdOp", signature, lambda self, x: x.clone(), boundary=True)(
         flag=True
     )
@@ -913,8 +863,7 @@ def test_a_param_changed_after_construction_is_checked_on_the_next_call():
 
 
 def test_a_check_is_looked_up_once_per_presence():
-    signature = _UNARY
-    op = _probe("ProbeLookupOnceFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op = _probe("ProbeLookupOnceFwdOp", _UNARY, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(3, dtype=torch.float16))
     plan = type(op)._signature
 
@@ -930,15 +879,9 @@ def test_a_check_is_looked_up_once_per_presence():
 
 
 def test_an_effect_param_changed_after_construction_takes_its_branch_on_the_next_call():
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "params": {"inplace": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
-    }
     op = _probe(
         "ProbeEffectParamFwdOp",
-        signature,
+        _INPLACE,
         lambda self, x: x.add_(1) if self.inplace else x + 1,
         boundary=True,
     )(inplace=False)
@@ -953,9 +896,8 @@ def test_an_effect_param_changed_after_construction_takes_its_branch_on_the_next
 @pytest.mark.parametrize("emit", [False, True])
 def test_a_repeated_call_returns_an_absent_nullable_output_absent(emit):
     signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
+        **_VEC,
         "params": {"emit": {"type": "bool"}},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
         "outputs": {"y": {"dtype": "T", "shape": "[M]", "nullable": "emit"}},
     }
     op = _probe(
@@ -1049,20 +991,17 @@ def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
 
 
 def test_a_tensor_slot_holding_another_value_reaches_the_operator():
-    signature = _UNARY
-    op = _probe("ProbeNotTensorFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op = _probe("ProbeNotTensorFwdOp", _UNARY, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(3, dtype=torch.float16))
     with pytest.raises((TypeError, RuntimeError), match="Tensor|tensor"):
         op([0.0, 0.0, 0.0])
 
 
 def test_an_invalid_execution_argument_reaches_the_operator():
-    signature = _UNARY
-
     def forward(self, x, scale: int = 1):
         return x * scale
 
-    op = _probe("ProbeExecutionArgFwdOp", signature, forward, boundary=True)()
+    op = _probe("ProbeExecutionArgFwdOp", _UNARY, forward, boundary=True)()
     x = torch.ones(3, dtype=torch.float16)
     assert op(x, scale=2).tolist() == [2, 2, 2]
     with pytest.raises((TypeError, RuntimeError)):
@@ -1084,14 +1023,13 @@ def test_a_held_tensor_requiring_grad_leaves_the_result_untracked_as_the_dispatc
 
 
 def test_a_negative_view_is_resolved_as_the_dispatcher_does():
-    signature = _UNARY
     seen = []
 
     def forward(self, x):
         seen.append(x.is_neg())
         return x.clone()
 
-    op = _probe("ProbeNegViewFwdOp", signature, forward, boundary=True)()
+    op = _probe("ProbeNegViewFwdOp", _UNARY, forward, boundary=True)()
     x = torch._neg_view(torch.ones(3, dtype=torch.float16))
     with _Passthrough():
         op(x)
@@ -1119,8 +1057,7 @@ def test_a_target_served_op_repeats_on_the_target_kernel(acme):
 
 
 def test_a_conjugate_view_is_left_to_the_dispatcher():
-    signature = _UNARY
-    op = _probe("ProbeConjugateFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op = _probe("ProbeConjugateFwdOp", _UNARY, lambda self, x: x.clone(), boundary=True)()
     z = torch.ones(2, dtype=torch.complex64)
     assert op._observe((z,), {}, {}, direct=True)[0] is not None
     assert op._observe((z.conj(),), {}, {}, direct=True)[0] is None
@@ -1128,8 +1065,7 @@ def test_a_conjugate_view_is_left_to_the_dispatcher():
 
 
 def test_a_none_for_a_required_input_reaches_the_operator():
-    signature = _UNARY
-    op = _probe("ProbeRequiredNoneFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op = _probe("ProbeRequiredNoneFwdOp", _UNARY, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(2, dtype=torch.float16))
     boundary = type(op)._call_boundary.__globals__["_boundary"]
     ((effect, branch),) = boundary.branches.items()
@@ -1151,8 +1087,7 @@ def test_a_none_for_a_required_input_reaches_the_operator():
 @pytest.mark.parametrize("view", [False, True])
 def test_eager_rejects_aliases_between_empty_outputs(view):
     signature = {
-        "forall": {"M": "Dim", "T": "DType[float16]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        **_VEC,
         "outputs": {
             "y": {"dtype": "T", "shape": "[M]"},
             "z": {"dtype": "T", "shape": "[0]"},

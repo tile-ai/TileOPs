@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -35,13 +36,13 @@ def int8_dequant_per_block(
     return (q.float() * scale.repeat_interleave(_BLOCK_K, dim=1)[:, :k]).to(out_dtype)
 
 
+@dataclass(eq=False)
 class _INT8DequantWorkload(WorkloadBase):
     """An ``[m, k]`` INT8 matrix in the symmetric range [-127, 127] and its positive scales."""
 
-    def __init__(self, m: int, k: int, out_dtype: torch.dtype):
-        self.m = m
-        self.k = k
-        self.out_dtype = out_dtype
+    m: int
+    k: int
+    out_dtype: torch.dtype
 
     @classmethod
     def from_call(cls, call: Any) -> "_INT8DequantWorkload":

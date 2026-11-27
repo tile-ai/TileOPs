@@ -87,24 +87,13 @@ _L2_FLUSH_CUDA_DRAINED = "triton-read-evict-last-2x-l2-drained"
 _L2_FLUSH_OTHER = "torch-max-2x-l2-undrained"
 
 
-def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS, min_iters: int = _MIN_ITERS) -> int:
+def _clamp_iters(raw: float, max_iters: int, min_iters: int) -> int:
     return max(min_iters, min(max_iters, int(raw)))
 
 
 # Whether this run may time with CUDA events where CUPTI cannot attribute a phase.
 # The run sets it (``--tileops-allow-events-fallback`` in ``benchmarks/conftest.py``).
-_events_fallback_allowed = False
-
-
-def events_fallback_allowed() -> bool:
-    """Whether this run lets ``bench_kernel`` fall back to CUDA events; ``False`` unless set."""
-    return _events_fallback_allowed
-
-
-def set_events_fallback_allowed(allowed: bool) -> None:
-    """Let ``bench_kernel`` fall back to CUDA events from now on, or refuse to."""
-    global _events_fallback_allowed
-    _events_fallback_allowed = allowed
+events_fallback_allowed = False
 
 
 def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None, None]:
@@ -259,7 +248,7 @@ def _bench_kernel(
     start_block: int | None = None,
 ) -> list[Sample]:
     allow_fallback = (
-        events_fallback_allowed() if allow_events_fallback is None else allow_events_fallback
+        events_fallback_allowed if allow_events_fallback is None else allow_events_fallback
     )
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None

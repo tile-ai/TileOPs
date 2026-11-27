@@ -156,59 +156,21 @@ def gated_pool_compress_result(subject, *inputs):
 class GatedPoolCompressFwdCall(CallWorkload):
     """A manifest call of GatedPoolCompressFwdOp."""
 
-    def ref_program(
-        self,
-        kv: torch.Tensor,
-        score: torch.Tensor,
-        ape: torch.Tensor,
-        kv_state: torch.Tensor,
-        score_state: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        start_pos: torch.Tensor,
-        state_slots: torch.Tensor,
-    ) -> "tuple[torch.Tensor, ...]":
-        # The states are written on copies: the shared inputs are restored after the
-        # reference runs, and the expected states must outlive that.
+    def ref_program(self, kv, score, ape, kv_state, score_state, *metadata):
+        """``(entries, valid, kv_state, score_state)``; the states are written on copies, which
+        outlive the restoring of the shared inputs after the reference runs."""
         kv_state, score_state = kv_state.clone(), score_state.clone()
         params = self.call.params
         entries, valid = gated_pool_compress(
-            kv,
-            score,
-            ape,
-            kv_state,
-            score_state,
-            cu_seqlens,
-            start_pos,
-            state_slots,
-            params["ratio"],
-            params["overlap"],
+            kv, score, ape, kv_state, score_state, *metadata, params["ratio"], params["overlap"]
         )
         return entries, valid, kv_state, score_state
 
-    def torch_program(
-        self,
-        kv: torch.Tensor,
-        score: torch.Tensor,
-        ape: torch.Tensor,
-        kv_state: torch.Tensor,
-        score_state: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        start_pos: torch.Tensor,
-        state_slots: torch.Tensor,
-    ) -> "tuple[torch.Tensor, ...]":
-        # Writes the states it is given, as the op does.
+    def torch_program(self, kv, score, ape, kv_state, score_state, *metadata):
+        """:func:`gated_pool_compress_torch`, writing the states it is given, as the op does."""
         params = self.call.params
         entries, valid = gated_pool_compress_torch(
-            kv,
-            score,
-            ape,
-            kv_state,
-            score_state,
-            cu_seqlens,
-            start_pos,
-            state_slots,
-            params["ratio"],
-            params["overlap"],
+            kv, score, ape, kv_state, score_state, *metadata, params["ratio"], params["overlap"]
         )
         return entries, valid, kv_state, score_state
 

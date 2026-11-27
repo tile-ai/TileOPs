@@ -1126,70 +1126,19 @@ def _gqa_dense_ws_persistent_kernel(
                         T.mbarrier_arrive(vready[sv])
                     g += eff
 
+            # fmt: off
+            state = (
+                Qs, Ks, Vs, Os, O, q_bar, q_free, kready, kfree, vready, vfree, Sinks, meta, ones,
+                anchor, tiles_of_cta, causal_offset,
+            )
+            # fmt: on
             with T.ws(0):
-                consume(
-                    0,
-                    Qs,
-                    Ks,
-                    Vs,
-                    Os,
-                    O,
-                    q_bar,
-                    q_free,
-                    kready,
-                    kfree,
-                    vready,
-                    vfree,
-                    Sinks,
-                    meta,
-                    ones,
-                    anchor,
-                    tiles_of_cta,
-                    causal_offset,
-                )
+                consume(0, *state)
             with T.ws(1):
-                consume(
-                    1,
-                    Qs,
-                    Ks,
-                    Vs,
-                    Os,
-                    O,
-                    q_bar,
-                    q_free,
-                    kready,
-                    kfree,
-                    vready,
-                    vfree,
-                    Sinks,
-                    meta,
-                    ones,
-                    anchor,
-                    tiles_of_cta,
-                    causal_offset,
-                )
+                consume(1, *state)
             if num_consumers == 3:
                 with T.ws(2):
-                    consume(
-                        2,
-                        Qs,
-                        Ks,
-                        Vs,
-                        Os,
-                        O,
-                        q_bar,
-                        q_free,
-                        kready,
-                        kfree,
-                        vready,
-                        vfree,
-                        Sinks,
-                        meta,
-                        ones,
-                        anchor,
-                        tiles_of_cta,
-                        causal_offset,
-                    )
+                    consume(2, *state)
 
     if has_sinks:
 
@@ -1237,13 +1186,7 @@ def _gqa_dense_persistent_d128_kernel(
 ):
     """Build the persistent program at head dimension 128, written per thread.
 
-    Warp 0 of warpgroup 2 loads by TMA; warpgroups 0 and 1 each own 64 query rows of a
-    128-row tile, pass the MMA issue turn between them, and hold their accumulators in the
-    m64n128 WGMMA register layout: thread ``t`` holds rows ``16 (t / 32) + 8 r + (t % 32) / 4``
-    and, for element ``i``, column ``8 (i / 4) + 2 (t % 4) + i % 2`` with ``r = (i % 4) / 2``.
-    Shared memory is one buffer holding two query slots, two key and two value stages and
-    the staged output; every tile in it is stored as 64-column SW128 panels. With
-    ``with_lse`` the program also writes each query row's natural-log log-sum-exp into
+    With ``with_lse`` the program also writes each query row's natural-log log-sum-exp into
     ``Lse``, ``[B, H, seq_len_q]``.
 
     With ``num_splits`` S above one, each tile's key steps divide into S contiguous parts,
@@ -1973,10 +1916,8 @@ def _gqa_dense_split_combine_kernel(B, H, D, num_splits, dtype, has_sinks=False,
 class GQADensePersistentWSKernel(GQADenseWSKernel):
     """Dense prefill on the FA3 pipeline with one CTA an SM walking its share of the tiles.
 
-    Preferred wherever its buffers fit the device's shared memory: the persistent grid
-    reloads no per-CTA state between tiles and loads the next tile's query during the current
-    tile's epilogue, and its key step keeps the output rescale out of the MMA issue turn.
-    The WS kernel serves the wider head dimensions it refuses.
+    Preferred wherever its buffers fit the device's shared memory; the WS kernel serves the
+    wider head dimensions it refuses.
     """
 
     preferred_over = frozenset({"gqa_dense"})

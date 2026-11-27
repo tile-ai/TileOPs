@@ -243,8 +243,8 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         d_mem: memory embedding dimension.
         d: model hidden dimension.
         max_conv_len: max conv cache capacity (compile-time).
-        conv_kernel_size: number of conv taps (w=4 in paper).
-        dilation: dilation factor (δ = max N-gram order in paper).
+        conv_kernel_size: number of conv taps.
+        dilation: dilation factor.
         eps: RMSNorm epsilon.
         dtype: data type.
     """
@@ -290,9 +290,6 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         self.d_mem = d_mem
         self.d = d
         self.max_conv_len = max_conv_len
-        self.conv_kernel_size = conv_kernel_size
-        self.dilation = dilation
-        self.eps = eps
         self.dtype = dtype
         self.d_padded = align_up(d, ALIGNMENT)
 
@@ -540,10 +537,6 @@ class EngramDecodeSplitKernel(Kernel, EngramDecodeFwdInterface):
         if call.max_conv_len < max(1, call.dilation * (call.conv_kernel_size - 1)):
             return "the convolution must have enough history for every tap"
         return super().refusal(call)
-
-    @classmethod
-    def entry_for(cls, call: EngramDecodeCall) -> Entry:
-        return call, lambda: cls(call)
 
     def __init__(self, call: EngramDecodeCall):
         super().__init__(device_index=call.device_index)

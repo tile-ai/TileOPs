@@ -14,40 +14,34 @@ __all__ = ["FusedTopKFwdOp"]
 
 
 class FusedTopKFwdOp(Op):
-    """Mixture-of-Experts (MoE) top-k routing operator.
-
-    It scores router logits and returns each token's expert weights and ids, where
-    ``TopKSelectFwdOp`` returns key positions inside a per-row attention window and
-    ``TopKMaskFwdOp`` returns the logits with every entry outside the top k set to ``-inf``.
+    """Mixture-of-Experts (MoE) top-k routing operator: each token's expert weights and ids.
 
     Applies scoring (softmax, sigmoid or ``sqrt(softplus(x))``) to router logits and selects
-    the top-k experts per token, or takes each token's experts from ``expert_ids``. Scoring and selection run in float32 whatever the
-    logits dtype, with fast-math transcendentals, so a score can differ from
-    torch's float32 score by a few ulp: an expert, or a group, whose selection
-    score is within 1e-5 relative plus 1e-6 absolute of the last one kept may be
-    kept in its place; a selection that is not that close matches the float32
+    the top-k experts per token, or takes each token's experts from ``expert_ids``. Scoring
+    and selection run in float32 whatever the logits dtype, with fast-math transcendentals,
+    so a score can differ from torch's float32 score by a few ulp: an expert, or a group,
+    whose selection score is within 1e-5 relative plus 1e-6 absolute of the last one kept
+    may be kept in its place; a selection that is not that close matches the float32
     reference, ties to the lower index. A NaN score ranks above every number, as in
     ``torch.topk``, and every row returns ``top_k`` distinct experts. The weights are
     within 1e-4 (relative) of the float32 scores of the experts returned.
 
-    With ``num_expert_group > 1`` it is DeepSeek grouped routing, as vLLM's
-    ``grouped_topk``: the E experts split into ``num_expert_group`` groups of
-    ``E / num_expert_group`` consecutive experts, each group is scored by the sum of
-    its two best biased scores when ``correction_bias`` is passed and by its best
-    score otherwise, the ``topk_group`` best groups are kept (ties to the lower
-    group index), and the top-k experts are selected inside them; an expert of a dropped
-    group scores -inf there, so it ties with a kept expert scoring -inf. The returned
-    weights are the unbiased scores of the selected experts, renormalized when
-    ``renormalize``, times ``routed_scaling_factor``. ``num_expert_group=1`` selects
-    over all experts.
+    With ``num_expert_group > 1`` it is DeepSeek grouped routing: the E experts split into
+    ``num_expert_group`` groups of ``E / num_expert_group`` consecutive experts, each group is
+    scored by the sum of its two best biased scores when ``correction_bias`` is passed and by
+    its best score otherwise, the ``topk_group`` best groups are kept (ties to the lower group
+    index), and the top-k experts are selected inside them; an expert of a dropped group scores
+    -inf there, so it ties with a kept expert scoring -inf. The returned weights are the
+    unbiased scores of the selected experts, renormalized when ``renormalize``, times
+    ``routed_scaling_factor``. ``num_expert_group=1`` selects over all experts.
 
-    ``scoring_func="sqrtsoftplus"`` and ``expert_ids`` follow DeepSeek-V4-Flash's gate,
-    whose first layers take each token's experts from a token-id table; with ``expert_ids``
-    nothing is selected, the correction bias is not read, and the weights are the scores of
-    the given experts. Under sigmoid scoring a logit below about -87, whose float32 score is
-    subnormal, scores 0, and a renormalized row of only such logits returns NaN weights. The
-    in-tree kernel adds a correction bias to sigmoid and sqrt-softplus scores only: a softmax
-    call that selects with a bias raises ``OpNotAvailableError`` when a kernel is selected.
+    ``scoring_func="sqrtsoftplus"`` and ``expert_ids`` follow DeepSeek-V4-Flash's gate. With
+    ``expert_ids`` nothing is selected, the correction bias is not read, and the weights are the
+    scores of the given experts. Under sigmoid scoring a logit below about -87, whose float32
+    score is subnormal, scores 0, and a renormalized row of only such logits returns NaN
+    weights. The in-tree kernel adds a correction bias to sigmoid and sqrt-softplus scores only:
+    a softmax call that selects with a bias raises ``OpNotAvailableError`` when a kernel is
+    selected.
 
     Example:
         ```python linenums="1"

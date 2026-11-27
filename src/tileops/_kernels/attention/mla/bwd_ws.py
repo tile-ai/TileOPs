@@ -1,9 +1,7 @@
 """SM90 warp-specialized MLA prefill backward for ``dim_qk = 192``, ``dim_v = 128``.
 
-Fixed and packed calls share packed ``(T, H, D)`` inputs; only ``lse`` and
-``delta`` layouts differ. A persistent CTA stages 96 keys, while two consumer
-warpgroups accumulate dQ, dK, and dV over 48 keys each. A final launch writes
-dQ in q's layout and dtype. Scheduling keeps longest-request tiles together.
+Fixed and packed calls share packed ``(T, H, D)`` inputs; only ``lse`` and ``delta``
+layouts differ.
 """
 
 from collections.abc import Callable
@@ -23,54 +21,12 @@ from tileops._kernels.attention.call_spec import (
     MLADenseBwdInterface,
     MLAVarlenBwdInterface,
 )
+from tileops._kernels.attention.mla.bwd import _delta_kernel, packed_dense_call
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
 __all__ = ["MLADenseBwdWSKernel", "MLAVarlenBwdWSKernel"]
-
-
-@target_cache(maxsize=32)
-def _prep_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: str) -> Callable:
-    """``delta[.., h, row] = sum_d o[row, h, d] * do[row, h, d]``, laid out like ``lse``."""
-    block = 32
-
-    # The race check cannot prove the store index ``row // dense_seqlen`` injective.
-    @tilelang.jit(
-        out_idx=[2],
-        pass_configs={tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS],
-    )
-    def _prep_func() -> Callable:
-        total = T.dynamic("total_q")
-        delta_shape = (batch, heads, dense_seqlen) if dense_seqlen else (heads, total)
-
-        @T.prim_func
-        def _prep_main(
-            o: T.Tensor((total, heads, dim_v), dtype),  # type: ignore
-            do: T.Tensor((total, heads, dim_v), dtype),  # type: ignore
-            delta: T.Tensor(delta_shape, "float32"),  # type: ignore
-        ) -> None:
-            with T.Kernel(T.ceildiv(total, block), heads, threads=128) as (bx, h):
-                o_f = T.alloc_fragment([block, dim_v], "float32")
-                do_f = T.alloc_fragment([block, dim_v], "float32")
-                rows = T.alloc_fragment([block], "float32")
-                T.copy(o[bx * block : (bx + 1) * block, h, :], o_f)
-                T.copy(do[bx * block : (bx + 1) * block, h, :], do_f)
-                for i, d in T.Parallel(block, dim_v):
-                    o_f[i, d] = o_f[i, d] * do_f[i, d]
-                T.reduce_sum(o_f, rows, 1)
-                for i in T.Parallel(block):
-                    row = bx * block + i
-                    if row < total:
-                        if dense_seqlen:
-                            delta[row // dense_seqlen, h, row % dense_seqlen] = rows[i]
-                        else:
-                            delta[h, row] = rows[i]
-
-        return _prep_main
-
-    return _prep_func()
 
 
 @target_cache(maxsize=32)
@@ -767,7 +723,7 @@ class _MLABwdWSKernelBase(Kernel):
         CTAs interleaving *group* heads, and the dQ landing; *dense_seqlen* is the query length
         of a fixed-length call, ``0`` for a packed one."""
         block_m, block_n, dq_split = self._BLOCK_M, self._BLOCK_N, self._DQ_SPLIT
-        prep = _prep_kernel(self.batch, self.heads, self.dim_v, dense_seqlen, self.dtype_str)
+        prep = _delta_kernel(self.batch, self.heads, self.dim_v, dense_seqlen, self.dtype_str, True)
         main = _bwd_ws_kernel(
             self.batch,
             self.heads,
@@ -794,23 +750,7 @@ class MLADenseBwdWSKernel(_MLABwdWSKernelBase, MLADenseBwdInterface):
 
     def forward(self, q, k, v, o, do, lse):
         self._require_devices(q=q, k=k, v=v, o=o, do=do, lse=lse)
-        batch, seqlen_q, heads, _ = q.shape
-        seqlen_kv = k.shape[1]
-        cu_q = torch.arange(0, (batch + 1) * seqlen_q, seqlen_q, dtype=torch.int32, device=q.device)
-        cu_kv = torch.arange(
-            0, (batch + 1) * seqlen_kv, seqlen_kv, dtype=torch.int32, device=q.device
-        )
-        dq, dk, dv = self._run(
-            q.view(batch * seqlen_q, heads, -1),
-            k.view(batch * seqlen_kv, heads, -1),
-            v.view(batch * seqlen_kv, heads, -1),
-            o.view(batch * seqlen_q, heads, -1),
-            do.view(batch * seqlen_q, heads, -1),
-            lse,
-            cu_q,
-            cu_kv,
-            seqlen_q,
-        )
+        dq, dk, dv = self._run(*packed_dense_call(q, k, v, o, do, lse), q.shape[1])
         return dq.view(q.shape), dk.view(k.shape), dv.view(v.shape)
 
 

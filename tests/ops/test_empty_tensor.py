@@ -21,10 +21,8 @@ pytestmark = [
     pytest.mark.skipif(not run_device_available(), reason="the run device is not available"),
 ]
 
-DTYPE = torch.float16
 
-
-def _tensor(*shape: int, dtype: torch.dtype = DTYPE) -> torch.Tensor:
+def _tensor(*shape: int, dtype: torch.dtype = torch.float16) -> torch.Tensor:
     return torch.randn(*shape, device=run_device()).to(dtype)
 
 

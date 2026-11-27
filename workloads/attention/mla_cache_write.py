@@ -1,6 +1,7 @@
 """Inputs and the independent reference for the MLA latent cache write."""
 
 import math
+from dataclasses import dataclass
 
 import torch
 
@@ -46,40 +47,31 @@ def _float32_outward(value: torch.Tensor, direction: float) -> torch.Tensor:
     )
 
 
+@dataclass(eq=False)
 class MLAKVCacheWriteWorkload(WorkloadBase):
     """New latent rows scattered into a paged cache by slot, the cache's other rows left alone.
 
     ``slots[n]`` is the cache row token ``n`` writes, or ``-1`` for a token that writes
-    nothing. Omitted, the slots are distinct random rows, which is what a serving step hands
-    over; a caller passing its own list exercises the skip path, a slot at either end of a
-    page, and slots out of order. ``positions`` likewise default to random rows of the
+    nothing. Omitted, the slots are distinct random rows, and ``positions`` random rows of the
     cos/sin table.
     """
 
-    def __init__(
-        self,
-        tokens: int,
-        latent_dim: int,
-        rope_dim: int,
-        page_size: int,
-        num_pages: int,
-        dtype: torch.dtype,
-        cache_dtype: torch.dtype | None = None,
-        fuse_rope: bool = False,
-        rope_layout: str = "neox",
-        cos_sin_dtype: torch.dtype | None = None,
-        max_position: int = 0,
-        slots: list[int] | None = None,
-        positions: list[int] | None = None,
-    ) -> None:
-        self.tokens, self.latent_dim, self.rope_dim = tokens, latent_dim, rope_dim
-        self.page_size, self.num_pages = page_size, num_pages
-        self.dtype = dtype
-        self.cache_dtype = dtype if cache_dtype is None else cache_dtype
-        self.fuse_rope, self.rope_layout = fuse_rope, rope_layout
-        self.cos_sin_dtype = cos_sin_dtype
-        self.max_position = max_position
-        self.slots, self.positions = slots, positions
+    tokens: int
+    latent_dim: int
+    rope_dim: int
+    page_size: int
+    num_pages: int
+    dtype: torch.dtype
+    cache_dtype: torch.dtype | None = None
+    fuse_rope: bool = False
+    rope_layout: str = "neox"
+    cos_sin_dtype: torch.dtype | None = None
+    max_position: int = 0
+    slots: list[int] | None = None
+    positions: list[int] | None = None
+
+    def __post_init__(self) -> None:
+        self.cache_dtype = self.dtype if self.cache_dtype is None else self.cache_dtype
 
     @property
     def physical_tokens(self) -> int:
@@ -149,10 +141,8 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
     ):
         """Scatter by index, with saturating FP8 conversion that preserves NaN.
 
-        The cache is cloned before it is written: the reference runs on the shared inputs,
-        and a call that wrote them would leave nothing to compare against. A token whose
-        slot is ``-1`` writes nothing, and a row no token names keeps the value it was
-        handed, which the caller's comparison reads back.
+        Writes a clone of the cache, so the shared inputs stay as they were. A token whose
+        slot is ``-1`` writes nothing; a row no token names keeps its value.
         """
         kv_cache = kv_cache.clone()
         written = (slot_mapping >= 0).nonzero().squeeze(1)
@@ -193,11 +183,8 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
             limit = torch.finfo(cache_dtype).max
             return (landed / kv_scale[0]).clamp(-limit, limit).to(cache_dtype).double()
 
-        # Two evaluations are the rotation. In float32, each operation rounds once with unit
-        # roundoff 2^-24: the sum always, a product only where it is not exact in float32
-        # (a float32 table). Rounding to the dtype, dividing by the kv_scale and the FP8 cast
-        # are monotone, so the stored value lies between the images of the ends of that
-        # interval around the exact rotation.
+        # The stored value lies between the monotone images of the ends of the float32
+        # rotation's rounding interval, one 2^-24 roundoff per operation.
         bits = sum(round(-math.log2(torch.finfo(t).eps)) + 1 for t in (dtype, table.dtype))
         slack = exact.abs()
         if bits > 24:

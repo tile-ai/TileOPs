@@ -39,20 +39,13 @@ def _lanes_per_row(n: int) -> int:
 
 
 def _ordering_key(op_kind: str):
-    """Build the macro turning one element into the int32 key the reduction ranks by.
+    """Build the macro turning one element into the int32 key the reduction ranks by, so PyTorch's
+    order (NaN over every number, two NaNs equal, ties to the lower index) is one integer compare.
 
-    Ranking bit patterns collapses PyTorch's ordering -- NaN over every number, two NaNs
-    equal, ties to the lower index -- into one integer compare, where spelling it out
-    costs a dozen instructions an element. Callers bind the result to a local before ranking it: a macro
-    argument is substituted at every mention, so passing the call directly would
-    recompute the key once per comparison the merge makes.
-
-    Negating first turns argmin into argmax and leaves a NaN a NaN, so NaN outranks in
-    both. The key is the magnitude bits, negated in two's complement when the sign bit
-    is set: that orders the whole line, and it sends both zeros to 0 without a test,
-    which is what lets the index break their tie the way PyTorch does. A positive NaN's
-    magnitude already outranks +inf's; the negated ones do not, so NaN is answered
-    outright.
+    The key is the magnitude bits, negated in two's complement when the sign bit is set, which
+    sends both zeros to 0; argmin negates the value first. NaN is answered outright, as a
+    negative NaN's key does not outrank. Callers bind the key to a local: a macro argument is
+    substituted at every mention.
     """
     negate = op_kind == "argmin"
 
@@ -237,19 +230,10 @@ def _argreduce_output_kernel(
     op_kind: str,
     dtype: str,
 ):
-    """Build the output-parallel kernel for a contiguous non-last-axis reduction.
-
-    The reduction axis is strided here and the output axis is contiguous, so a
-    thread takes output elements and walks the axis: adjacent threads then
-    read adjacent addresses. Transposing into a last-axis layout instead copies
-    the whole tensor and hands a row of ``N`` elements to a block built for long
-    rows.
-
-    A block covers ``block_m`` consecutive outputs over ``threads`` threads, and a
-    thread takes every ``threads``-th of them so that neighbours stay neighbours in
-    both the store and the walk. Where the whole span is one contiguous run of each
-    axis position, it is staged in shared memory first, in 16-byte vectors, and the walk
-    reads from there.
+    """Build the output-parallel kernel for a contiguous non-last-axis reduction: a thread takes
+    outputs (every ``threads``-th of a block's ``block_m``) and walks the strided axis, so
+    adjacent threads read adjacent addresses with no transpose. Where the span is one contiguous
+    run of each axis position, it is staged in shared memory first in 16-byte vectors.
     """
     elem_bytes = getattr(torch, dtype).itemsize
     vec = VECTOR_ACCESS_BYTES // elem_bytes

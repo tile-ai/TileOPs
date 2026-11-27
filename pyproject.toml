@@ -106,8 +106,6 @@ line-length = 100
 # Markdown belongs to mdformat; ruff reads a fenced fragment as a whole file and de-indents it.
 extend-exclude = ["*.md", "third_party"]
 
-# NOTE: Please gradually tighten static code checks and other validations in the future.
-# The current exemptions are in place to ensure normal project development.
 [tool.ruff.lint]
 # DOC102 is in preview; opt into that one rule, not preview behaviour at large.
 preview = true
@@ -141,8 +139,6 @@ select = [
     "RUF022",
     # A `noqa` that suppresses nothing, or names a rule this config does not select.
     "RUF100",
-    # flake8-annotations (type hints) — enable when codebase has sufficient coverage
-    # "ANN",
 ]
 ignore = [
     # E741 (ambiguous variable name): single-letter tensor-dimension names
@@ -154,9 +150,6 @@ ignore = [
     # SIM118 (key in dict.keys()): explicit .keys() is kept where it clarifies
     # that only names, not values, are consumed.
     "SIM118",
-    # B019 (lru_cache on methods can leak memory): kernel builders are cached
-    # by design — the cache holding compiled kernels alive is the point.
-    "B019",
     # E902 (I/O error while linting a path): environment noise (broken
     # symlinks, transient files), not a property of the source.
     "E902",

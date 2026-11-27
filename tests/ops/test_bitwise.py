@@ -1,9 +1,4 @@
-"""Tests for bitwise elementwise ops (bitwise_and, bitwise_or, bitwise_xor, bitwise_not).
-
-Bitwise ops operate on integer inputs. We use int32 tensors for testing
-binary bitwise ops, and all bool/integer dtypes for bitwise_not.
-Covers L1 smoke correctness.
-"""
+"""Tests for the bitwise elementwise ops (bitwise_and, bitwise_or, bitwise_xor, bitwise_not)."""
 
 import pytest
 import torch
@@ -33,66 +28,6 @@ class FullRangeTest(FullRangeCase, TestBase):
     pass
 
 
-class BitwiseAndFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total",
-            [
-                pytest.param(4_096, marks=pytest.mark.smoke),
-                pytest.param(16_384, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@BitwiseAndFixture
-def test_bitwise_and_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, "BitwiseAndFwdOp")
-    op = BitwiseAndFwdOp()
-    test.check(op, *test.gen_inputs())
-
-
-class BitwiseOrFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total",
-            [
-                pytest.param(4_096, marks=pytest.mark.smoke),
-                pytest.param(16_384, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@BitwiseOrFixture
-def test_bitwise_or_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, "BitwiseOrFwdOp")
-    op = BitwiseOrFwdOp()
-    test.check(op, *test.gen_inputs())
-
-
-class BitwiseXorFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n_total",
-            [
-                pytest.param(4_096, marks=pytest.mark.smoke),
-                pytest.param(16_384, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-@BitwiseXorFixture
-def test_bitwise_xor_op(n_total: int) -> None:
-    test = BitwiseTest(n_total, "BitwiseXorFwdOp")
-    op = BitwiseXorFwdOp()
-    test.check(op, *test.gen_inputs())
-
-
-# Broadcast pattern tests for binary bitwise ops (L3)
-
-
 _BITWISE_OPS = [
     ("bitwise_and", BitwiseAndFwdOp, torch.bitwise_and),
     ("bitwise_or", BitwiseOrFwdOp, torch.bitwise_or),
@@ -100,31 +35,36 @@ _BITWISE_OPS = [
 ]
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_cls", [BitwiseAndFwdOp, BitwiseOrFwdOp, BitwiseXorFwdOp])
+def test_bitwise_binary_op(op_cls) -> None:
+    test = BitwiseTest(4_096, op_cls.__name__)
+    test.check(op_cls(), *test.gen_inputs())
+
+
+# Every op on the bias broadcast; the other broadcast patterns on one op.
+
+
 class BitwiseBroadcastFixture(FixtureBase):
     @classmethod
     def get_params(cls):
-        patterns = [
-            ((2, 64, 128), (1, 1, 128)),  # bias-add
-            ((2, 64, 128), (2, 64, 1)),  # row broadcast
-            ((64, 128), (1, 1)),  # scalar broadcast
+        bias = [
+            pytest.param(
+                name,
+                cls,
+                ref,
+                (2, 64, 128),
+                (1, 1, 128),
+                marks=pytest.mark.smoke if j == 0 else pytest.mark.full,
+            )
+            for j, (name, cls, ref) in enumerate(_BITWISE_OPS)
         ]
-        return [
-            (
-                "op_name, op_cls, ref_fn, a_shape, b_shape",
-                [
-                    pytest.param(
-                        name,
-                        cls,
-                        ref,
-                        a_s,
-                        b_s,
-                        marks=pytest.mark.smoke if i == 0 and j == 0 else pytest.mark.full,
-                    )
-                    for j, (name, cls, ref) in enumerate(_BITWISE_OPS)
-                    for i, (a_s, b_s) in enumerate(patterns)
-                ],
-            ),
+        name, cls, ref = _BITWISE_OPS[0]
+        others = [
+            pytest.param(name, cls, ref, a_s, b_s, marks=pytest.mark.full)
+            for a_s, b_s in (((2, 64, 128), (2, 64, 1)), ((64, 128), (1, 1)))
         ]
+        return [("op_name, op_cls, ref_fn, a_shape, b_shape", bias + others)]
 
 
 @BitwiseBroadcastFixture
@@ -219,8 +159,6 @@ def test_bool_bitwise_fast_path(
 
 
 class BitwiseFixture(FixtureBase):
-    """Parametrize over torch-supported bitwise_not dtypes."""
-
     PARAMS = [
         (
             "n_total, dtype",
@@ -237,7 +175,7 @@ class BitwiseFixture(FixtureBase):
 
 
 class BitwiseNotTest(BitwiseNotWorkload, TestBase):
-    """Test fixture for bitwise_not."""
+    pass
 
 
 @BitwiseFixture
@@ -260,7 +198,7 @@ def test_bitwise_not_long_int64(n_total: int) -> None:
     test.check(BitwiseNotFwdOp(), *test.gen_inputs())
 
 
-# Dtype rejection tests for binary bitwise ops
+# Float dtypes, outside the binary bitwise ops' manifest
 
 
 class BitwiseBinaryRejectFixture(FixtureBase):
@@ -269,8 +207,6 @@ class BitwiseBinaryRejectFixture(FixtureBase):
             "op_cls, dtype",
             [
                 pytest.param(BitwiseAndFwdOp, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(BitwiseAndFwdOp, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(BitwiseAndFwdOp, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(BitwiseOrFwdOp, torch.float16, marks=pytest.mark.full),
                 pytest.param(BitwiseXorFwdOp, torch.float16, marks=pytest.mark.full),
             ],

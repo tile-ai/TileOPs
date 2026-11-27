@@ -209,20 +209,6 @@ class GQAVarlenFwdFixture(FixtureBase):
                     torch.float16,
                     marks=pytest.mark.full,
                 ),  # ratio 16:1
-                # Mixed lengths within batch
-                pytest.param(
-                    3,
-                    [128, 256, 384],
-                    [128, 256, 384],
-                    8,
-                    2,
-                    64,
-                    True,
-                    -1,
-                    -1,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                ),
                 # Right window only
                 pytest.param(
                     2,

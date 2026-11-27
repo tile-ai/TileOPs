@@ -1,9 +1,5 @@
 """Benchmark for the top-k selector op.
 
-Workload shapes, dtypes, and ``top_k`` come from the ops manifest; roofline
-FLOP and byte counts come from the op's ``eval_roofline()`` via
-:class:`benchmarks.api.Runner`.
-
 The row is timed against torch eager, the same reference through inductor, and the
 sparse-attention indexer top-k of FlashInfer and of vLLM. flag_gems' top-k selects over
 the last dimension only, and this op selects over ``seq_len_kv``, dim 2 of 4.
@@ -11,8 +7,7 @@ the last dimension only, and this op selects over ``seq_len_kv``, dim 2 of 4.
 Both libraries read one score row per query, which is ``seq_len_kv`` only while
 ``kv_group`` is 1, and fill a short window's slots with -1: a row filling with another
 index has neither tag, and a window not starting at 0 has no vLLM tag. Their row metadata
-(lengths, offsets, workspace, output buffer) is built once outside the timed call, as
-their serving engines build it once a step for every layer.
+is built once outside the timed call.
 """
 
 import pytest
@@ -127,7 +122,7 @@ def _vllm_topk(workload: TopKSelectCall, starts: torch.Tensor, ends: torch.Tenso
     return fn
 
 
-@pytest.mark.parametrize("case", bench.cases(TopKSelectFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(TopKSelectFwdOp))
 def test_topk_select_bench(case) -> None:
     inputs = case.inputs
 

@@ -89,7 +89,7 @@ def h_block_v_candidates(dim_v: int) -> tuple[int, ...]:
 
 
 def _require_h_block_v_candidates(dim_v: int) -> tuple[int, ...]:
-    """Return the admissible widths, so both callers refuse the same shapes."""
+    """Return the admissible widths, so every caller refuses the same shapes."""
     candidates = h_block_v_candidates(dim_v)
     if not candidates:
         raise ValueError(

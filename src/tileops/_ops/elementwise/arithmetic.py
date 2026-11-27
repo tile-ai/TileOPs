@@ -38,14 +38,8 @@ _NUMBER_WEIGHT, _TENSOR_WEIGHT = "number_weight", "tensor_weight"
 
 
 class _AlphaScaledBinaryOp(BinaryOp):
-    """Shared base for ops that take a scalar ``alpha`` multiplier on ``other``.
-
-    PyTorch ``torch.add(input, other, alpha=1)`` and ``torch.sub(input,
-    other, alpha=1)`` scale ``other`` by ``alpha`` before the binary op.
-    ``alpha`` is baked into the kernel — one specialization per
-    ``(alpha, element type, broadcast)`` — so non-default alpha runs through the
-    same fast kernel as the default.
-    """
+    """Shared base for ops that scale ``other`` by a scalar ``alpha`` before the binary op;
+    one kernel specialization per ``alpha``."""
 
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         ELEMENTWISE: AlphaScaledBinaryFwdInterface
@@ -77,23 +71,13 @@ class _AlphaScaledBinaryOp(BinaryOp):
 
 
 class AddFwdOp(_AlphaScaledBinaryOp):
-    """Element-wise addition with broadcast: y = input + alpha * other.
-
-    Conforms to ``torch.add(input, other, *, alpha=1)``. ``alpha`` is baked
-    into the kernel, so non-default ``alpha`` runs through the same fast
-    kernel as the default.
-    """
+    """Element-wise addition with broadcast: y = input + alpha * other, as ``torch.add``."""
 
     kernel_types = {"add": AddFwdKernel}
 
 
 class SubFwdOp(_AlphaScaledBinaryOp):
-    """Element-wise subtraction with broadcast: y = input - alpha * other.
-
-    Conforms to ``torch.sub(input, other, *, alpha=1)``. ``alpha`` is baked
-    into the kernel, so non-default ``alpha`` runs through the same fast
-    kernel as the default.
-    """
+    """Element-wise subtraction with broadcast: y = input - alpha * other, as ``torch.sub``."""
 
     kernel_types = {"sub": SubFwdKernel}
 
@@ -105,12 +89,9 @@ class MulFwdOp(BinaryOp):
 
 
 class DivFwdOp(BinaryOp):
-    """Element-wise division with broadcast: y = input / other.
+    """Element-wise division with broadcast: y = input / other, as ``torch.div``.
 
-    Conforms to ``torch.div(input, other, *, rounding_mode=None)``.
-    ``rounding_mode`` accepts ``None`` (true division), ``"trunc"``
-    (truncation toward zero), or ``"floor"`` (floor division); each
-    value selects a dedicated kernel through the call spec.
+    ``rounding_mode`` is ``None`` (true division), ``"trunc"`` or ``"floor"``.
     """
 
     kernel_types = {
@@ -151,11 +132,7 @@ class RemainderFwdOp(BinaryOp):
 
 
 class PowFwdOp(BinaryOp):
-    """Element-wise power with broadcast: y = input ** exponent.
-
-    Conforms to ``torch.pow(input, exponent)``: the second operand carries
-    the manifest-declared name ``exponent`` rather than the generic
-    ``other`` so the L1 signature check matches the manifest.
+    """Element-wise power with broadcast: y = input ** exponent, as ``torch.pow``.
 
     Accuracy differs from ``torch.pow``: the power is computed as
     ``exp2(exponent * log2|input|)``, whose error scales with
@@ -169,10 +146,6 @@ class PowFwdOp(BinaryOp):
     | 0.25 to 4 | -3 to 3 | 3.4 | 0.6 |
     | 0.01 to 100 | -3 to 3 | 10.6 | 0.6 |
     | 1e-6 to 1e6 | -2 to 2 | 22.5 | 0.6 |
-
-    The bound is the table above, not a constant. Callers raising a base far
-    from one to a large exponent, or comparing results for equality, need to
-    account for it.
     """
 
     kernel_types = {"pow": PowFwdKernel}
@@ -229,10 +202,8 @@ class MinimumFwdOp(BinaryOp):
 class LerpFwdOp(Op):
     """Linear interpolation ``out = input + weight * (end - input)`` (``torch.lerp``).
 
-    ``weight`` is a Number or a Tensor that broadcasts with ``input`` and ``end``, the two
-    overloads of ``torch.lerp``. Which one a call passes is read off the call, so one
-    instance serves both. A Number weight's value reaches the kernel's cache key, since the
-    kernel is built for it.
+    ``weight`` is a Number or a Tensor that broadcasts with ``input`` and ``end``; one
+    instance serves both. A Number weight is baked into its kernel.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

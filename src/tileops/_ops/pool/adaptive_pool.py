@@ -25,8 +25,8 @@ __all__ = ["AdaptiveAvgPool2dFwdOp", "AdaptiveMaxPool2dFwdOp", "AdaptiveMaxPool2
 class _AdaptivePool2dFwdOpBase(Op):
     """Generic adaptive 2D pooling forward over CHW/NCHW inputs.
 
-    Concrete subclasses set ``kernel_types`` and ``interfaces`` and state the manifest's
-    ``__init__``. A CHW input is handed to the kernel as it is; the kernel adds and drops
+    Concrete subclasses set ``kernel_types`` and ``interfaces`` and inherit this ``__init__``.
+    A CHW input is handed to the kernel as it is; the kernel adds and drops
     the batch axis.
     """
 
@@ -87,20 +87,6 @@ class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):
         "adaptive_pool": AdaptiveAvgPool2dFwdInterface
     }
 
-    def __init__(
-        self,
-        output_size: int | None | tuple[int | None, int | None] | list[int | None],
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            output_size: Manifest ``params.output_size``, ``int | None | tuple[int | None, int | None] | list[int | None]``.
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-        """
-        super().__init__(output_size=output_size, target=target)
-
 
 class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive max pooling over CHW/NCHW inputs (return_indices=False)."""
@@ -113,20 +99,6 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
         "adaptive_pool": AdaptiveMaxPool2dFwdInterface
     }
 
-    def __init__(
-        self,
-        output_size: int | None | tuple[int | None, int | None] | list[int | None],
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            output_size: Manifest ``params.output_size``, ``int | None | tuple[int | None, int | None] | list[int | None]``.
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-        """
-        super().__init__(output_size=output_size, target=target)
-
 
 class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive max pooling over CHW/NCHW inputs (return_indices=True)."""
@@ -137,20 +109,6 @@ class AdaptiveMaxPool2dIndicesFwdOp(_AdaptivePool2dFwdOpBase):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "adaptive_pool": AdaptiveMaxPool2dIndicesFwdInterface
     }
-
-    def __init__(
-        self,
-        output_size: int | None | tuple[int | None, int | None] | list[int | None],
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtype are taken from the first call.
-
-        Args:
-            output_size: Manifest ``params.output_size``, ``int | None | tuple[int | None, int | None] | list[int | None]``.
-            target: Backend target to serve this op, or ``None`` to decide from the input device.
-        """
-        super().__init__(output_size=output_size, target=target)
 
     def forward(self, input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.

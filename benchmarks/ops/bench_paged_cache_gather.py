@@ -51,7 +51,7 @@ def _vllm_cp_gather(inputs):
     return private_inputs(run, inputs, 5)
 
 
-@pytest.mark.parametrize("case", bench.cases(PagedKVCacheGatherFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(PagedKVCacheGatherFwdOp))
 def test_paged_kv_cache_gather_bench(case):
     implementations = {"torch-ref": case.reference}
     fused = _vllm_gather(case.inputs)

@@ -1,17 +1,10 @@
 """MLA prefill backward after the latent is decompressed, fixed-length and packed.
 
-Every head has its own ``dim_qk``-wide query and key and its own ``dim_v``-wide value, so
-the contractions run at their own widths: the scores, ``dQ`` and ``dK`` over ``dim_qk``,
-``dP`` and ``dV`` over ``dim_v``. Three launches serve one call:
-
-1. ``delta = rowsum(o * do)``, head-major like ``lse``.
-2. One CTA per (request, key block, head) keeps its keys and values in shared memory and
-   ``dK`` and ``dV`` in registers, walks the query blocks its mask admits, and adds each
-   step's ``dQ`` partial to a float32 accumulator.
-3. The accumulator is scaled and cast to the input dtype.
-
-A fixed-length call is the packed one with every request ``seqlen`` long; only the layout
-of ``lse`` and ``delta`` differs, batch-major ``(B, H, S)`` against head-major ``(H, T)``.
+Three launches serve one call: ``delta = rowsum(o * do)``, the key-stationary main pass
+adding ``dQ`` partials into a float32 accumulator, and the scaling of that accumulator to
+the input dtype. A fixed-length call is the packed one with every request ``seqlen``
+long; only the layout of ``lse`` and ``delta`` differs, batch-major ``(B, H, S)`` against
+head-major ``(H, T)``.
 """
 
 from collections.abc import Callable
@@ -35,18 +28,43 @@ __all__ = ["MLADenseBwdKernel", "MLAVarlenBwdKernel"]
 
 
 @target_cache(maxsize=32)
-def _delta_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: str) -> Callable:
-    """``delta[.., h, row] = sum_d o[row, h, d] * do[row, h, d]`` in float32."""
+def _delta_kernel(
+    batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: str, ws: bool
+) -> Callable:
+    """``delta[.., h, row] = sum_d o[row, h, d] * do[row, h, d]`` in float32, laid out like
+    ``lse``. *ws* builds the warp-specialized backward's launch: row blocks on the grid's first
+    axis, compiled without fast math."""
     block = 32
 
+    # The race check cannot prove the store index ``row // dense_seqlen`` injective.
     @tilelang.jit(
         out_idx=[2],
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
+        pass_configs={tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True}
+        if ws
+        else {tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=[*CUDA_COMPILE_FLAGS] if ws else [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
     def _delta_func() -> Callable:
         total = T.dynamic("total_q")
         delta_shape = (batch, heads, dense_seqlen) if dense_seqlen else (heads, total)
+
+        @T.macro
+        def row_sums(o, do, delta, h, bx):
+            o_f = T.alloc_fragment([block, dim_v], "float32")
+            do_f = T.alloc_fragment([block, dim_v], "float32")
+            rows = T.alloc_fragment([block], "float32")
+            T.copy(o[bx * block : (bx + 1) * block, h, :], o_f)
+            T.copy(do[bx * block : (bx + 1) * block, h, :], do_f)
+            for i, d in T.Parallel(block, dim_v):
+                o_f[i, d] = o_f[i, d] * do_f[i, d]
+            T.reduce_sum(o_f, rows, 1)
+            for i in T.Parallel(block):
+                row = bx * block + i
+                if row < total:
+                    if dense_seqlen:
+                        delta[row // dense_seqlen, h, row % dense_seqlen] = rows[i]
+                    else:
+                        delta[h, row] = rows[i]
 
         @T.prim_func
         def _delta_main(
@@ -54,22 +72,12 @@ def _delta_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: 
             do: T.Tensor((total, heads, dim_v), dtype),  # type: ignore
             delta: T.Tensor(delta_shape, "float32"),  # type: ignore
         ) -> None:
-            with T.Kernel(heads, T.ceildiv(total, block), threads=128) as (h, bx):
-                o_f = T.alloc_fragment([block, dim_v], "float32")
-                do_f = T.alloc_fragment([block, dim_v], "float32")
-                rows = T.alloc_fragment([block], "float32")
-                T.copy(o[bx * block : (bx + 1) * block, h, :], o_f)
-                T.copy(do[bx * block : (bx + 1) * block, h, :], do_f)
-                for i, d in T.Parallel(block, dim_v):
-                    o_f[i, d] = o_f[i, d] * do_f[i, d]
-                T.reduce_sum(o_f, rows, 1)
-                for i in T.Parallel(block):
-                    row = bx * block + i
-                    if row < total:
-                        if dense_seqlen:
-                            delta[row // dense_seqlen, h, row % dense_seqlen] = rows[i]
-                        else:
-                            delta[h, row] = rows[i]
+            if ws:
+                with T.Kernel(T.ceildiv(total, block), heads, threads=128) as (bx, h):
+                    row_sums(o, do, delta, h, bx)
+            else:
+                with T.Kernel(heads, T.ceildiv(total, block), threads=128) as (h, bx):
+                    row_sums(o, do, delta, h, bx)
 
         return _delta_main
 
@@ -264,6 +272,25 @@ def _bwd_kernel(
     return _bwd_func
 
 
+def packed_dense_call(q, k, v, o, do, lse) -> tuple:
+    """A fixed-length BSHD call as the packed one: ``(T, H, D)`` views and uniform offsets."""
+    batch, seqlen_q, heads, _ = q.shape
+    seqlen_kv = k.shape[1]
+    cu_q = torch.arange(0, (batch + 1) * seqlen_q, seqlen_q, dtype=torch.int32, device=q.device)
+    cu_kv = torch.arange(0, (batch + 1) * seqlen_kv, seqlen_kv, dtype=torch.int32, device=q.device)
+    rows_q, rows_kv = batch * seqlen_q, batch * seqlen_kv
+    return (
+        q.view(rows_q, heads, -1),
+        k.view(rows_kv, heads, -1),
+        v.view(rows_kv, heads, -1),
+        o.view(rows_q, heads, -1),
+        do.view(rows_q, heads, -1),
+        lse,
+        cu_q,
+        cu_kv,
+    )
+
+
 class _MLABwdKernelBase(Kernel):
     """The three launches of one backward call; the subclasses differ in layout only."""
 
@@ -349,7 +376,9 @@ class _MLABwdKernelBase(Kernel):
     def _compile(self, cfg: dict):
         """The three programs of one backward call: the delta, the main pass compiled from
         *cfg*, and the dQ scaling."""
-        prep = _delta_kernel(self.batch, self.heads, self.dim_v, self.seqlen_q, self.dtype_str)
+        prep = _delta_kernel(
+            self.batch, self.heads, self.dim_v, self.seqlen_q, self.dtype_str, False
+        )
         main = self.kernel(cfg["block_n"], cfg["block_m"], cfg["num_stages"], cfg["threads"])
         land = _dq_land_kernel(self.heads, self.dim_qk, self.scale, self.dtype_str)
         return CompiledProgram(prep), CompiledProgram(main), CompiledProgram(land)
@@ -360,22 +389,7 @@ class MLADenseBwdKernel(_MLABwdKernelBase, MLADenseBwdInterface):
 
     def forward(self, q, k, v, o, do, lse):
         self._require_devices(q=q, k=k, v=v, o=o, do=do, lse=lse)
-        batch, seqlen_q, heads, _ = q.shape
-        seqlen_kv = k.shape[1]
-        cu_q = torch.arange(0, (batch + 1) * seqlen_q, seqlen_q, dtype=torch.int32, device=q.device)
-        cu_kv = torch.arange(
-            0, (batch + 1) * seqlen_kv, seqlen_kv, dtype=torch.int32, device=q.device
-        )
-        dq, dk, dv = self._run(
-            q.view(batch * seqlen_q, heads, -1),
-            k.view(batch * seqlen_kv, heads, -1),
-            v.view(batch * seqlen_kv, heads, -1),
-            o.view(batch * seqlen_q, heads, -1),
-            do.view(batch * seqlen_q, heads, -1),
-            lse,
-            cu_q,
-            cu_kv,
-        )
+        dq, dk, dv = self._run(*packed_dense_call(q, k, v, o, do, lse))
         return dq.view(q.shape), dk.view(k.shape), dv.view(v.shape)
 
 

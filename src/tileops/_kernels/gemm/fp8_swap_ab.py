@@ -1,12 +1,7 @@
 """FP8 NT GEMM for at most sixteen rows, as the transposed product streamed in 64-row blocks.
 
-At ``m <= 16`` a 64-row WGMMA tile of ``a`` is mostly zero padding, and every K step
-multiplies the padding by a full ``b`` tile. Computing ``c^T = b @ a^T`` instead puts 64
-rows of ``b`` on WGMMA's 64-row axis and the rows of ``a``, padded to eight or sixteen, on
-its column axis. The call reads ``b`` once and nothing else of size, so the kernel is a
-weight stream: one producer warpgroup fills a deep TMA ring with 64-row blocks of ``b``,
-and one consumer warpgroup runs each K step's WGMMA and adds its partial, under its
-scales, to a float32 sum.
+``c^T = b @ a^T`` puts 64 rows of ``b`` on WGMMA's 64-row axis and the rows of ``a``, padded
+to eight or sixteen, on its column axis, where a 64-row tile of ``a`` would be mostly padding.
 """
 
 from collections.abc import Callable
@@ -16,7 +11,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
-from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
+from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, SHARED_BUFFER_ALIGN_BYTES
 from tileops._kernels.gemm.call_spec import GEMMFP8Call, GEMMFP8FwdInterface
 from tileops._kernels.gemm.dense import splitk_reduce_kernel
 from tileops._kernels.gemm.heuristics import (
@@ -25,6 +20,7 @@ from tileops._kernels.gemm.heuristics import (
     stream_width,
 )
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
+from tileops._kernels.tiling import align_up
 
 __all__ = ["GEMMFP8SwapABKernel"]
 
@@ -40,18 +36,12 @@ def _stream_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) ->
     ``None`` where the staged scales leave no room for a ring of two stages (one where a CTA
     streams a single K step).
 
-    The stream is bound by how fast the busiest CTA reads its bytes of ``b``, and a CTA
-    reads at most about one SM's share of the DRAM bandwidth.
-
     - ``split_k``: the most K slices, dividing the K tiles, whose units still fit one
       CTA per SM, each slice keeping ``FP8_MIN_SLICE_K_TILES``; one where the 64-row
-      blocks alone fill the SMs. Short of the SM count, an unsplit grid leaves SMs idle
-      for the whole launch.
-    - ``ctas``: the fewest that run the units in as many rounds as ``sm_count`` CTAs, so
-      every CTA streams the same number of units and none runs a tail alone.
+      blocks alone fill the SMs.
+    - ``ctas``: the fewest that run the units in as many rounds as ``sm_count`` CTAs.
     - ``num_stages``: the deepest ring the shared memory holds, at most the K steps a CTA
-      streams: a CTA's loads are all of its work, so as many as fit go out before the
-      first product.
+      streams.
     """
     mpad = stream_width(m)[0]
     k_tiles = -(-k // _BLOCK_K)
@@ -72,9 +62,12 @@ def _stream_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) ->
     # split) and, under block scales, a's scales over all of K and b's for each unit.
     fixed = _STATIC_SMEM_BYTES + _ROWS * mpad * (2 if split_k == 1 else 4)
     if block_scaled:
-        # Each in whole KiB: TileLang aligns every other buffer to 1024 bytes, so the gap
-        # after a scale buffer is shared memory too.
-        fixed += sum(-(-count * 4 // 1024) * 1024 for count in (k_tiles * mpad, rounds * k_iters))
+        # Each rounded up: TileLang aligns every other buffer, so the gap after a scale
+        # buffer is shared memory too.
+        fixed += sum(
+            align_up(count * 4, SHARED_BUFFER_ALIGN_BYTES)
+            for count in (k_tiles * mpad, rounds * k_iters)
+        )
     deepest = (BLOCK_SHARED_BYTES_OPT_IN[90] - fixed) // stage
     if deepest < min(2, rounds * k_iters):
         return None
@@ -88,9 +81,7 @@ def _gemm_fp8_stream_kernel(
     """Build the transposed FP8 weight stream; the returned factory takes the ring and grid.
 
     The work is ``ceil(n / 64) * split_k`` units, one 64-row block of ``b`` over one K
-    slice each: slice ``s`` covers K steps ``[s * q, (s + 1) * q)``. CTA ``p`` runs units
-    ``p``, ``p + ctas``, ... back to back through one ring, unit ``u`` being block
-    ``u % ceil(n / 64)`` of slice ``u // ceil(n / 64)``.
+    slice each; CTA ``p`` runs units ``p``, ``p + ctas``, ... through one ring.
 
     Args:
         m: Rows of ``a``, at most sixteen.

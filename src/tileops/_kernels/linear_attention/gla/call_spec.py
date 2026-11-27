@@ -4,6 +4,7 @@ and the kernel interface its implementations inherit."""
 import dataclasses
 from abc import abstractmethod
 
+import tilelang
 import torch
 
 from tileops._kernels.call_spec import CallSpec
@@ -11,12 +12,21 @@ from tileops._kernels.kernel_base import Entry, KernelInterface
 from tileops._kernels.linear_attention.call_spec import head_count_refusal
 
 __all__ = [
+    "PASS_CONFIGS",
     "GLACall",
     "GLAFwdInterface",
     "build_entry",
     "dense_refusal",
     "extents_refusal",
 ]
+
+# What every GLA chunk program compiles with: fast math, and no TMA or warp-specialized
+# lowering of its copies.
+PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+    tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+}
 
 
 @dataclasses.dataclass(frozen=True)

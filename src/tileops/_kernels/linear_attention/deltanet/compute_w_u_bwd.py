@@ -4,13 +4,6 @@ Backward of compute_w_u and the A_inv backward, from the walked state gradient.
 One CTA a (batch, head, chunk). Inputs: dh_t (the transposed state gradient the chunk hands
 on, from the walk), v_new, du_partial, S, Aw, Au, k, v, beta and dk_partial.
 
-Internal computations per chunk:
-  1. du = du_partial + k @ dh;  dk_corr = v_new @ dh^T;  dw = -(du @ S^T)
-  2. wu_bwd:  dk_wu = (Aw^T @ dw) * beta,  dv = (Au^T @ du) * beta
-  3. A_inv backward:  dAw + dAu -> dA -> dP -> dk_A, dbeta_A
-  4. dk = dk_partial + dk_corr + dk_wu + dk_A
-  5. dbeta = dbeta_direct + dbeta_A
-
 Matmul operands are in the input dtype and accumulate in float32.
 
 Outputs: dk, dv, dbeta

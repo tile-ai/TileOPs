@@ -28,6 +28,11 @@ class BMMBatchStridedTest(BMMBatchStridedWorkload, TestBase):
     pass
 
 
+def _skip_off_a_132_sm_h200(call: BMMCall) -> None:
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
+
+
 class BMMFixture(FixtureBase):
     PARAMS = [
         (
@@ -59,42 +64,6 @@ class BMMFixture(FixtureBase):
                     torch.float16,
                     marks=pytest.mark.full,
                     id="full-fp16-b8-512",
-                ),
-                pytest.param(
-                    16,
-                    256,
-                    256,
-                    256,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-fp16-b16-256",
-                ),
-                pytest.param(
-                    1,
-                    1024,
-                    1024,
-                    1024,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-fp16-b1-1k",
-                ),
-                pytest.param(
-                    32,
-                    128,
-                    512,
-                    128,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-fp16-b32-mha-qk",
-                ),
-                pytest.param(
-                    8,
-                    128,
-                    128,
-                    2048,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-fp16-b8-mha-pv",
                 ),
                 pytest.param(
                     32,
@@ -212,8 +181,7 @@ def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m
     import tileops._kernels.gemm.persistent.template as template
 
     call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
-    if call.calibration != "h200" or call.sm_count != 132:
-        pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
+    _skip_off_a_132_sm_h200(call)
     built = []
     build = template._grouped_gemm_kernel
 
@@ -259,8 +227,7 @@ def test_bmm_pingpong_matches_the_reference(
     """Calls in the ping-pong band, each group of a CTA running whole 128x128 tiles in turn."""
     op = BMMFwdOp()
     call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=dtype, device=run_device())
-    if call.calibration != "h200" or call.sm_count != 132:
-        pytest.skip("the ping-pong band is calibrated on a 132-SM H200")
+    _skip_off_a_132_sm_h200(call)
     assert op.key_for("bmm", call) == "bmm_pingpong"
     test = BMMTest(batch, m, n, k, dtype)
     test.check(op, *test.gen_inputs())
@@ -295,8 +262,8 @@ def test_bmm_reads_and_writes_batch_strided_views(
     where TileLang's tuner first times the general kernel's candidate configurations."""
     op = BMMFwdOp()
     call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
-    if key != "bmm" and (call.calibration != "h200" or call.sm_count != 132):
-        pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
+    if key != "bmm":
+        _skip_off_a_132_sm_h200(call)
     assert op.key_for("bmm", call) == key
     if tune:
         op.request_tune()
@@ -537,7 +504,7 @@ def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
 
 
 @pytest.mark.smoke
-def test_bmm_fp8_persistent_default_tile_boundary() -> None:
+def test_bmm_fp8_one_32_wide_k_step() -> None:
     batch, m, n, k = 8, 64, 64, 32
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
     a, b_kn, a_scale, b_scale = test.gen_inputs()

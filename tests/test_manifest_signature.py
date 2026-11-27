@@ -4,13 +4,19 @@ import copy
 import importlib.util
 import math
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 import yaml
 
-from tileops.manifest._plan import check_adts, check_entry, signature_schema_errors
+from tileops.manifest._dtype_rules import DTYPE_BITS, FLOAT8_DTYPES
+from tileops.manifest._expr import parse
+from tileops.manifest._plan import check_adts, check_entry, roofline_plan, signature_schema_errors
+from tileops.manifest._signature import member_of, parse_signature, unification
+from tileops.manifest._values import convert
 from tileops.manifest.primitives import PRIMITIVES
 
 pytestmark = pytest.mark.smoke
@@ -456,8 +462,6 @@ _SCALARS += (1.5, -1.0, 255.9, 65504.0, 65520.0, 1e6, 3.4e38, 1e39, math.inf, -m
     ["bool", "uint8", "int8", "int16", "int32", "int64", "float16", "bfloat16", "float32"],
 )
 def test_category_and_representable_follow_torch(dtype):
-    import torch
-
     t = torch.zeros(1, dtype=getattr(torch, dtype))
     torch_category = (
         "bool" if t.dtype == torch.bool else "float" if t.dtype.is_floating_point else "int"
@@ -480,18 +484,12 @@ def test_category_and_representable_follow_torch(dtype):
 
 
 def test_e8m0_takes_its_torch_width_and_category():
-    import torch
-
-    from tileops.manifest._dtype_rules import DTYPE_BITS, FLOAT8_DTYPES
-
     assert DTYPE_BITS["float8_e8m0fnu"] == 8 * torch.float8_e8m0fnu.itemsize
     assert PRIMITIVES["category"]("float8_e8m0fnu") == "float"
     assert "float8_e8m0fnu" in FLOAT8_DTYPES
 
 
 def test_e8m0_holds_powers_of_two_up_to_its_largest_and_no_infinity():
-    import torch
-
     largest = torch.finfo(torch.float8_e8m0fnu).max
     assert PRIMITIVES["representable"](largest, "float8_e8m0fnu")
     assert not PRIMITIVES["representable"](2 * largest, "float8_e8m0fnu")
@@ -547,12 +545,17 @@ def test_adt_invariant_stays_in_the_language():
     assert check_adts(_ADTS) == (_ADTS, [])
 
 
-def test_validator_checks_every_level_of_an_entry(tmp_path):
-    spec = importlib.util.spec_from_file_location(
-        "validate_manifest", Path(__file__).parents[1] / "scripts" / "validate_manifest.py"
-    )
+def _validator():
+    """scripts/validate_manifest.py, imported as a module."""
+    path = Path(__file__).parents[1] / "scripts" / "validate_manifest.py"
+    spec = importlib.util.spec_from_file_location("validate_manifest", path)
     validator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validator)
+    return validator
+
+
+def test_validator_checks_every_level_of_an_entry(tmp_path):
+    validator = _validator()
     name, entry = _edit("GEMMFwdOp", _set(("outputs", "d", "shape"), "[M, Q]"))
     path = tmp_path / "manifest.yaml"
     path.write_text(yaml.safe_dump({name: {"family": "missing", **entry}}))
@@ -568,13 +571,7 @@ def test_validator_checks_every_level_of_an_entry(tmp_path):
 
 
 def test_validator_holds_an_implemented_key_to_an_exported_class(monkeypatch):
-    import types
-
-    spec = importlib.util.spec_from_file_location(
-        "validate_manifest", Path(__file__).parents[1] / "scripts" / "validate_manifest.py"
-    )
-    validator = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(validator)
+    validator = _validator()
 
     def DemoFwdOp():
         pass
@@ -596,9 +593,6 @@ def test_validator_holds_an_implemented_key_to_an_exported_class(monkeypatch):
 
 
 def _plan_of(shapes, sequences, known=()):
-    from tileops.manifest._expr import parse
-    from tileops.manifest._signature import unification
-
     nodes = {t: parse(text) for t, text in shapes.items()}
     return unification(nodes, set(known), {}, sequences)
 
@@ -628,9 +622,6 @@ def test_a_second_sequence_checks_the_items_the_first_collected():
 
 
 def test_a_roofline_reads_no_let_of_a_call_time_scalar():
-    from tileops.manifest._plan import roofline_plan
-    from tileops.manifest._signature import parse_signature
-
     name, entry = _edit(
         "ClampFwdOp",
         _set(("inputs", "min", "type"), "int | Tensor | None"),
@@ -652,8 +643,6 @@ def test_a_roofline_reads_no_let_of_a_call_time_scalar():
     ],
 )
 def test_a_list_parameter_checks_every_element_by_its_type(value, type_text, accepted):
-    from tileops.manifest._values import convert
-
     if accepted:
         assert convert(value, type_text, {}) == value
     else:
@@ -662,9 +651,6 @@ def test_a_list_parameter_checks_every_element_by_its_type(value, type_text, acc
 
 
 def test_a_roofline_member_names_a_call_time_argument():
-    from tileops.manifest._plan import roofline_plan
-    from tileops.manifest._signature import parse_signature
-
     name, entry = _edit("ClampFwdOp")
     sig = parse_signature(name, entry, _ADTS)
     errors, _ = roofline_plan(sig, {"flops": "1 if member(typo) == 'Tensor' else 0"})
@@ -682,6 +668,4 @@ def test_a_roofline_member_names_a_call_time_argument():
     ],
 )
 def test_an_int_takes_a_float_member_as_the_float_slot_does(value, members, expected):
-    from tileops.manifest._signature import member_of
-
     assert member_of(value, members) == expected

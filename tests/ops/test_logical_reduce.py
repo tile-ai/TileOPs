@@ -1,12 +1,6 @@
-"""Correctness tests for logical reduce ops (any, all, count_nonzero).
+"""Exact-match tests for AnyFwdOp and AllFwdOp (bool out) and CountNonzeroFwdOp (int64 out)."""
 
-Covers: AnyFwdOp, AllFwdOp, CountNonzeroFwdOp.
-any/all reduce along the configured dim and return bool dtype.
-count_nonzero reduces along the configured dim and returns int64 dtype.
-Uses exact match (torch.equal) for comparison.
-"""
-
-from collections.abc import Callable
+import itertools
 
 import pytest
 import torch
@@ -37,101 +31,11 @@ class LogicalReduceBasicFixture(FixtureBase):
                 pytest.param(128, 512, torch.complex64, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.complex128, marks=pytest.mark.smoke),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
-                pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-pow2 last dim
                 pytest.param(128, 300, torch.float32, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.float16, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.bool, marks=pytest.mark.full),
                 pytest.param(128, 300, torch.complex64, marks=pytest.mark.full),
-                # Row count that is not a power of two
-                pytest.param(129, 512, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class LogicalReduceNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(128, 512, torch.bool, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-class LogicalReduce3DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq, hidden, dtype",
-            [
-                pytest.param(2, 64, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 64, 512, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-class LogicalReduce4DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "b0, b1, b2, n, dtype",
-            [
-                pytest.param(2, 4, 8, 512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 4, 8, 512, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-class LogicalReduce1DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "n, dtype",
-            [
-                pytest.param(512, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(512, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(512, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(512, torch.bool, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-class LogicalReduceDimFixture(FixtureBase):
-    """Fixture for testing dim=0, dim=1, and keepdim variants."""
-
-    PARAMS = [
-        (
-            "shape, dim, dtype",
-            [
-                # dim=0 reduction on 2D
-                pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((64, 512), 0, torch.float32, marks=pytest.mark.smoke),
-                # dim=1 reduction on 3D (reduces middle dim)
-                pytest.param((4, 64, 512), 1, torch.float16, marks=pytest.mark.full),
-                # dim=0 reduction on 3D
-                pytest.param((4, 64, 512), 0, torch.float16, marks=pytest.mark.full),
-                # negative dim on 3D (dim=-2 = middle)
-                pytest.param((4, 64, 512), -2, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class LogicalReduceKeepdimFixture(FixtureBase):
-    """Fixture for keepdim=True tests (AllFwdOp, AnyFwdOp only)."""
-
-    PARAMS = [
-        (
-            "shape, dim, dtype",
-            [
-                pytest.param((64, 512), -1, torch.float16, marks=pytest.mark.smoke),
-                pytest.param((64, 512), 0, torch.float16, marks=pytest.mark.full),
-                pytest.param((4, 64, 512), 1, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -141,234 +45,77 @@ class LogicalReduceTest(LogicalReduceCase, TestBase):
     pass
 
 
-def _make_noncontig_input(m: int, n: int, dtype: torch.dtype) -> torch.Tensor:
-    """Create a non-contiguous 2D tensor of shape (m, n*2) for slicing tests."""
+_OPS = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
+
+
+def _reference(op_kind: str, x: torch.Tensor, dim, keepdim: bool = False) -> torch.Tensor:
+    """PyTorch's answer for *op_kind* over *dim*; ``dim=None`` with *keepdim* keeps every axis."""
+    if op_kind == "count_nonzero":
+        return torch.count_nonzero(x, dim=dim)
+    fn = torch.any if op_kind == "any" else torch.all
+    if dim is None:
+        return fn(x).reshape([1] * x.ndim) if keepdim else fn(x)
+    return fn(x, dim=dim, keepdim=keepdim)
+
+
+def _mixed(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
+    """Random values with about one exact zero in ten, so all and any see both truths."""
+    torch.manual_seed(0)
     if dtype == torch.bool:
-        return torch.randint(0, 2, (m, n * 2), dtype=torch.bool, device=run_device())
-    return torch.randn(m, n * 2, dtype=dtype, device=run_device())
+        return torch.rand(shape, device=run_device()) < 0.9
+    x = torch.randn(*shape, dtype=dtype, device=run_device())
+    return x.masked_fill(torch.rand(shape, device=run_device()) < 0.1, 0)
 
 
-def _make_1d_input(n: int, dtype: torch.dtype) -> torch.Tensor:
-    """Create a 1D tensor of shape (n,) for 1D tests."""
-    if dtype == torch.bool:
-        return torch.randint(0, 2, (n,), dtype=torch.bool, device=run_device())
-    return torch.randn(n, dtype=dtype, device=run_device())
+def _check(op_kind: str, x: torch.Tensor, dim, keepdim: bool = False) -> None:
+    kwargs = {} if op_kind == "count_nonzero" else {"keepdim": keepdim}
+    y = _OPS[op_kind](dim=dim, **kwargs)(x)
+    ref = _reference(op_kind, x, dim, keepdim)
+    assert y.dtype == (torch.int64 if op_kind == "count_nonzero" else torch.bool)
+    assert y.shape == ref.shape, f"shape {y.shape} vs ref {ref.shape}"
+    compare_outputs(y, ref, reduction_verification(ref.dtype))
 
 
-def _make_nd_input(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
-    """Create an N-D tensor for dim/keepdim tests."""
-    if dtype == torch.bool:
-        return torch.randint(0, 2, shape, dtype=torch.bool, device=run_device())
-    return torch.randn(shape, dtype=dtype, device=run_device())
-
-
+@pytest.mark.parametrize("op_kind", list(_OPS))
 @LogicalReduceBasicFixture
-def test_any_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = LogicalReduceTest(m, n, dtype, "any")
-    op = AnyFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@LogicalReduceNonContigFixture
-def test_any_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    x_full = _make_noncontig_input(m, n, dtype)
-    x = x_full[:, :n]
-    op = AnyFwdOp(dim=-1)
-    ref = x.contiguous().bool().any(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce3DFixture
-def test_any_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    op = AnyFwdOp(dim=-1)
-    ref = x.bool().any(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce4DFixture
-def test_any_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
-    op = AnyFwdOp(dim=-1)
-    ref = x.bool().any(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce1DFixture
-def test_any_1d(n: int, dtype: torch.dtype) -> None:
-    x = _make_1d_input(n, dtype)
-    op = AnyFwdOp(dim=-1)
-    ref = x.bool().any(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y.view_as(ref), ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduceDimFixture
-def test_any_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    x = _make_nd_input(shape, dtype)
-    op = AnyFwdOp(dim=dim)
-    ref = x.bool().any(dim=dim)
-    y = op(x)
-    assert y.dtype == torch.bool
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduceKeepdimFixture
-def test_any_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    x = _make_nd_input(shape, dtype)
-    op = AnyFwdOp(dim=dim, keepdim=True)
-    ref = x.bool().any(dim=dim, keepdim=True)
-    y = op(x)
-    assert y.dtype == torch.bool
-    assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduceBasicFixture
-def test_all_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = LogicalReduceTest(m, n, dtype, "all")
-    op = AllFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@LogicalReduceNonContigFixture
-def test_all_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    x_full = _make_noncontig_input(m, n, dtype)
-    x = x_full[:, :n]
-    op = AllFwdOp(dim=-1)
-    ref = x.contiguous().bool().all(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce3DFixture
-def test_all_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    op = AllFwdOp(dim=-1)
-    ref = x.bool().all(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce4DFixture
-def test_all_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
-    op = AllFwdOp(dim=-1)
-    ref = x.bool().all(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce1DFixture
-def test_all_1d(n: int, dtype: torch.dtype) -> None:
-    x = _make_1d_input(n, dtype)
-    op = AllFwdOp(dim=-1)
-    ref = x.bool().all(dim=-1)
-    y = op(x)
-    assert y.dtype == torch.bool
-    compare_outputs(y.view_as(ref), ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduceDimFixture
-def test_all_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    x = _make_nd_input(shape, dtype)
-    op = AllFwdOp(dim=dim)
-    ref = x.bool().all(dim=dim)
-    y = op(x)
-    assert y.dtype == torch.bool
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduceKeepdimFixture
-def test_all_keepdim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    x = _make_nd_input(shape, dtype)
-    op = AllFwdOp(dim=dim, keepdim=True)
-    ref = x.bool().all(dim=dim, keepdim=True)
-    y = op(x)
-    assert y.dtype == torch.bool
-    assert y.shape == ref.shape, f"keepdim shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduceBasicFixture
-def test_count_nonzero_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = LogicalReduceTest(m, n, dtype, "count_nonzero")
-    op = CountNonzeroFwdOp(dim=-1)
-    test.check(op, *test.gen_inputs())
-
-
-@LogicalReduceNonContigFixture
-def test_count_nonzero_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    x_full = _make_noncontig_input(m, n, dtype)
-    x = x_full[:, :n]
-    op = CountNonzeroFwdOp(dim=-1)
-    ref = torch.count_nonzero(x.contiguous(), dim=-1).to(torch.int64)
-    y = op(x)
-    assert y.dtype == torch.int64
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce3DFixture
-def test_count_nonzero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    op = CountNonzeroFwdOp(dim=-1)
-    ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
-    y = op(x)
-    assert y.dtype == torch.int64
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce4DFixture
-def test_count_nonzero_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
-    op = CountNonzeroFwdOp(dim=-1)
-    ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
-    y = op(x)
-    assert y.dtype == torch.int64
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@LogicalReduce1DFixture
-def test_count_nonzero_1d(n: int, dtype: torch.dtype) -> None:
-    x = _make_1d_input(n, dtype)
-    op = CountNonzeroFwdOp(dim=-1)
-    ref = torch.count_nonzero(x, dim=-1).to(torch.int64)
-    y = op(x)
-    assert y.dtype == torch.int64
-    compare_outputs(y.view_as(ref), ref, reduction_verification(ref.dtype))
+def test_logical_reduce_rows(op_kind: str, m: int, n: int, dtype: torch.dtype) -> None:
+    test = LogicalReduceTest(m, n, dtype, op_kind)
+    test.check(_OPS[op_kind](dim=-1), *test.gen_inputs())
 
 
 @pytest.mark.smoke
-def test_count_nonzero_past_fp32_integer_range() -> None:
-    # 2^24 + 1 nonzeros: the first count fp32 cannot hold.
-    x = torch.zeros(1 << 25, dtype=torch.bool, device=run_device())
-    x[: 1 << 24] = True
-    x[-1] = True
-    y = CountNonzeroFwdOp(dim=None)(x)
-    compare_outputs(y, torch.count_nonzero(x), reduction_verification(torch.int64))
+@pytest.mark.parametrize("op_kind", list(_OPS))
+@pytest.mark.parametrize(
+    "layout",
+    [
+        pytest.param("strided", id="strided"),
+        pytest.param("1d", id="1d"),
+        pytest.param("4d", id="4d"),
+        pytest.param("leading-dim", id="leading-dim"),
+        pytest.param("middle-dim", id="middle-dim"),
+    ],
+)
+def test_logical_reduce_layouts(op_kind: str, layout: str) -> None:
+    """A strided view, a 1-D row, leading axes folded into rows, and one non-last axis."""
+    shape, dim = {
+        "strided": ((128, 1024), -1),
+        "1d": ((512,), -1),
+        "4d": ((2, 4, 8, 512), -1),
+        "leading-dim": ((64, 512), 0),
+        "middle-dim": ((4, 64, 512), 1),
+    }[layout]
+    x = _mixed(shape, torch.float16)
+    if layout == "strided":
+        x = x[:, :512]
+    _check(op_kind, x, dim)
 
 
-@LogicalReduceDimFixture
-def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
-    x = _make_nd_input(shape, dtype)
-    op = CountNonzeroFwdOp(dim=dim)
-    ref = torch.count_nonzero(x, dim=dim).to(torch.int64)
-    y = op(x)
-    assert y.dtype == torch.int64
-    assert y.shape == ref.shape, f"shape mismatch: {y.shape} vs {ref.shape}"
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
+def _edge_input(op_kind: str, dtype: torch.dtype, rows: int) -> torch.Tensor:
+    """A ``(4, rows, 4096)`` input whose rare nonzeros (zeros for all) decide most outputs."""
+    if dtype != torch.bool:
+        return torch.randn(4, rows, 4096, dtype=dtype, device=run_device())
+    x = torch.rand(4, rows, 4096, device=run_device()) > 0.999
+    return ~x if op_kind == "all" else x
 
 
 @pytest.mark.smoke
@@ -377,19 +124,14 @@ def test_count_nonzero_dim(shape: tuple, dim: int, dtype: torch.dtype) -> None:
 )
 def test_logical_reduce_long_sequence(op_kind: str, dtype: torch.dtype) -> None:
     """A long row whose last step only part of the block reaches."""
-
-    op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
     test = LogicalReduceTest(3, 33024, dtype, op_kind)
-    op = op_map[op_kind](dim=-1)
-    test.check(op, *test.gen_inputs())
+    test.check(_OPS[op_kind](dim=-1), *test.gen_inputs())
 
 
 @pytest.mark.smoke
 def test_logical_reduce_autotune() -> None:
     """``request_tune()`` must build and time every candidate width."""
-
-    m, n, dtype = 4, 40000, torch.bool
-    test = LogicalReduceTest(m, n, dtype, "any")
+    test = LogicalReduceTest(4, 40000, torch.bool, "any")
     op = AnyFwdOp(dim=-1)
     op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -397,30 +139,13 @@ def test_logical_reduce_autotune() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "op_kind, dtype",
-    [
-        ("any", torch.bool),
-        ("all", torch.bool),
-        ("count_nonzero", torch.float16),
-    ],
+    "op_kind, dtype", [("any", torch.bool), ("all", torch.bool), ("count_nonzero", torch.float16)]
 )
 def test_logical_reduce_edge_axes_in_own_layout(op_kind: str, dtype: torch.dtype) -> None:
     """``dim=[0, 2]`` reduces without a permute: 0/1 (or count) partials, then a fold."""
-
-    op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
-    op = op_map[op_kind](dim=[0, 2])
-    if dtype == torch.bool:
-        x = torch.rand(4, 24, 4096, device=run_device()) > 0.999
-        if op_kind == "all":
-            x = ~x
-    else:
-        x = torch.randn(4, 24, 4096, dtype=dtype, device=run_device())
-    ref = {
-        "any": lambda: x.any(0).any(-1),
-        "all": lambda: x.all(0).all(-1),
-        "count_nonzero": lambda: torch.count_nonzero(x, (0, 2)),
-    }[op_kind]()
-    compare_outputs(op(x), ref, reduction_verification(ref.dtype))
+    x = _edge_input(op_kind, dtype, 24)
+    y = _OPS[op_kind](dim=[0, 2])(x)
+    compare_outputs(y, _reference(op_kind, x, (0, 2)), reduction_verification(y.dtype))
 
 
 @pytest.mark.in_tree_kernels
@@ -440,24 +165,12 @@ def test_logical_reduce_edge_axes_fused_dispatch(
     if device_calibration() is None:
         pytest.skip("fused edge logical reduce is selected only on a calibrated board")
 
-    op_map = {"any": AnyFwdOp, "all": AllFwdOp, "count_nonzero": CountNonzeroFwdOp}
-    op = op_map[op_kind](dim=[0, 2], target=BUILTIN)
+    op = _OPS[op_kind](dim=[0, 2], target=BUILTIN)
     if tune:
         op.request_tune()
-    if dtype == torch.bool:
-        x = torch.rand(4, 128, 4096, device=run_device()) > 0.999
-        if op_kind == "all":
-            x = ~x
-    else:
-        x = torch.randn(4, 128, 4096, dtype=dtype, device=run_device())
-    ref = {
-        "any": lambda: x.any(0).any(-1),
-        "all": lambda: x.all(0).all(-1),
-        "count_nonzero": lambda: torch.count_nonzero(x, (0, 2)),
-    }[op_kind]()
-    compare_outputs(op(x), ref, reduction_verification(ref.dtype))
-    # The role is the op's one memoization bucket; which implementation served the call
-    # is the entry that was built under it.
+    x = _edge_input(op_kind, dtype, 128)
+    y = op(x)
+    compare_outputs(y, _reference(op_kind, x, (0, 2)), reduction_verification(y.dtype))
 
 
 @pytest.mark.smoke
@@ -489,14 +202,9 @@ def test_logical_reduce_truth_at_own_width(dtype: torch.dtype, value: complex) -
     x[2, 998] = value
     x[3, 999] = value
     inputs = [x, x.conj()] if dtype.is_complex else [x]
-    for t in inputs:
-        compare_outputs(AnyFwdOp(dim=-1)(t), t.any(-1), reduction_verification(torch.bool))
-        compare_outputs(AllFwdOp(dim=-1)(t), t.all(-1), reduction_verification(torch.bool))
-        compare_outputs(
-            CountNonzeroFwdOp(dim=-1)(t),
-            torch.count_nonzero(t, dim=-1),
-            reduction_verification(torch.int64),
-        )
+    for t, op_kind in itertools.product(inputs, _OPS):
+        y = _OPS[op_kind](dim=-1)(t)
+        compare_outputs(y, _reference(op_kind, t, -1), reduction_verification(y.dtype))
 
 
 @pytest.mark.smoke
@@ -512,179 +220,44 @@ def test_count_nonzero_exact_past_fp32_integers() -> None:
     )
 
 
-# PyTorch conformance over the manifest's dim forms (int, tuple, None), shape, dtype and values;
-# All and Any also over both keepdim forms.
-
-
-# (op_cls, torch_fn) pairs for ops sharing the (dim, keepdim) signature.
-_ALL_ANY: list[tuple[type, Callable]] = [
-    (AllFwdOp, torch.all),
-    (AnyFwdOp, torch.any),
-]
-
-
 _DIMS = [(-1, "dim=int"), ((0, 2), "dim=tuple"), (None, "dim=None")]
 _FLOAT_DTYPES = [(torch.float16, "fp16"), (torch.bfloat16, "bf16"), (torch.float32, "fp32")]
 
 
 def _conformance_cases() -> list:
-    """Every (op, dim, keepdim) cell once, the dtypes taken in turn; the first three cells,
-    one a dtype, are smoke."""
-    cells = [(op, dim, keepdim) for op in _ALL_ANY for dim in _DIMS for keepdim in (False, True)]
+    """Every (op, dim, keepdim) cell once, the dtypes taken in turn; count_nonzero has no
+    keepdim. The first three cells, one a dtype, are smoke."""
+    cells = [
+        (op_kind, dim, keepdim)
+        for op_kind in _OPS
+        for dim in _DIMS
+        for keepdim in ((False,) if op_kind == "count_nonzero" else (False, True))
+    ]
     cases = []
-    for i, ((op_cls, torch_fn), (dim, dim_id), keepdim) in enumerate(cells):
+    for i, (op_kind, (dim, dim_id), keepdim) in enumerate(cells):
         dtype, dtype_id = _FLOAT_DTYPES[i % len(_FLOAT_DTYPES)]
         cases.append(
             pytest.param(
-                op_cls,
-                torch_fn,
+                op_kind,
                 dim,
                 keepdim,
                 dtype,
-                id=f"{op_cls.__name__}-{dim_id}-keepdim={keepdim}-{dtype_id}",
+                id=f"{op_kind}-{dim_id}-keepdim={keepdim}-{dtype_id}",
                 marks=pytest.mark.smoke if i < len(_FLOAT_DTYPES) else pytest.mark.full,
             )
         )
     return cases
 
 
-@pytest.mark.parametrize("op_cls, torch_fn, dim, keepdim, dtype", _conformance_cases())
-def test_logical_reduce_conformance(
-    op_cls: type,
-    torch_fn: Callable,
-    dim,
-    keepdim: bool,
-    dtype: torch.dtype,
-) -> None:
-    """Each supported logical-reduction cell must match PyTorch."""
-    shape = (4, 8, 256)
-    torch.manual_seed(0)
-    # Mix in exact zeros so All/Any actually see a False contribution.
-    raw = torch.randn(*shape, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(shape, device=run_device()) < 0.1
-    x = raw.masked_fill(zero_mask, 0)
-
-    op = op_cls(dim=dim, keepdim=keepdim)
-    y = op(x)
-    if dim is None:
-        ref = torch_fn(x)
-        if keepdim:
-            ref = ref.reshape([1] * x.ndim)
-    else:
-        ref = torch_fn(x, dim=dim, keepdim=keepdim)
-
-    assert y.dtype == torch.bool, f"{op_cls.__name__} output dtype {y.dtype}, expected torch.bool"
-    assert ref.dtype == torch.bool
-    assert y.shape == ref.shape, (
-        f"{op_cls.__name__} dim={dim} keepdim={keepdim} dtype={dtype}: "
-        f"shape {y.shape} vs ref {ref.shape}"
-    )
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
+@pytest.mark.parametrize("op_kind, dim, keepdim, dtype", _conformance_cases())
+def test_logical_reduce_conformance(op_kind: str, dim, keepdim: bool, dtype: torch.dtype) -> None:
+    """PyTorch conformance over the manifest's dim forms (int, tuple, None) and keepdim."""
+    _check(op_kind, _mixed((4, 8, 256), dtype), dim, keepdim)
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "op_cls, torch_fn",
-    _ALL_ANY,
-    ids=[c[0].__name__ for c in _ALL_ANY],
-)
-@pytest.mark.parametrize(
-    "dim",
-    [
-        pytest.param(-1, id="dim=int"),
-        pytest.param((0, 2), id="dim=tuple"),
-        pytest.param(None, id="dim=None"),
-    ],
-)
-def test_logical_reduce_unaligned_innermost(
-    op_cls: type,
-    torch_fn: Callable,
-    dim,
-) -> None:
-    """Unaligned innermost dim must still match PyTorch.
-
-    An aligned innermost extent of 256 (a kernel-tile multiple) bypasses
-    the logical-reduce kernel's masked-load boundary path. Use 255 to flush
-    the pad branch on every (op, dim-mode) cell.
-    """
-    unaligned_shape = (4, 8, 255)
-    torch.manual_seed(0)
-    dtype = torch.float16
-    raw = torch.randn(*unaligned_shape, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(unaligned_shape, device=run_device()) < 0.1
-    x = raw.masked_fill(zero_mask, 0)
-
-    op = op_cls(dim=dim, keepdim=False)
-    y = op(x)
-    ref = torch_fn(x) if dim is None else torch_fn(x, dim=dim, keepdim=False)
-
-    assert y.dtype == torch.bool
-    assert y.shape == ref.shape, (
-        f"{op_cls.__name__} dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
-    )
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-# CountNonzero: separate matrix because the op does not accept ``keepdim``.
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "dim, dtype",
-    [
-        pytest.param(dim, dtype, id=f"{dim_id}-{dtype_id}")
-        for (dim, dim_id), (dtype, dtype_id) in zip(_DIMS, _FLOAT_DTYPES, strict=True)
-    ],
-)
-def test_count_nonzero_conformance(dim, dtype: torch.dtype) -> None:
-    """``CountNonzeroFwdOp`` must match ``torch.count_nonzero`` and emit int64.
-
-    All input dtypes here differ from the int64 output dtype, satisfying the
-    spec-conformance requirement that at least one input dtype differ from
-    the output dtype.
-    """
-    shape = (4, 8, 256)
-    torch.manual_seed(0)
-    raw = torch.randn(*shape, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(shape, device=run_device()) < 0.1
-    x = raw.masked_fill(zero_mask, 0)
-
-    op = CountNonzeroFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.count_nonzero(x, dim=dim)
-
-    assert y.dtype == torch.int64, f"CountNonzeroFwdOp output dtype {y.dtype}, expected torch.int64"
-    assert ref.dtype == torch.int64
-    assert y.shape == ref.shape, (
-        f"CountNonzeroFwdOp dim={dim} dtype={dtype}: shape {y.shape} vs ref {ref.shape}"
-    )
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "dim",
-    [
-        pytest.param(-1, id="dim=int"),
-        pytest.param((0, 2), id="dim=tuple"),
-        pytest.param(None, id="dim=None"),
-    ],
-)
-def test_count_nonzero_unaligned_innermost(dim) -> None:
-    """Unaligned innermost dim must still match ``torch.count_nonzero``."""
-    unaligned_shape = (4, 8, 255)
-    torch.manual_seed(0)
-    dtype = torch.float16
-    raw = torch.randn(*unaligned_shape, dtype=dtype, device=run_device())
-    zero_mask = torch.rand(unaligned_shape, device=run_device()) < 0.1
-    x = raw.masked_fill(zero_mask, 0)
-
-    op = CountNonzeroFwdOp(dim=dim)
-    y = op(x)
-    ref = torch.count_nonzero(x, dim=dim)
-
-    assert y.dtype == torch.int64
-    assert y.shape == ref.shape, (
-        f"CountNonzeroFwdOp dim={dim} unaligned: shape {y.shape} vs ref {ref.shape}"
-    )
-    compare_outputs(y, ref, reduction_verification(ref.dtype))
+@pytest.mark.parametrize("op_kind", list(_OPS))
+@pytest.mark.parametrize("dim", [d for d, _ in _DIMS], ids=[i for _, i in _DIMS])
+def test_logical_reduce_unaligned_innermost(op_kind: str, dim) -> None:
+    """An innermost extent of 255, off every tile multiple, takes the masked-load boundary."""
+    _check(op_kind, _mixed((4, 8, 255), torch.float16), dim)

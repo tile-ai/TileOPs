@@ -11,6 +11,13 @@ from workloads.quantization.quantize import unpack_e2m1
 from workloads.workload_base import CallWorkload
 
 
+def _routing(p: dict) -> tuple:
+    """A call's ``(top_k, scoring_func, renormalize, num_expert_group, topk_group)``."""
+    return tuple(
+        p[key] for key in ("top_k", "scoring_func", "renormalize", "num_expert_group", "topk_group")
+    )
+
+
 class FusedTopKWorkload(CallWorkload):
     """Router logits, and the optional bias, of one ``FusedTopKFwdOp`` call."""
 
@@ -26,11 +33,7 @@ class FusedTopKWorkload(CallWorkload):
         return ref_fused_topk(
             gating_output,
             correction_bias,
-            p["top_k"],
-            p["scoring_func"],
-            p["renormalize"],
-            p["num_expert_group"],
-            p["topk_group"],
+            *_routing(p),
             p["routed_scaling_factor"],
             expert_ids,
         )
@@ -50,15 +53,7 @@ class FusedTopKWorkload(CallWorkload):
 
             return Custom(validate_given, "the given experts and their weights")
         scale = p["routed_scaling_factor"]
-        router = _Router(
-            gating_output,
-            correction_bias,
-            p["top_k"],
-            p["scoring_func"],
-            p["renormalize"],
-            p["num_expert_group"],
-            p["topk_group"],
-        )
+        router = _Router(gating_output, correction_bias, *_routing(p))
 
         def validate(got, expected):
             weights, ids = got[:2]
@@ -206,6 +201,22 @@ def valid_rows(layout, layout_metadata: torch.Tensor, rows: int, num_experts: in
     return valid.to(layout_metadata.device)
 
 
+def valid_rows_verification(layout, metadata, a, num_experts, rtol, atol, reason) -> Custom:
+    """``assert_close`` at *rtol* and *atol* over the rows of the flat output ``valid_rows``
+    defines for *layout*, *metadata* and the expert rows *a*."""
+    mask = valid_rows(layout, metadata, a.numel() // a.shape[-1], num_experts)
+
+    def validate(got, expected):
+        torch.testing.assert_close(
+            got.reshape(-1, got.shape[-1])[mask].float(),
+            expected.reshape(-1, expected.shape[-1])[mask].float(),
+            rtol=rtol,
+            atol=atol,
+        )
+
+    return Custom(validate, reason)
+
+
 def ref_moe_grouped_gemm(
     a: torch.Tensor,
     b: torch.Tensor,
@@ -278,6 +289,10 @@ class MoEGroupedGEMMWorkload(CallWorkload):
         _spread_gate_up(a, b, activation)
         return a, b, metadata, bias
 
+    def _out_dtype(self, a: torch.Tensor) -> torch.dtype:
+        out_dtype = self.call.params["out_dtype"]
+        return a.dtype if out_dtype is None else getattr(torch, out_dtype)
+
     def ref_program(
         self,
         a: torch.Tensor,
@@ -286,26 +301,28 @@ class MoEGroupedGEMMWorkload(CallWorkload):
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         p = self.call.params
-        out_dtype = None if p["out_dtype"] is None else getattr(torch, p["out_dtype"])
         return ref_moe_grouped_gemm(
-            a, b, layout_metadata, p["layout"], out_dtype, activation=p["activation"], bias=bias
+            a,
+            b,
+            layout_metadata,
+            p["layout"],
+            self._out_dtype(a),
+            activation=p["activation"],
+            bias=bias,
         )
 
     def verification(self, *inputs):
         x, b, metadata = inputs[:3]
-        mask = valid_rows(
-            self.call.params["layout"], metadata, x.numel() // x.shape[-1], b.shape[0]
+        wide = self._out_dtype(x) == torch.float32
+        return valid_rows_verification(
+            self.call.params["layout"],
+            metadata,
+            x,
+            b.shape[0],
+            rtol=1e-3 if wide else 2e-2,
+            atol=1e-2 if wide else 1e-1,
+            reason="defined rows of grouped expert layout",
         )
-
-        def validate(got, expected):
-            torch.testing.assert_close(
-                got.reshape(-1, got.shape[-1])[mask].float(),
-                expected.reshape(-1, expected.shape[-1])[mask].float(),
-                rtol=1e-3 if got.dtype == torch.float32 else 2e-2,
-                atol=1e-2 if got.dtype == torch.float32 else 1e-1,
-            )
-
-        return Custom(validate, "defined rows of grouped expert layout")
 
 
 class MoEGroupedGEMMFP8Workload(CallWorkload):
@@ -341,19 +358,15 @@ class MoEGroupedGEMMFP8Workload(CallWorkload):
     def verification(self, *inputs):
         a, metadata = inputs[0], inputs[-1]
         tolerance = fp8_matmul_verification(a.shape[-1])
-        mask = valid_rows(
-            self.call.params["layout"], metadata, a.numel() // a.shape[-1], inputs[2].shape[0]
+        return valid_rows_verification(
+            self.call.params["layout"],
+            metadata,
+            a,
+            inputs[2].shape[0],
+            rtol=tolerance.rtol,
+            atol=tolerance.atol,
+            reason="valid rows of each masked expert slab, fp8 matmul bound",
         )
-
-        def validate(got, expected):
-            torch.testing.assert_close(
-                got.reshape(-1, got.shape[-1])[mask].float(),
-                expected.reshape(-1, expected.shape[-1])[mask].float(),
-                rtol=tolerance.rtol,
-                atol=tolerance.atol,
-            )
-
-        return Custom(validate, "valid rows of each masked expert slab, fp8 matmul bound")
 
 
 class MoEGroupedGEMMMXFP4Workload(MoEGroupedGEMMFP8Workload):
@@ -426,19 +439,15 @@ class MoEExpertMLPWorkload(CallWorkload):
 
     def verification(self, *inputs):
         x, _, w_down, metadata = inputs[:4]
-        mask = valid_rows(
-            self.call.params["layout"], metadata, x.numel() // x.shape[-1], w_down.shape[0]
+        return valid_rows_verification(
+            self.call.params["layout"],
+            metadata,
+            x,
+            w_down.shape[0],
+            rtol=2e-2,
+            atol=1e-1,
+            reason="defined rows of grouped expert layout",
         )
-
-        def validate(got, expected):
-            torch.testing.assert_close(
-                got.reshape(-1, got.shape[-1])[mask].float(),
-                expected.reshape(-1, expected.shape[-1])[mask].float(),
-                rtol=2e-2,
-                atol=1e-1,
-            )
-
-        return Custom(validate, "defined rows of grouped expert layout")
 
 
 class MoEPostPermuteWorkload(CallWorkload):
@@ -977,22 +986,21 @@ class FusedMoEWorkload(CallWorkload):
             _scale_routed(self.call, hidden, w_gate_up, w_down, *rest)
         return (hidden, gating, w_gate_up, w_down, bias, *rest)
 
-    def ref_routed(
-        self, hidden, gating, w_gate_up, w_down, bias, b_gate_up=None, b_down=None
+    def ref_program(
+        self,
+        hidden_states,
+        gating_output,
+        w_gate_up,
+        w_down,
+        correction_bias=None,
+        b_gate_up=None,
+        b_down=None,
     ) -> torch.Tensor:
         p = self.call.params
         # The routing returns unscaled weights: the experts apply the factor, once.
-        weights, ids = ref_fused_topk(
-            gating,
-            bias,
-            p["top_k"],
-            p["scoring_func"],
-            p["renormalize"],
-            p["num_expert_group"],
-            p["topk_group"],
-        )
+        weights, ids = ref_fused_topk(gating_output, correction_bias, *_routing(p))
         return ref_routed_experts(
-            hidden,
+            hidden_states,
             w_gate_up,
             w_down,
             weights,
@@ -1003,38 +1011,12 @@ class FusedMoEWorkload(CallWorkload):
             b_down=b_down,
         )
 
-    def ref_program(
-        self,
-        hidden_states,
-        gating_output,
-        w_gate_up,
-        w_down,
-        correction_bias=None,
-        b_gate_up=None,
-        b_down=None,
-    ):
-        return self.ref_routed(
-            hidden_states, gating_output, w_gate_up, w_down, correction_bias, b_gate_up, b_down
-        )
-
-    def _router(self, gating, bias):
-        p = self.call.params
-        return _Router(
-            gating,
-            bias,
-            p["top_k"],
-            p["scoring_func"],
-            p["renormalize"],
-            p["num_expert_group"],
-            p["topk_group"],
-        )
-
     def verification(self, *inputs):
         hidden, gating, w_gate_up, w_down, bias, *rest = inputs
         b_gate_up, b_down = (rest + [None, None])[:2]
         p = self.call.params
         return routed_verification(
-            self._router(gating, bias),
+            _Router(gating, bias, *_routing(p)),
             (hidden, w_gate_up, w_down, b_gate_up, b_down),
             p["activation"],
             p["routed_scaling_factor"],
@@ -1063,7 +1045,9 @@ class FusedMoESharedExpertWorkload(FusedMoEWorkload):
         shared_w_down=None,
     ):
         """``(shared_output, routed_output)``; the shared half is this rank's partial sum."""
-        routed = self.ref_routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
+        routed = super().ref_program(
+            hidden_states, gating_output, w_gate_up, w_down, correction_bias
+        )
         if shared_w_gate_up is None:
             return None, routed
         p = self.call.params
@@ -1077,7 +1061,7 @@ class FusedMoESharedExpertWorkload(FusedMoEWorkload):
         hidden, gating, w_gate_up, w_down, bias, *_ = inputs
         p = self.call.params
         return routed_verification(
-            self._router(gating, bias),
+            _Router(gating, bias, *_routing(p)),
             (hidden, w_gate_up, w_down, None, None),
             p["activation"],
             p["routed_scaling_factor"],

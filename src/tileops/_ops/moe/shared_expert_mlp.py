@@ -63,7 +63,6 @@ class SharedExpertMLPFwdOp(Op):
             $[T \\times H]$ in the dtype of ``hidden_states``.
         """
         tokens, hidden = hidden_states.shape
-        tensors = (hidden_states, w_gate_up, w_down)
         return self.kernel_for(
             "shared_expert_mlp",
             lambda: SharedExpertMLPCall(
@@ -73,4 +72,4 @@ class SharedExpertMLPFwdOp(Op):
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
             ),
-        )(*tensors)
+        )(hidden_states, w_gate_up, w_down)

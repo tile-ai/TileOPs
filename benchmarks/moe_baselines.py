@@ -1,8 +1,58 @@
-"""Library expert MLPs with caller-owned scratch space."""
+"""vLLM routing and library expert MLPs with caller-owned scratch space."""
 
 import torch
 
-from benchmarks.baselines import flashinfer_op, vllm_op
+from benchmarks.baselines import VLLM_GROUPED_TOPK_SIGMOID, flashinfer_op, vllm_op
+
+
+def vllm_router(op, routed_scaling_factor: float = 1.0):
+    """vLLM's router for *op*'s routing, its weights scaled by *routed_scaling_factor*.
+
+    A grouped row (``num_expert_group > 1``) goes to the fused CUDA ``grouped_topk``, which
+    takes only a biased sigmoid; a row with a correction bias to ``fused_topk_bias``; any other
+    to ``fused_topk``. The router takes ``(hidden, gating, correction_bias)`` and returns
+    ``(weights, ids)``.
+    """
+    router = "model_executor.layers.fused_moe.router"
+    topk = vllm_op("fused_topk", f"{router}.fused_topk_router")
+    topk_bias = vllm_op("fused_topk_bias", f"{router}.fused_topk_bias_router")
+    grouped_topk = vllm_op("grouped_topk")
+
+    def route(hidden, gating, correction_bias=None):
+        if op.num_expert_group > 1:
+            return grouped_topk(
+                gating,
+                op.num_expert_group,
+                op.topk_group,
+                op.top_k,
+                op.renormalize,
+                routed_scaling_factor,
+                correction_bias,
+                VLLM_GROUPED_TOPK_SIGMOID,
+            )
+        if correction_bias is None:
+            weights, ids, _ = topk(
+                hidden_states=hidden,
+                gating_output=gating,
+                topk=op.top_k,
+                renormalize=op.renormalize,
+                scoring_func=op.scoring_func,
+            )
+            # fused_topk takes no scaling factor; vLLM applies it after routing.
+            if routed_scaling_factor != 1.0:
+                weights = weights * routed_scaling_factor
+            return weights, ids
+        return topk_bias(
+            hidden_states=hidden,
+            gating_output=gating,
+            topk=op.top_k,
+            renormalize=op.renormalize,
+            scoring_func=op.scoring_func,
+            e_score_correction_bias=correction_bias,
+            routed_scaling_factor=routed_scaling_factor,
+        )[:2]
+
+    return route
 
 
 def vllm_experts(activation="silu_and_mul"):
@@ -48,11 +98,9 @@ def flashinfer_experts_skip_reason(hidden, w2, b_gate_up=None, b_down=None):
 def flashinfer_experts(hidden, w1, w2, top_k, activation, b_gate_up=None):
     """Build a tuned CUTLASS adapter for fixed expert weights and token count.
 
-    The activations and weight-row layouts follow ``MoEGroupedGEMMFwdOp``. CUTLASS
-    consumes the up rows before the gate rows. Repacked weights and biases retain
-    their construction-time values and must remain unchanged. An untuned call profiles
-    its exact token-count bucket; subsequent lookups use that same bucket. Profiling
-    belongs to correctness warmup, outside measured calls.
+    The activations and weight-row layouts follow ``MoEGroupedGEMMFwdOp``. ``w1`` and
+    ``b_gate_up`` are repacked once and must stay unchanged. The first call autotunes its
+    exact token-count bucket, which falls in correctness warmup, outside measured calls.
 
     Args:
         hidden: Hidden states defining the token count, dtype and device.

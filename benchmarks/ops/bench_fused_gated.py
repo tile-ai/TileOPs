@@ -64,12 +64,12 @@ def _profile_fused_gated(op_cls, case: bench.Case, library: str) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(SiLUAndMulFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SiLUAndMulFwdOp))
 def test_silu_and_mul_bench(case) -> None:
     _profile_fused_gated(SiLUAndMulFwdOp, case, "silu_and_mul")
 
 
-@pytest.mark.parametrize("case", bench.cases(GELUAndMulFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GELUAndMulFwdOp))
 def test_gelu_and_mul_bench(case) -> None:
     tanh = case.arguments.get("approximate") == "tanh"
     _profile_fused_gated(GELUAndMulFwdOp, case, "gelu_tanh_and_mul" if tanh else "gelu_and_mul")

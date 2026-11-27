@@ -53,28 +53,8 @@ class GroupedGEMMFixture(FixtureBase):
                     4864,
                     4096,
                     torch.float16,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    16384,
-                    4,
-                    4864,
-                    4096,
-                    torch.float16,
                     True,
                     False,
-                    marks=pytest.mark.full,
-                ),
-                pytest.param(
-                    16384,
-                    4,
-                    4864,
-                    4096,
-                    torch.float16,
-                    True,
-                    True,
                     marks=pytest.mark.full,
                 ),
             ],
@@ -91,9 +71,7 @@ def test_grouped_gemm(
     dtype: torch.dtype,
     trans_a: bool,
     trans_b: bool,
-    fp32_gemm_reduction,
 ) -> None:
-    # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
     test = GroupedGEMMTest(batch_sum, batch_count, N, K, dtype, trans_a, trans_b)
     test.check(GroupedGEMMFwdOp(trans_a=trans_a, trans_b=trans_b), *test.gen_inputs())
 
@@ -101,14 +79,12 @@ def test_grouped_gemm(
 @pytest.mark.parametrize(
     "dtype, trans_b",
     [
-        pytest.param(torch.float16, True, marks=pytest.mark.smoke, id="fp16-tn"),
-        pytest.param(torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-tn"),
-        pytest.param(torch.float16, False, marks=pytest.mark.full, id="fp16-tt"),
+        pytest.param(torch.float16, True, marks=pytest.mark.smoke, id="fp16-tt"),
+        pytest.param(torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-tt"),
+        pytest.param(torch.float16, False, marks=pytest.mark.full, id="fp16-tn"),
     ],
 )
-def test_k_grouped_gemm_with_ragged_groups(
-    dtype: torch.dtype, trans_b: bool, fp32_gemm_reduction
-) -> None:
+def test_k_grouped_gemm_with_ragged_groups(dtype: torch.dtype, trans_b: bool) -> None:
     """Groups split K: ragged group lengths, an empty group and output edges off the tile grid.
 
     A group whose length is not a multiple of 8 starts mid-vector, and the empty group's

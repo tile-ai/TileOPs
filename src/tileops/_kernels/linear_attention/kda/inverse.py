@@ -5,7 +5,17 @@ import tilelang.language as T
 __all__ = ["inverse_program"]
 
 
-def _diagonal_program(*, chunk_size, block_size, dtype, output_offset):
+def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0, seeded=False):
+    """Reuse the caller's coefficient, inverse and FP32 GEMM scratch buffers.
+
+    Each doubling level forms ``inverse (I + coeff)``. By default it adds the identity to the
+    coefficient tile and masks it off again, both in place; *seeded* instead starts the
+    product's accumulator from the inverse, so neither rewrite of the coefficient tile and
+    none of their barriers run.
+    """
+    assert threads >= chunk_size, "inverse requires at least one thread per column"
+    assert chunk_size % block_size == 0, "inverse requires complete diagonal blocks"
+
     @T.macro
     def diagonal(coeff, inverse):
         x = T.alloc_local([block_size], "float32")
@@ -27,25 +37,6 @@ def _diagonal_program(*, chunk_size, block_size, dtype, output_offset):
                 inverse[block * block_size + row, lane + output_offset] = T.cast(value, dtype)
         T.sync_threads()
 
-    return diagonal
-
-
-def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0, seeded=False):
-    """Reuse the caller's coefficient, inverse and FP32 GEMM scratch buffers.
-
-    Each doubling level forms ``inverse (I + coeff)``. By default it adds the identity to the
-    coefficient tile and masks it off again, both in place; *seeded* instead starts the
-    product's accumulator from the inverse, so neither rewrite of the coefficient tile and
-    none of their barriers run.
-    """
-    assert threads >= chunk_size, "inverse requires at least one thread per column"
-    assert chunk_size % block_size == 0, "inverse requires complete diagonal blocks"
-    diagonal = _diagonal_program(
-        chunk_size=chunk_size,
-        block_size=block_size,
-        dtype=dtype,
-        output_offset=output_offset,
-    )
     levels = (chunk_size // block_size - 1).bit_length()
 
     def matrix(buffer, offset):

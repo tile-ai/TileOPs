@@ -138,9 +138,7 @@ _REFUSED = {
 
 
 def test_a_changed_dependency_resolves_its_own_plan_and_a_return_reuses_the_first(monkeypatch):
-    """The checks run once per specialization, keyed on every dependency of the call: each
-    tensor's layout and presence, each param, each
-    execution argument and, for a call no tensor places, the current device."""
+    """The checks run once per specialization, keyed on every dependency of the call."""
     for dependency, change in _CHANGES.items():
         with _case(dependency):
             cls = _probe(_scaled, **_SPECIALIZED)
@@ -212,9 +210,8 @@ def test_a_param_changed_after_construction_is_solved_again():
 
 
 def test_a_target_kernel_is_built_again_for_a_changed_param():
-    """A target builds its kernel from the op's params, so a changed param, or a list param
-    edited in place, builds another; a return to earlier params runs the kernel built from
-    them."""
+    """A changed or in-place edited param builds another target kernel; a return to earlier
+    params runs the kernel built from them."""
     from tileops.backend import _registry as registry
 
     state, built = registry.snapshot(), []
@@ -395,9 +392,8 @@ _FAULTS = {
 
 
 def test_a_warm_call_returning_a_faulty_result_fails_and_keeps_the_last_record():
-    """Every call checks what its implementation returned, on the direct route and the
-    dispatcher's: a fault after a correct call, a fresh output sharing a byte with a tensor
-    passed or returned included, is rejected before the call completes."""
+    """On the direct and the dispatched route, a faulty result after a correct call is
+    rejected before the call completes."""
     for fault, (overrides, correct, faulty, message) in _FAULTS.items():
         with _case(fault):
             signature = {"inputs": {"x": _T, "e": _E}, "params": {"emit": {"type": "bool"}}}
@@ -528,6 +524,13 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
     assert parent.last_call.stages == {"leaf": ()}
 
 
+def _weighted_init(self, **params):
+    """A sub-op ``__init__`` that reads its list param ``table`` into a tensor when built."""
+    vars(self).update(params)
+    Op.__init__(self)
+    self.weight = torch.tensor(self.table)
+
+
 def test_a_composite_runs_the_sub_op_built_for_its_specialization():
     """A sub-op held under no identity belongs to the composite's specialization: a change
     of its params builds another, a return runs the first again, and
@@ -551,19 +554,13 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
     assert len(parent._held_delegates()) == 2 and parent._held_delegates()[0] is first
     # A list param replaced, or edited in place, builds a sub-op holding it.
     table = {"table": {"type": "list[float]"}}
-
-    def construct(self, **params):
-        vars(self).update(params)
-        Op.__init__(self)
-        self.weight = torch.tensor(self.table)  # read when built, as a sub-op may
-
     launched = []
 
     def weighted(self, x):
         launched.append(self)
         return x * self.weight
 
-    leaf_table = {"leaf": _probe(weighted, params=table, attributes={"__init__": construct})}
+    leaf_table = {"leaf": _probe(weighted, params=table, attributes={"__init__": _weighted_init})}
     holder = _probe(
         lambda self, x: self.delegate_for("leaf", None, table=self.table)(x),
         params=table,
@@ -597,18 +594,11 @@ def test_a_composite_runs_the_sub_op_built_for_its_specialization():
 
 
 def test_a_call_records_its_sub_op_however_many_times_another_thread_replaces_it():
-    """A call whose sub-op other threads replace before it runs, once or more, still records
-    it: each replaced sub-op keeps its stage while a call still runs on it."""
+    """A replaced sub-op keeps its stage while a call still runs on it."""
     table = {"table": {"type": "list[float]"}}
-
-    def construct(self, **params):
-        vars(self).update(params)
-        Op.__init__(self)
-        self.weight = torch.tensor(self.table)
-
     leaf = {
         "leaf": _probe(
-            lambda self, x: x * self.weight, params=table, attributes={"__init__": construct}
+            lambda self, x: x * self.weight, params=table, attributes={"__init__": _weighted_init}
         )
     }
     ran, resume = threading.Event(), threading.Event()
@@ -942,10 +932,8 @@ def _pair_call(op, signature, storage, first, second, wrap):
 
 
 def test_a_written_tensor_sharing_a_byte_with_another_call_tensor_is_rejected_before_the_call():
-    """On every route, a call whose written tensor, `out` or a written input, shares a byte
-    with another call tensor, an exact alias included, raises naming both before the
-    implementation runs, also between disjoint calls of one specialization; a strided tensor
-    counts by the bytes between its first and last element."""
+    """On every route, a written tensor sharing a byte with another call tensor raises naming
+    both before the implementation runs, also between disjoint calls of one specialization."""
     cases = itertools.product(_WRITTEN_PAIRS.items(), _ROUTES.items())
     for (pair, (signature, forward, first, second, written, other)), (route, route_spec) in cases:
         boundary, mode, wrap = route_spec
@@ -1052,10 +1040,8 @@ def test_imported_device_views_are_checked_by_address(dlpack_device, offset, ove
 
 
 def test_equal_addresses_on_different_devices_do_not_overlap(device_beside_cpu):
-    """Equal addresses on different devices must not overlap.
-
-    The device view borrows a host pointer; the test must never access its storage.
-    """
+    """Equal addresses on different devices do not overlap. The device view borrows a host
+    pointer, so the test never reads its storage."""
     metadata = torch.zeros(8)
     storage = torch._C._construct_storage_from_data_pointer(
         metadata.data_ptr(), device_beside_cpu, metadata.nbytes

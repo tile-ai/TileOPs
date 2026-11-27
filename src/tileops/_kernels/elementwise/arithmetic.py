@@ -450,24 +450,9 @@ class FloorDivideFwdKernel(_FlooredQuotientKernel):
 
 
 class LerpFwdKernel(BinaryKernel, LerpFwdInterface):
-    """Element-wise lerp: y = a + weight * (b - a).
-
-    PyTorch lerp is ternary (a, b, weight). Here weight is a compile-time
-    constant bound at kernel construction, keeping the binary kernel template.
-
-    Args:
-        weight: Scalar interpolation weight (default 0.5). Keyword-only so the
-            positional ``(dtype, config)`` tail stays uniform.
-    """
+    """Element-wise lerp: y = a + weight * (b - a), with the scalar weight baked in."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-
-    @staticmethod
-    def op_func(a, b):
-        raise NotImplementedError(
-            "LerpFwdKernel builds its body from weight; use the kernel through "
-            "__init__ instead of calling op_func."
-        )
 
     @classmethod
     def entry_for(cls, call: LerpCall) -> Entry:
@@ -588,9 +573,7 @@ class LerpTensorFwdKernel(MultiInputElementwiseKernel, LerpTensorFwdInterface):
 
     INPUTS = (("a", "tile"), ("b", "tile"), ("w", "tile"))
 
-    @staticmethod
-    def _builder_fn():
-        return _make_lerp_tensor_kernel
+    _builder = staticmethod(_make_lerp_tensor_kernel)
 
     def _element(self, a, b, w):
         start, end, weight = (T.cast(v, "float32") for v in (a, b, w))

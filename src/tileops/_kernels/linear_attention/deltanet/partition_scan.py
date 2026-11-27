@@ -124,8 +124,8 @@ def partition_scan(
     num_sequences = first_partition.shape[0] - 1
     state_dtype = torch.float32 if initial_state is None else initial_state.dtype
     if initial_state is None:
-        # The build that starts from zero never reads it; one sequence's worth keeps the
-        # dynamic extent bound.
+        # The build that starts from zero never reads it; its extent binds num_sequences as
+        # first_partition's does.
         initial_state = torch.empty(
             (num_sequences, heads, dim, dim), dtype=state_dtype, device=partition_h.device
         )

@@ -1,11 +1,4 @@
-"""Shared online softmax utilities for attention kernels.
-
-The online softmax algorithm computes softmax incrementally over blocks:
-    1. Track running max (scores_max) for numerical stability
-    2. Rescale previous accumulator when a new max is found
-    3. Compute exp2-scaled scores (using log2(e) trick for ffma fusion)
-    4. Update logsum for final normalization
-"""
+"""Online softmax macros shared by the attention kernels."""
 
 import tilelang.language as T
 
@@ -118,30 +111,10 @@ def make_dense_split_sink_merge(accum_dtype):
 
 
 def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
-    """Create a reusable online softmax T.macro.
+    """Create the online softmax update step as a T.macro.
 
-    The macro computes the online softmax update step:
-        1. Save previous scores_max and reset to -inf
-        2. Reduce max over current scores
-        3. Compute rescaling factor for previous accumulator
-        4. Apply exp2 scaling to current scores
-        5. Reduce sum and update logsum
-
-    Note: The caller is responsible for casting acc_s afterwards
-    (e.g., ``T.copy(acc_s, acc_s_cast)``) and rescaling acc_o.
-
-    Use ``make_online_softmax_with_mask_guard`` instead when any attention block
-    may be fully masked (all scores = -infinity), e.g. sliding-window or varlen
-    attention with OOB guards.
-
-    Args:
-        scale: Pre-computed scale factor (should include LOG2E multiplication)
-        accum_dtype: Accumulator data type (e.g., "float")
-        block_rows: Number of rows in the score matrix
-        block_cols: Number of columns in the score matrix
-
-    Returns:
-        online_softmax: A T.macro that performs the online softmax update
+    The caller casts ``acc_s`` afterwards and rescales ``acc_o``. A kernel where a block may be
+    fully masked uses ``make_online_softmax_with_mask_guard`` instead.
     """
 
     @T.macro
@@ -190,29 +163,12 @@ def make_online_softmax_with_score_scale(scale, accum_dtype, block_rows, block_c
 
 
 def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_cols):
-    """Create an online softmax T.macro with monotonic max enforcement and NaN guard.
+    """Create an online softmax T.macro for blocks that may be fully masked.
 
-    Use this variant instead of ``make_online_softmax`` when some attention blocks
-    may be fully masked (all scores = -infinity), e.g., causal or sliding-window
-    attention with OOB guards.  Two extra steps vs the base variant:
-
-    * **Monotonic max**: ``scores_max[i] = max(scores_max[i], scores_max_prev[i])``
-      ensures the running maximum never decreases when the current block's max
-      is smaller than the accumulated maximum.
-    * **NaN guard**: clamps ``scores_max[i]`` to at least ``-1e38`` so that
-      ``exp2(-inf - (-inf))`` never produces NaN for fully-masked blocks. The rescale
-      subtracts the two maxima before scaling, so after two fully-masked blocks it is
-      exactly ``exp2(0)``; scaling each side first lets fast math fuse one product
-      into an FMA whose rounding error (about ``2**99`` at ``-1e38``) overflows exp2.
-
-    Args:
-        scale: Pre-computed scale factor (should include LOG2E multiplication)
-        accum_dtype: Accumulator data type (e.g., "float")
-        block_rows: Number of rows in the score matrix
-        block_cols: Number of columns in the score matrix
-
-    Returns:
-        online_softmax: A T.macro that performs the online softmax update
+    The running maximum never decreases, and it is clamped to at least ``-1e38`` so
+    ``exp2(-inf - (-inf))`` never produces NaN. The rescale subtracts the two maxima before
+    scaling: scaling each side first lets fast math fuse an FMA whose rounding error at
+    ``-1e38`` overflows exp2.
     """
 
     @T.macro

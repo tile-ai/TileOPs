@@ -20,7 +20,7 @@ from tileops._ops.moe import (
 from workloads.moe import gated_activation
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEPrePermuteFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEPrePermuteFwdOp))
 def test_moe_pre_permute_bench(case) -> None:
     op = MoEPrePermuteFwdOp(**case.arguments)
     moe_permute = vllm_op("moe_permute", "model_executor.layers.fused_moe.moe_permute_unpermute")
@@ -37,7 +37,7 @@ def test_moe_pre_permute_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEPostPermuteFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEPostPermuteFwdOp))
 def test_moe_post_permute_bench(case) -> None:
     expert_output, weights, _, residual = case.inputs
     op = MoEPostPermuteFwdOp(**case.arguments)
@@ -119,7 +119,7 @@ def _biased(output: torch.Tensor, row_bias) -> torch.Tensor:
     return output if row_bias is None else (output.float() + row_bias).to(output.dtype)
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMFwdOp))
 def test_moe_grouped_gemm_bench(case) -> None:
     # The optional per-expert bias follows the metadata.
     _, b, metadata, bias = case.inputs
@@ -140,7 +140,7 @@ def test_moe_grouped_gemm_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEExpertMLPFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEExpertMLPFwdOp))
 def test_moe_expert_mlp_bench(case) -> None:
     # The optional biases b_gate_up, b_down follow the metadata.
     _, w_gate_up, w_down, metadata, b_gate_up, b_down = case.inputs

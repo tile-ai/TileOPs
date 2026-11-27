@@ -68,7 +68,7 @@ def _flashinfer_write(inputs):
     return private_inputs(run, inputs, 2, 3)
 
 
-@pytest.mark.parametrize("case", bench.cases(PagedKVCacheWriteFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(PagedKVCacheWriteFwdOp))
 def test_paged_kv_cache_write_bench(case) -> None:
     inputs = case.inputs
     op = PagedKVCacheWriteFwdOp(**case.arguments)

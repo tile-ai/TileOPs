@@ -76,9 +76,6 @@ def _silu(x, float16_divide):
 def _wide_silu(wide, dtype, float16_divide):
     """wide / (1 + exp2(-wide * log2 e)) of a float32 *wide* whose result rounds to *dtype*.
 
-    The exponential runs in fp32 for both speed and fp32-reference error, and
-    as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
-
     16-bit results skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
     subnormal vanishes when added to 1. bfloat16 divides with ``quartered_fdiv``,
     float16 with *float16_divide*.
@@ -129,11 +126,7 @@ class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
 
 class GELUTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
-    """Element-wise GELU using the tanh approximation.
-
-    Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
-    matching ``torch.nn.functional.gelu(x, approximate='tanh')``.
-    """
+    """Element-wise GELU, ``torch.nn.functional.gelu(x, approximate='tanh')``."""
 
     # nvcc compiles the tanh body past 32 registers at the larger elements-a-thread settings.
     FULL_OCCUPANCY = True
@@ -190,13 +183,9 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     def op_func(x):
         """1 / (1 + exp2(-x * log2 e)), in fp32.
 
-        The exponential runs in fp32 for both speed and fp32-reference error, and
-        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
-        bfloat16 and float32 skip ``exp2f``'s subnormal guard, since a flushed
-        subnormal vanishes when added to 1, and divide with ``quartered_fdiv``; it
-        rounds to torch's value at every bfloat16 input. float16 takes
-        ``refined_reciprocal``, which rounds to torch's value at every float16 input;
-        ``approx_fdiv``'s two ulp alone move two of the 65536 float16 results by one ulp.
+        bfloat16 and float32 skip ``exp2f``'s subnormal guard, since a flushed subnormal
+        vanishes when added to 1, and divide with ``quartered_fdiv``. float16 takes
+        ``refined_reciprocal``, which rounds to torch's value at every float16 input.
         """
         one = T.cast(1.0, "float32")
         exponent = -T.cast(x, "float32") * T.cast(LOG2E, "float32")
@@ -265,14 +254,10 @@ class MishFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @staticmethod
     def op_func(x):
-        """One transcendental where the definition spells out three.
+        """With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``.
 
-        With ``e = exp(x)``, ``tanh(log(1 + e))`` is exactly ``(e^2 + 2e)/(e^2 + 2e + 2)``:
-        this avoids extra transcendentals and keeps the small values ``log(1 + e)``
-        rounds away. Past ``saturation`` the ratio is 1 to every bit fp32 carries,
-        so clamping the exponent's argument there returns ``x`` on its own and keeps
-        ``e^2`` finite. Clamping rather than selecting on it also keeps the element
-        loop vectorised, which ``T.if_then_else`` does not.
+        Clamping the exponent's argument at ``saturation`` keeps ``e^2`` finite and the
+        element loop vectorised, where ``T.if_then_else`` would not.
         """
         # Where Mish's tanh factor reaches 1 in fp32, and below where ``e**2`` overflows.
         saturation = 20.0
@@ -284,10 +269,7 @@ class MishFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
 
 class SELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
-    """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
-
-    alpha = 1.6732632423543772, scale = 1.0507009873554805
-    """
+    """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1)))."""
 
     @staticmethod
     def op_func(x):
@@ -304,18 +286,9 @@ class LeakyReLUFwdKernel(ScalarParamUnaryKernel, LeakyReLUFwdInterface):
 
     @classmethod
     def entry_for(cls, call: LeakyReLUCall) -> Entry:
-        return call, lambda: cls(call.n_total, call.dtype, call.negative_slope)
+        return call, lambda: cls(call.n_total, call.dtype, negative_slope=call.negative_slope)
 
-    def __init__(self, N_total, dtype, negative_slope=0.01, config=None):
-        self.negative_slope = negative_slope
-        super().__init__(N_total, dtype, config=config)
-
-    def _param_key(self):
-        return f"negative_slope={self.negative_slope!r}"
-
-    def _make_op_func(self):
-        negative_slope = self.negative_slope
-
+    def _make_op_func(self, negative_slope):
         # The slope multiplies in fp32: in a narrow dtype a large slope would overflow
         # before the product does, and a small one would lose precision.
         def op_func(x):
@@ -332,18 +305,9 @@ class ELUFwdKernel(ScalarParamUnaryKernel, ELUFwdInterface):
 
     @classmethod
     def entry_for(cls, call: ELUCall) -> Entry:
-        return call, lambda: cls(call.n_total, call.dtype, call.alpha)
+        return call, lambda: cls(call.n_total, call.dtype, alpha=call.alpha)
 
-    def __init__(self, N_total, dtype, alpha=1.0, config=None):
-        self.alpha = alpha
-        super().__init__(N_total, dtype, config=config)
-
-    def _param_key(self):
-        return f"alpha={self.alpha!r}"
-
-    def _make_op_func(self):
-        alpha = self.alpha
-
+    def _make_op_func(self, alpha):
         def op_func(x):
             zero = T.cast(0, "float32")
             one = T.cast(1.0, "float32")
@@ -359,19 +323,11 @@ class HardtanhFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
 
     @classmethod
     def entry_for(cls, call: BoundsCall) -> Entry:
-        return call, lambda: cls(call.n_total, call.dtype, call.min_val, call.max_val)
+        return call, lambda: cls(
+            call.n_total, call.dtype, min_val=call.min_val, max_val=call.max_val
+        )
 
-    def __init__(self, N_total, dtype, min_val=-1.0, max_val=1.0, config=None):
-        self.min_val = min_val
-        self.max_val = max_val
-        super().__init__(N_total, dtype, config=config)
-
-    def _param_key(self):
-        return f"min_val={self.min_val!r}|max_val={self.max_val!r}"
-
-    def _make_op_func(self):
-        min_val, max_val = self.min_val, self.max_val
-
+    def _make_op_func(self, min_val, max_val):
         def op_func(x):
             lo = T.cast(min_val, "float32")
             hi = T.cast(max_val, "float32")
@@ -433,9 +389,7 @@ class SoftplusFwdKernel(MultiInputElementwiseKernel, SoftplusFwdInterface):
         self.threshold = threshold
         super().__init__(N_total, dtype, config=config)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_softplus_kernel
+    _builder = staticmethod(_make_softplus_kernel)
 
     def _builder_args(self):
         return (self.beta, self.threshold)
@@ -507,11 +461,7 @@ class SiLUAndMulFwdKernel(FusedGatedKernel, SiLUAndMulFwdInterface):
 
 
 class GELUAndMulFwdKernel(FusedGatedKernel):
-    """GELU-and-Mul: y = gelu(gate) * value, in float32 and rounded once.
-
-    Uses exact GELU, gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))), evaluated by the same
-    ``gelu`` as ``GELUFwdKernel``.
-    """
+    """GELU-and-Mul: y = gelu(gate) * value with the erf GELU, in float32 and rounded once."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
@@ -525,10 +475,7 @@ class GELUAndMulFwdKernel(FusedGatedKernel):
 
 
 class GELUTanhAndMulFwdKernel(FusedGatedKernel):
-    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value, in float32 and rounded once.
-
-    Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
-    """
+    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value, in float32 and rounded once."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
 

@@ -27,10 +27,7 @@ def _w4a16_repack_kernel(n: int, packed_k: int) -> Callable:
     words_per_lane = words_per_step // W4A16_LAYOUT.lanes
     n_steps = packed_k // step
 
-    @tilelang.jit(
-        out_idx=[-1],
-        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-    )
+    @tilelang.jit(out_idx=[-1])
     def build(block_n: int = 64, threads: int = 128) -> Callable:
         @T.prim_func
         def main(
@@ -76,11 +73,10 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
 
     @classmethod
     def entry_for(cls, call: W4A16RepackCall) -> Entry:
-        """The device index is in the identity: the tile is narrowed to divide ``n`` on
-        the device the program compiles for."""
-        index = call.device_index
-        return (call.n, call.packed_k, index), lambda: cls(
-            call.n, call.packed_k, device_index=index
+        """The program depends on ``(n, packed_k)`` only; the architecture is validated, not
+        read."""
+        return (call.n, call.packed_k), lambda: cls(
+            call.n, call.packed_k, device_index=call.device_index
         )
 
     def __init__(

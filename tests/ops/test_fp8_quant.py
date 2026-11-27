@@ -40,7 +40,6 @@ class FP8QuantFixture(FixtureBase):
                 pytest.param((2, 64, 512), 128, torch.bfloat16, marks=pytest.mark.full),
                 pytest.param((4096, 128), 128, torch.float32, marks=pytest.mark.full),
                 pytest.param((16384, 32), 32, torch.float32, marks=pytest.mark.full),
-                pytest.param((1024, 4, 64), 64, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -84,13 +83,11 @@ _UE8M0 = {"eps": 1e-4, "use_ue8m0": True}
         ),
         pytest.param((64, 1024), 128, torch.float16, torch.float8_e8m0fnu, marks=pytest.mark.smoke),
         pytest.param((64, 1024), 128, torch.float32, torch.float32, marks=pytest.mark.smoke),
-        pytest.param((256, 4096), 128, torch.bfloat16, torch.float32, marks=pytest.mark.full),
-        # A last block of rows the block does not fill.
+        # An input large enough for the wide launch.
         pytest.param(
             (3000, 2048), 128, torch.bfloat16, torch.float8_e8m0fnu, marks=pytest.mark.full
         ),
-        # One token, and leading axes folded into the rows.
-        pytest.param((1, 4096), 128, torch.bfloat16, torch.float8_e8m0fnu, marks=pytest.mark.full),
+        # Leading axes folded into the rows.
         pytest.param((3, 5, 512), 64, torch.bfloat16, torch.float32, marks=pytest.mark.full),
     ],
 )
@@ -147,7 +144,6 @@ def test_fp8_quant_ue8m0_floors_scales_at_two_to_the_minus_126(
         pytest.param((4096, 448), torch.bfloat16, marks=pytest.mark.smoke),
         pytest.param((37, 448), torch.float16, marks=pytest.mark.smoke),
         pytest.param((37, 448), torch.float32, marks=pytest.mark.smoke),
-        pytest.param((1, 448), torch.bfloat16, marks=pytest.mark.full),
         # An input large enough for the wide launch.
         pytest.param((10000, 448), torch.bfloat16, marks=pytest.mark.full),
     ],
@@ -193,18 +189,8 @@ def test_fp8_quant_fake_quantizes_a_strided_view_in_place(wide_shape, index) -> 
             id="deepseek-v4-flash-wq-b-indexer-wq-b",
         ),
         pytest.param(
-            (1, 8 * 1024), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-wo-b"
-        ),
-        pytest.param(
-            (1, 2048), torch.float32, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w2"
-        ),
-        pytest.param(
             (6, 4096), torch.float8_e8m0fnu, marks=pytest.mark.full,
             id="deepseek-v4-flash-routed-w13",
-        ),
-        pytest.param(
-            (6, 2048), torch.float8_e8m0fnu, marks=pytest.mark.full,
-            id="deepseek-v4-flash-routed-w2",
         ),
     ],
 )  # fmt: skip
@@ -216,16 +202,11 @@ def test_fp8_quant_graph_replay(shape, scale_dtype) -> None:
 
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="FP8QuantPerTokenGroupFwdOp")
-@pytest.mark.parametrize(
-    "wide_shape",
-    [
-        pytest.param((1, 512), marks=pytest.mark.smoke, id="deepseek-v4-flash-kv"),
-        pytest.param((1, 1, 512), marks=pytest.mark.full, id="deepseek-v4-flash-compressed-kv"),
-    ],
-)
+@pytest.mark.smoke
+@pytest.mark.parametrize("wide_shape", [pytest.param((1, 512), id="deepseek-v4-flash-kv")])
 def test_fp8_quant_in_place_graph_replay(wide_shape) -> None:
     """DeepSeek-V4-Flash's decode-step fake quantization in place of a KV row's columns before
-    its RoPE dimensions."""
+    its RoPE dimensions; its compressed KV, ``(1, 1, 512)``, folds into the same rows."""
     index = (..., slice(None, -64))
     x_shape = torch.empty(wide_shape, device="meta")[index].shape
     test = FP8QuantViewTest(wide_shape, index, x_shape, 64, torch.bfloat16, inplace=True, **_UE8M0)

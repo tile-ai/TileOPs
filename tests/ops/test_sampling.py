@@ -171,12 +171,8 @@ def test_min_p_mask(dtype):
     ],
 )
 def test_min_p_mask_rows_without_a_finite_threshold(vocab: int):
-    """A row whose maximum is not a number passes through, at each shape the kernel plans for.
-
-    ``V`` picks the plan: a row split across blocks, which reduces across a grid barrier; a
-    row one block holds, which takes no barrier; and a row whose bytes are not a whole number
-    of 16-byte vectors, which is read and written element by element.
-    """
+    """A row whose maximum is not a number passes through. ``V`` picks the plan: split across
+    blocks, one block, element by element."""
     device = run_device()
     logits = torch.randn(5, vocab, device=device)
     logits[1] = -_INF
@@ -212,17 +208,10 @@ def test_top_p_mask(dtype):
     ],
 )
 def test_top_p_mask_rows_at_the_contract_endpoints(vocab: int):
-    """``p = 0`` masks a row whole, ``p = 1`` passes a row through whole, and a row with no
-    finite maximum passes through, at each shape the kernel plans for.
-
-    ``V`` picks the plan: a row split across blocks, which reduces across a grid barrier; a
-    row one block holds, which takes no barrier; and a row whose bytes are not a whole
-    number of 16-byte vectors, which is read and written element by element. The ``p = 1``
-    row holds a token 20 below its maximum, whose probability the float32 sum rounds away,
-    and one 200 below, whose float32 softmax is 0; both have positive probability and are
-    kept. The endpoints are held to the contract rather than to the reference, which rounds
-    its own cumulative sum past 1 at ``p = 1``; the rows with no finite maximum are held to
-    the reference, which leaves them whole because a NaN never reaches ``p``.
+    """``p = 0`` masks a row whole, ``p = 1`` passes it through whole (tokens 20 and 200 below
+    the maximum included), and a row with no finite maximum passes through. ``V`` picks the
+    plan: split across blocks, one block, element by element. The endpoints are held to the
+    contract, since the reference rounds its cumulative sum past 1 at ``p = 1``.
     """
     device = run_device()
     p = torch.tensor([0.0, 1.0, 0.5], device=device)
@@ -242,12 +231,8 @@ def test_top_p_mask_rows_at_the_contract_endpoints(vocab: int):
 
 @pytest.mark.smoke
 def test_top_p_mask_below_one_keeps_a_tail_of_tiny_weights():
-    """``p`` just below 1 keeps a tail whose tokens each weigh too little to count alone.
-
-    One logit of 0 and 31999 of -19 in a row split across blocks: each tail token weighs
-    ``exp(-19)``, about 5.6e-9, and together they hold about 1.8e-4 of the total, so the
-    weight above them falls short of ``p`` times it and the tail is kept.
-    """
+    """``p`` just below 1 keeps a split row's tail of 31999 tokens of weight ``exp(-19)`` each,
+    which together hold about 1.8e-4 of the total."""
     device = run_device()
     logits = torch.full((1, 32000), -19.0, device=device)
     logits[0, 0] = 0.0
@@ -267,11 +252,9 @@ def test_top_p_mask_below_one_keeps_a_tail_of_tiny_weights():
     ],
 )
 def test_top_p_mask_split_rows_cut_where_the_reference_does(batch: int, vocab: int):
-    """Split rows whose weights need three fixed-point pieces (``batch = 64`` at
-    ``V = 201088``, on a device whose shared memory holds them), split rows too long for a
-    64-bit fixed-point total (``V = 2^20``), which add float32 weights, and split rows read
-    element by element (``batch = 17`` at ``V = 50257``), whose bins a block clears outside
-    the threads that fold them, cut where the reference does."""
+    """Split rows cut where the reference does: three fixed-point pieces (``V = 201088``),
+    float32 bins past a 64-bit fixed-point total (``V = 2^20``), and element-wise reads
+    (``V = 50257``)."""
     device = run_device()
     logits = torch.randn(batch, vocab, device=device)
     p = torch.rand(batch, device=device) * 0.45 + 0.5
@@ -282,12 +265,8 @@ def test_top_p_mask_split_rows_cut_where_the_reference_does(batch: int, vocab: i
 
 @pytest.mark.smoke
 def test_top_p_mask_split_row_repeats_its_mask():
-    """A row split across blocks gets the same mask on every call.
-
-    The blocks add their bins in whatever order they reach the atomics; a long tail of logits
-    uniform in [-30, 0] at ``p`` just below 1 puts the cut where a different rounding of the
-    bins' totals would move it.
-    """
+    """A row split across blocks gets the same mask on every call, at a ``p`` where another
+    rounding of the bins' totals would move the cut."""
     device = run_device()
     generator = torch.Generator(device=device).manual_seed(0)
     logits = -30 * torch.rand(1, 128256, device=device, generator=generator)
@@ -421,13 +400,8 @@ def test_sampling_from_probs():
 
 @pytest.mark.smoke
 def test_sampling_from_probs_draws_the_same_token_at_every_launch_shape():
-    """A row drawn inside batches that take different launches gives one token, and weight.
-
-    The batch settles how many blocks share a row, and with it how the prefix sums the
-    search descends are grouped. ``B = 1`` splits the row across the device and takes the
-    grid barrier; a batch past the block count leaves the row to one block and takes none.
-    Every seventh weight is zero, so the same case says the split row draws no zero weight.
-    """
+    """A row drawn inside batches that split it differently (``B = 1`` across the device,
+    ``B = 300`` one block) gives one token, never one of zero weight."""
     device = run_device()
     torch.manual_seed(3)
     weights = torch.rand(151936, device=device)
@@ -486,13 +460,8 @@ def test_chain_speculative_sampling():
     ],
 )
 def test_chain_speculative_sampling_accepts_the_reference_prefix(batch, vocab, num_draft):
-    """``num_accepted`` and the accepted prefix are the reference's, at every launch shape.
-
-    The uniforms and the float32 ``u * draft < target`` test are the reference's, and neither
-    names a launch fact, so the verification agrees exactly however the row is split. The
-    token after the prefix follows the same distribution but is not required to be the
-    reference's index.
-    """
+    """``num_accepted`` and the accepted prefix are the reference's at every launch shape; the
+    token after the prefix need only follow the same distribution."""
     device = run_device()
     torch.manual_seed(11)
     draft = torch.randn(batch, num_draft, vocab, device=device).softmax(-1)

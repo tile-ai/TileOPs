@@ -1,11 +1,4 @@
-"""SM90 warp-specialized GQA over a read-only paged KV cache.
-
-A persistent CTA has one TMA producer warp and two consumer warpgroups. Work
-is 128 query rows of one head group, query heads that share a KV head; wide query
-groups over one KV head use a flat Q layout, whose rows run on three consumer
-warpgroups, 192 rows an item, at dimension 64. The producer zeroes stale V rows
-in the final partial cache page before consumers read them.
-"""
+"""SM90 warp-specialized GQA over a read-only paged KV cache."""
 
 import math
 
@@ -793,23 +786,14 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     It serves float16 and bfloat16 heads of dimension 64, 128 or 256 over pages of a multiple of
     16 rows, causal or bidirectional, with a positive scale and an optional softcap, when the
     packed query rows average at least one 128-row tile a request. It does not split a
-    request's keys across CTAs, so a decode packing, whose tiles fall short of the
-    multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. A query group split into head
-    groups is served at dimension 128 or 256 only where its packing is dense enough
-    (``_split_group_refusal``): ``_LEAST_TILE_FILL`` bounds the empty rows of its head-group
-    tiles; the wave fills bound the multiprocessors a partial last wave leaves idle, lowest
-    with RoPE, whose fused rotation slows the split scan more than this kernel's RoPE
-    preparation costs, and lower at dimension 256, where the split scan is slowest;
-    ``_LEAST_TILE_FILL_OVER_WAVES`` keeps thin tiles at dimension 128 off several waves,
-    whose per-item costs match the split scan's over short caches. At dimension 64 the split
-    scan keeps every such group.
-    Windows bound the scan and sinks add denominator-only mass; without RoPE it serves no
-    window.
-    RoPE preprocesses private request pages without mutating the cache: over a 16-bit cache
-    they hold the rotated leading key channels, the rest of each key and the values coming from
-    the cache; an FP8 query or cache is served only with RoPE, whose preparation dequantizes
-    all of K and V into those 16-bit pages. It serves any query group; over one KV head, more
-    query heads than a tile holds 8-row swizzle atoms are served without windows, sinks or RoPE.
+    request's keys across CTAs, so a decode packing stays on ``GQAPagedFwdKernel``'s split scan.
+    A query group split into head groups is served at dimension 128 or 256 only where its
+    packing is dense enough (``_split_group_refusal``). Windows bound the scan and sinks add
+    denominator-only mass; without RoPE it serves no window.
+    RoPE preprocesses private request pages without mutating the cache; an FP8 query or cache
+    is served only with RoPE, whose preparation dequantizes all of K and V into 16-bit pages.
+    Over one KV head, more query heads than a tile holds 8-row swizzle atoms are served
+    without windows, sinks or RoPE.
     """
 
     # Host eligibility and the device split schedule must use the same threshold.
@@ -836,11 +820,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     def block_n_for(page_size: int, dim: int) -> int | None:
         """The widest key tile up to 128 rows that is part of one page or a run of whole
         pages, a multiple of the 16 rows one WGMMA step reduces over; ``None`` when none is.
-        At dimension 256 a tile holds at most 64 rows: the query tile and two stages of key
-        and value tiles then fill the 227 KB of shared memory.
-
-        A box smaller than a page costs the producer a table read and a TMA copy per box, so a
-        tile of whole pages wins over a wider tile of boxes cut from pages.
+        At dimension 256 a tile holds at most 64 rows, so the query tile and two stages of key
+        and value tiles fit shared memory. A tile of whole pages wins over a wider tile of boxes
+        cut from pages, which cost the producer a table read and a TMA copy each.
         """
         widest = 128 if dim <= 128 else 64
         for block_n in (128, 112, 96, 80, 64, 48, 32, 16):

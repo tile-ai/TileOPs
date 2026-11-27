@@ -8,7 +8,6 @@ import torch
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.sampling import SamplingCall, TopKTopPMaskFwdInterface, TopKTopPMaskFwdKernel
 from tileops._ops.op_base import Op
-from tileops.backend import Target
 
 __all__ = ["TopKTopPMaskFwdOp"]
 
@@ -40,19 +39,6 @@ class TopKTopPMaskFwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "top_k_top_p_mask_fwd": TopKTopPMaskFwdInterface
     }
-
-    def __init__(
-        self,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtypes are taken from each call.
-
-        Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
-        """
-        super().__init__(target=target)
 
     def forward(
         self, logits: torch.Tensor, top_k: torch.Tensor, top_p: torch.Tensor

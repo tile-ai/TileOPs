@@ -10,7 +10,6 @@ Usage:
 """
 
 import argparse
-import ast
 import json
 import math
 import re
@@ -57,13 +56,9 @@ _PERF_KEYS = (
     "baseline_latency_ms",
     "baseline_tflops",
     "baseline_ratio",
-    # What established the row, and whether anything did. A measurement published without
-    # them reads as though a reference stood behind it.
-    "tileops_unverified",
-    "baseline_unverified",
-    "tileops_no_ratio",
-    "baseline_no_ratio",
 )
+# Row properties stating what established the row, and whether anything did, for every tag.
+_EVIDENCE_SUFFIXES = ("_no_ratio", "_unverified")
 # A row below this ratio is behind its fastest baseline and raises an alert; from it up to
 # 1.0 the two are level, as the tracker issues count them.
 BASELINE_RATIO_ALERT = 0.99
@@ -99,11 +94,6 @@ _DOWN = "\u2193"  # ↓
 
 # A dtype name as a case id spells it: the id ends in its dtype cases and dtype parameters.
 _DTYPE_TOKEN = re.compile(r"bfloat16|bool|u?int\d+|float\d+(?:_[a-z0-9]+)?|complex\d+")
-# Verdicts are drawn on device execution time, not on the span that also covers the
-# gaps between a call's kernels.
-_CONCLUSION_KEY = "device_busy_ms"
-#: Absorbs the rounding a count recovered from ``tflops`` carries.
-_DERIVED_COUNT_RTOL = 1e-3
 # A kernel file below this share of executed lines was never constructed by any test.
 _KERNEL_BUILT_PCT = 25
 # Unattributed failures listed before the table says how many it left out. The
@@ -115,16 +105,12 @@ _COVERAGE_MIN_STMTS = 20
 _COVERAGE_WORST_N = 15  # rows in the least-covered file list
 
 
-def _get_properties(testcase: ET.Element) -> dict[str, str]:
-    """Extract user properties from a JUnit testcase element."""
-    props = {}
-    for ps in testcase.iter("properties"):
-        for p in ps.iter("property"):
-            props[p.attrib["name"]] = p.attrib.get("value", "")
-    return props
+def testcase_properties(testcase: ET.Element) -> dict[str, str]:
+    """The user properties of a JUnit testcase element."""
+    return {p.attrib["name"]: p.attrib.get("value", "") for p in testcase.iter("property")}
 
 
-def _testcase_fields(tc: ET.Element, props: dict[str, str]) -> dict:
+def testcase_fields(tc: ET.Element, props: dict[str, str]) -> dict:
     """The fields every parsed testcase carries: its id, outcome, op and failure message."""
     failure = tc.find("failure")
     error = tc.find("error")
@@ -154,8 +140,8 @@ def parse_test_xml(path: str) -> list[dict]:
     """Parse correctness test results, returning per-testcase dicts."""
     results = []
     for tc in ET.parse(path).iter("testcase"):
-        props = _get_properties(tc)
-        entry = _testcase_fields(tc, props)
+        props = testcase_properties(tc)
+        entry = testcase_fields(tc, props)
         # Present only where a comparison completed, which is what
         # distinguishes establishing a value from merely running.
         entry["compared"] = int(props.get("checked_outputs", "0")) > 0
@@ -164,71 +150,39 @@ def parse_test_xml(path: str) -> list[dict]:
 
 
 def _data_terms(text: str) -> dict:
-    """A row's ``roofline_data_terms`` property, as the XML recorded it.
-
-    Snapshots written before the benchmark published it as JSON hold a Python repr.
-    History reparses every snapshot in the window, so one such row would otherwise
-    fail the whole history build; text that is neither yields an empty mapping.
-    """
-    for parse in (json.loads, ast.literal_eval):
-        try:
-            terms = parse(text)
-        except (ValueError, SyntaxError):
-            continue
-        return terms if isinstance(terms, dict) else {}
-    return {}
+    """A row's ``roofline_data_terms`` JSON property; an empty mapping where it is not one,
+    so one unreadable row does not fail the whole history build."""
+    try:
+        terms = json.loads(text)
+    except ValueError:
+        return {}
+    return terms if isinstance(terms, dict) else {}
 
 
 def parse_bench_xml(path: str) -> list[dict]:
     """Parse benchmark results, returning per-testcase dicts."""
     results = []
     for tc in ET.parse(path).iter("testcase"):
-        props = _get_properties(tc)
-        entry = _testcase_fields(tc, props)
-        # Evidence rides on every tag, not only the two the perf keys name.
-        for pkey, pval in props.items():
-            if pkey.endswith(("_no_ratio", "_unverified")):
-                entry[pkey] = pval
-
-        # Perf data
-        for key in _PERF_KEYS:
-            if key in props:
-                try:
-                    entry[key] = float(props[key])
-                except ValueError:
-                    entry[key] = props[key]
+        props = testcase_properties(tc)
+        entry = testcase_fields(tc, props)
+        entry |= {k: v for k, v in props.items() if k.endswith(_EVIDENCE_SUFFIXES)}
+        entry |= {key: _try_float(props[key]) for key in _PERF_KEYS if key in props}
         terms = props.get("tileops_roofline_data_terms")
         if terms is not None:
             entry["tileops_roofline_data_terms"] = _data_terms(terms)
 
-        # Collect tag-prefixed baselines written by conftest (e.g. fa3_latency_ms,
-        # flashinfer_latency_ms).  Each baseline becomes a dict in "baselines".
+        # Every other ``<tag>_<metric>`` the benchmark conftest writes is one baseline's.
         baselines = {}
         for pkey, pval in props.items():
-            if pkey.endswith("_device_busy_ms") and pkey not in (
-                "tileops_device_busy_ms",
-                "baseline_device_busy_ms",
-            ):
-                tag = pkey.removesuffix("_device_busy_ms")
-                baselines.setdefault(tag, {})["device_busy_ms"] = _try_float(pval)
-            elif pkey.endswith("_latency_ms") and pkey not in (
-                "tileops_latency_ms",
-                "baseline_latency_ms",
-            ):
-                tag = pkey.removesuffix("_latency_ms")
-                baselines.setdefault(tag, {})["latency_ms"] = _try_float(pval)
-            elif pkey.endswith("_tflops") and pkey not in ("tileops_tflops", "baseline_tflops"):
-                tag = pkey.removesuffix("_tflops")
-                baselines.setdefault(tag, {})["tflops"] = _try_float(pval)
-            elif pkey.endswith("_ratio") and pkey not in ("baseline_ratio",):
-                # `<tag>_no_ratio` states why a tag publishes none. Treated as a
-                # ratio it invents a `<tag>_no` baseline whose ratio is a
-                # sentence, which then reads as a comparison that happened.
-                if pkey.endswith("_no_ratio"):
-                    continue
-                ratio = _try_float(pval)
-                if isinstance(ratio, float):
-                    baselines.setdefault(pkey.removesuffix("_ratio"), {})["ratio"] = ratio
+            if pkey.endswith("_no_ratio"):
+                continue
+            for metric in ("device_busy_ms", "latency_ms", "tflops", "ratio"):
+                tag = pkey.removesuffix(f"_{metric}")
+                if tag != pkey and tag not in ("tileops", "baseline"):
+                    value = _try_float(pval)
+                    if metric != "ratio" or isinstance(value, float):
+                        baselines.setdefault(tag, {})[metric] = value
+                    break
         if baselines:
             entry["baselines"] = baselines
 
@@ -236,10 +190,10 @@ def parse_bench_xml(path: str) -> list[dict]:
     return results
 
 
-def _try_float(v):
+def _try_float(v: str) -> float | str:
     try:
         return float(v)
-    except (ValueError, TypeError):
+    except ValueError:
         return v
 
 
@@ -386,12 +340,11 @@ def aggregate_bench_results(results: list[dict]) -> dict:
         if not d["module"]:
             d["module"] = r.get("op_module")
         config_entry = {"name": r["name"]}
-        for key in (*_PERF_KEYS, "baselines"):
-            if key in r:
-                config_entry[key] = r[key]
-        for key, value in r.items():
-            if key.endswith(("_no_ratio", "_unverified")):
-                config_entry[key] = value
+        config_entry |= {
+            key: value
+            for key, value in r.items()
+            if key in _PERF_KEYS or key == "baselines" or key.endswith(_EVIDENCE_SUFFIXES)
+        }
         d["configs"].append(config_entry)
     return dict(ops)
 
@@ -442,70 +395,27 @@ def load_history(path: str | None) -> list[dict]:
 
 
 def history_window(runs: list[dict], retention_days: int = HISTORY_RETENTION_DAYS) -> list[dict]:
-    """The runs the verdicts compare against: one per date, within the period.
-
-    A date carries its last run, and the result is ordered by date whatever
-    order the file held. Dispatching a day by hand as well as by the schedule
-    would otherwise weigh it twice in the median and give it two chances at the
-    window minimum.
-    """
+    """The runs the verdicts compare against, ordered by date: the last run of each date
+    within the period, so a day run twice does not weigh twice."""
     cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
     kept = {d: r for r in runs if (d := r.get("date") or "") >= cutoff}
     return sorted(kept.values(), key=lambda r: r["date"])
 
 
-def _conclusion(cfg: dict) -> tuple[float | None, str]:
-    """The reading a verdict is drawn on, and which key it came from.
-
-    Runs recorded before the switch carry only ``latency_ms``. The key travels with
-    the value so history is compared like with like: for an op launching several
-    kernels the two differ by the gaps between them, and comparing across the pair
-    would read as a change the op did not make.
-    """
-    busy = cfg.get(f"tileops_{_CONCLUSION_KEY}")
-    if busy is not None:
-        return busy, _CONCLUSION_KEY
-    return cfg.get("tileops_latency_ms"), "latency_ms"
-
-
-def _recorded_ms(reading: dict) -> float | None:
-    """The time a recorded reading (a history entry's or a baseline's) is judged on.
-
-    Readings recorded before the switch to ``device_busy_ms`` carry only ``latency_ms``.
-    """
-    return reading.get(_CONCLUSION_KEY, reading.get("latency_ms"))
-
-
 class _WorkCounts(NamedTuple):
+    """The FLOP and byte counts of the work a reading timed."""
+
     flops: float | None
     nbytes: float | None
-    #: False when ``flops`` was recovered from ``tflops`` rather than recorded.
-    flops_recorded: bool
 
 
-def _work_counts(reading: dict, ms: float | None) -> _WorkCounts:
-    """Return the FLOP and byte counts of the work a reading timed."""
-    nbytes, flops, tflops = reading.get("bytes"), reading.get("flops"), reading.get("tflops")
-    if flops is None and tflops is not None and ms is not None:
-        return _WorkCounts(tflops * ms * 1e9, nbytes, False)
-    return _WorkCounts(flops, nbytes, True)
-
-
-def _same_count(current: float | None, historical: float | None, rtol: float) -> bool:
-    """Whether two counts are the same work, taking an unknown count as a match."""
-    if current is None or historical is None:
-        return True
-    if current <= 0 or historical <= 0:
-        return current == historical
-    return abs(current - historical) / max(current, historical) <= rtol
+def _work_counts(reading: dict) -> _WorkCounts:
+    return _WorkCounts(reading.get("flops"), reading.get("bytes"))
 
 
 def _same_workload(current: _WorkCounts, historical: _WorkCounts) -> bool:
-    """Whether two readings timed the same workload."""
-    rtol = 0.0 if current.flops_recorded and historical.flops_recorded else _DERIVED_COUNT_RTOL
-    return _same_count(current.flops, historical.flops, rtol) and _same_count(
-        current.nbytes, historical.nbytes, 0.0
-    )
+    """Whether two readings timed the same workload, taking an unknown count as a match."""
+    return all(c is None or h is None or c == h for c, h in zip(current, historical, strict=True))
 
 
 class _Reading(NamedTuple):
@@ -521,17 +431,13 @@ def _spread(props: dict) -> float | None:
 def _alias_name(
     runs: list[dict], op: str, config_name: str, work: _WorkCounts, current: frozenset[str]
 ) -> str | None:
-    """The unique prior display name of this row in history, or None.
+    """The unique prior name of this row in history, or None.
 
-    A name is adopted only when its recorded FLOP and byte counts equal the
-    current row's exactly, its case id names the same dtypes, and it shares a run
-    with the current name neither in history nor in *current*: a renamed row and
-    its new name never co-occur, while another variant of the same workload does.
-    A variant added in the same run as the row it resembles is only caught by
-    *current*, because the row itself is in no historical run. Equal counts do not
-    tell two dtypes of one width apart.
+    A prior name has the row's exact FLOP and byte counts and dtypes, and shares no run with
+    the current name, in history or in *current*, the case ids of this run: a renamed row and
+    its new name never co-occur, while another variant of the workload does.
     """
-    if not work.flops_recorded or work.flops is None or work.nbytes is None:
+    if work.flops is None or work.nbytes is None:
         return None
     dtypes = _dtypes_of(config_name)
     candidates: set[str] = set()
@@ -545,14 +451,7 @@ def _alias_name(
             if has_current:
                 excluded.add(name)
                 continue
-            tileops_data = entry.get("tileops", {})
-            hist = _work_counts(tileops_data, _recorded_ms(tileops_data))
-            if (
-                hist.flops_recorded
-                and hist.flops == work.flops
-                and hist.nbytes == work.nbytes
-                and _dtypes_of(name) == dtypes
-            ):
+            if _work_counts(entry.get("tileops", {})) == work and _dtypes_of(name) == dtypes:
                 candidates.add(name)
     candidates -= excluded | current
     return candidates.pop() if len(candidates) == 1 else None
@@ -562,7 +461,6 @@ def _config_readings(
     runs: list[dict],
     op: str,
     config_name: str,
-    key: str,
     work: _WorkCounts,
     current: frozenset[str],
     l2_flush: str | None,
@@ -581,8 +479,8 @@ def _config_readings(
             if name is None or name not in cfgs:
                 continue
             tileops_data = cfgs[name].get("tileops", {})
-            ms = tileops_data.get(key)
-            if ms is None or ms <= 0 or not _same_workload(work, _work_counts(tileops_data, ms)):
+            ms = tileops_data.get("device_busy_ms")
+            if ms is None or ms <= 0 or not _same_workload(work, _work_counts(tileops_data)):
                 continue
             if tileops_data.get("l2_flush") != l2_flush:
                 continue
@@ -608,13 +506,17 @@ def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
     for op, data in bench_ops.items():
         current = frozenset(case_id(cfg["name"]) for cfg in data["configs"])
         for cfg in data["configs"]:
-            lat, key = _conclusion(cfg)
+            lat = cfg.get("tileops_device_busy_ms")
             if lat is None or lat <= 0:
                 continue
             props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
-            work = _work_counts(props, lat)
             readings = _config_readings(
-                history_runs, op, case_id(cfg["name"]), key, work, current, props.get("l2_flush")
+                history_runs,
+                op,
+                case_id(cfg["name"]),
+                _work_counts(props),
+                current,
+                props.get("l2_flush"),
             )
             if readings:
                 yield op, cfg, lat, _spread(props), readings
@@ -670,7 +572,7 @@ def detect_new_ops(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     for run in history_runs:
         for op, cfgs in run.get("ops", {}).items():
             for entry in cfgs.values():
-                ms = _recorded_ms(entry.get("tileops", {}))
+                ms = entry.get("tileops", {}).get("device_busy_ms")
                 if ms is not None and ms > 0:
                     measured.add(op)
     out = []
@@ -678,7 +580,7 @@ def detect_new_ops(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
         if op in measured:
             continue
         for cfg in data["configs"]:
-            lat, _ = _conclusion(cfg)
+            lat = cfg.get("tileops_device_busy_ms")
             if lat is None or lat <= 0:
                 continue
             out.append(
@@ -740,15 +642,9 @@ def _rated_configs(bench_ops: dict):
     for op, data in bench_ops.items():
         for cfg in data["configs"]:
             primary = cfg.get("baseline_tag", "baseline")
-            candidates = [
-                (
-                    cfg.get("baseline_ratio"),
-                    primary,
-                    cfg.get(f"baseline_{_CONCLUSION_KEY}", cfg.get("baseline_latency_ms")),
-                )
-            ]
+            candidates = [(cfg.get("baseline_ratio"), primary, cfg.get("baseline_device_busy_ms"))]
             candidates += [
-                (bl.get("ratio"), tag, _recorded_ms(bl))
+                (bl.get("ratio"), tag, bl.get("device_busy_ms"))
                 for tag, bl in cfg.get("baselines", {}).items()
                 if tag != primary
             ]
@@ -800,7 +696,7 @@ def case_reading(case: ET.Element) -> tuple[dict, tuple[float, float] | None]:
     The reading is ``None`` for a failed row, or one without a nonzero TileOPs time or a
     comparator; such a row is judged nowhere.
     """
-    props = {p.get("name"): p.get("value") for p in case.iter("property")}
+    props = testcase_properties(case)
     failed = any(child.tag in ("failure", "error") for child in case)
     fastest = fastest_comparator(props)
     tileops = float(props.get("tileops_device_busy_ms") or 0)
@@ -877,7 +773,7 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
         {
             "op": op,
             "config": cfg["name"],
-            "tileops_ms": _conclusion(cfg)[0],
+            "tileops_ms": cfg.get("tileops_device_busy_ms"),
             "baseline_ms": baseline_ms,
             "ratio": ratio,
             "baseline_tag": tag,
@@ -897,62 +793,47 @@ def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None 
 
     ``run`` states where the readings came from: ``date``, ``commit``, ``gpu``
     and, where the snapshot recorded one, ``run_id``. Coverage sits in a key of
-    its own beside ``ops``, which regression detection and pruning do not read,
-    so entries written before it existed stay readable.
+    its own beside ``ops``, which regression detection does not read.
     """
+    tileops_keys = (
+        "latency_ms",
+        "device_busy_ms",
+        "tflops",
+        "flops",
+        "bytes",
+        "roof_key",
+        "roofline_data_terms",
+        "device_busy_p10_ms",
+        "device_busy_p90_ms",
+        "l2_flush",
+    )
+    baseline_keys = ("latency_ms", "device_busy_ms", "tflops")
     ops_data = {}
     for op, data in (bench_ops or {}).items():
         cfg_data = {}
         for cfg in data["configs"]:
             entry = {}
-            lat = cfg.get("tileops_latency_ms")
-            busy = cfg.get("tileops_device_busy_ms")
-            if lat is not None or busy is not None:
-                entry["tileops"] = {}
-                for key, value in (("latency_ms", lat), (_CONCLUSION_KEY, busy)):
-                    if value is not None:
-                        entry["tileops"][key] = value
-                for name in (
-                    "tflops",
-                    "flops",
-                    "bytes",
-                    "roof_key",
-                    "roofline_data_terms",
-                    "device_busy_p10_ms",
-                    "device_busy_p90_ms",
-                    "l2_flush",
-                ):
-                    value = cfg.get(f"tileops_{name}")
-                    if value is not None:
-                        entry["tileops"][name] = value
+            tileops = {
+                k: cfg[f"tileops_{k}"] for k in tileops_keys if cfg.get(f"tileops_{k}") is not None
+            }
+            if "latency_ms" in tileops or "device_busy_ms" in tileops:
                 sol = cfg.get("sol")
                 if sol is not None:
-                    entry["tileops"]["sol"] = {
+                    tileops["sol"] = {
                         "efficiency": round(sol["efficiency"], 4),
                         "bound": sol["bound"],
                         "latency_bound": sol["latency_bound"],
                     }
-            bl_lat = cfg.get("baseline_latency_ms")
-            bl_busy = cfg.get(f"baseline_{_CONCLUSION_KEY}")
-            if bl_lat is not None or bl_busy is not None:
-                tag = cfg.get("baseline_tag", "baseline")
-                if isinstance(tag, str):
-                    entry[tag] = {}
-                    for key, value in (("latency_ms", bl_lat), (_CONCLUSION_KEY, bl_busy)):
-                        if value is not None:
-                            entry[tag][key] = value
-                    bl_tflops = cfg.get("baseline_tflops")
-                    if bl_tflops is not None:
-                        entry[tag]["tflops"] = bl_tflops
-            for btag, bl in cfg.get("baselines", {}).items():
-                if btag == cfg.get("baseline_tag"):
-                    continue  # already recorded above
-                bl_entry = {}
-                for bl_key in ("latency_ms", _CONCLUSION_KEY, "tflops"):
-                    if bl.get(bl_key) is not None:
-                        bl_entry[bl_key] = bl[bl_key]
-                if bl_entry:
-                    entry[btag] = bl_entry
+                entry["tileops"] = tileops
+            # The unprefixed ``baseline_*`` properties are the first baseline's, under its tag.
+            baselines = dict(cfg.get("baselines", {}))
+            tag = cfg.get("baseline_tag", "baseline")
+            if isinstance(tag, str):
+                baselines[tag] = {k: cfg.get(f"baseline_{k}") for k in baseline_keys}
+            for btag, bl in baselines.items():
+                reading = {k: bl[k] for k in baseline_keys if bl.get(k) is not None}
+                if reading:
+                    entry[btag] = reading
             if entry:
                 cfg_data[case_id(cfg["name"])] = entry
         if cfg_data:
@@ -1026,20 +907,14 @@ def _ops_verified(
 ) -> tuple[int, int] | None:
     """``(ops with a verified result, implemented ops)``, or None without *implemented*.
 
-    An op counts as verified when a reference established one of its results
-    tonight, from either verifier: unit tests compare against ``ref_program``,
-    and a benchmark row is checked against its baseline before it is timed. The
-    two cover different ops, and neither alone is the library's coverage.
+    An op is verified when a unit test compared one of its outputs or a benchmark row
+    published a ratio against a baseline.
     """
     if implemented is None:
         return None
-    # Attribution says which op a test belongs to, not what it established: a
-    # constructor rejection passes without comparing any of the op's values.
+    # A constructor-rejection test passes without comparing any of the op's values.
     passed = {op for op, d in (test_ops or {}).items() if d.get("compared", 0) > 0}
-    # A baseline dict is not evidence either: the benchmark conftest writes a
-    # tag's timing fields before deciding whether that tag may publish a ratio,
-    # so a noncomparable baseline still leaves a populated entry. Only a ratio
-    # says a reference was compared against.
+    # A noncomparable baseline still records its timing; only a ratio is evidence.
     compared = {
         op
         for op, data in (bench_ops or {}).items()
@@ -1053,17 +928,8 @@ def _ops_verified(
 
 
 def _kernel_count() -> int | None:
-    """Concrete kernels the library exports, or None when they will not import.
-
-    Counted from each ``tileops._kernels`` subpackage's ``__all__``, which
-    docs/code-style.md requires to be explicit: a kernel the package
-    does not export is not one a caller can reach, which leaves out the shared
-    implementation bases under ``_base`` and the private ``_`` classes. One op
-    carries several kernels, so this never matches the op count.
-
-    A class counts by being a concrete ``Kernel``, not by its name: a kernel
-    whose name ends in ``Template`` is still a kernel.
-    """
+    """Concrete ``Kernel`` classes in the ``__all__`` of ``tileops._kernels`` and its
+    subpackages, or None when they will not import."""
     try:
         import importlib
         import inspect
@@ -1082,11 +948,7 @@ def _kernel_count() -> int | None:
                 and not inspect.isabstract(attribute)
             }
 
-        # Packages at every depth, plus the root: gemm.grouped and
-        # linear_attention.gla are nested, and the root re-exports what the
-        # modules beside the packages define. A private module's own ``__all__``
-        # is not an export -- elementwise/_base.py lists its shared bases there
-        # and no package re-exports them, so no caller can reach one.
+        # Packages only: a private module's own ``__all__`` is not an export.
         found = exported(kernels_pkg)
         for module in pkgutil.walk_packages(kernels_pkg.__path__, prefix="tileops._kernels."):
             if not module.ispkg:
@@ -1115,18 +977,9 @@ def _load_manifest() -> dict | None:
 
 
 def _library_scale(manifest: dict | None) -> dict[str, int] | None:
-    """What the op library holds, or None without *manifest*.
-
-    ``operators`` counts the ops that have an implementation, which is what the
-    library offers; an entry that is still only a specification is counted by
-    ``specs`` and by nothing else. ``kernels`` counts what those ops dispatch
-    to, which is the larger number: one op carries a kernel per strategy, dtype
-    class and architecture it serves. A workload added to an implemented op
-    moves ``workloads`` alone.
-
-    ``collect_stats`` is the same reader the manifest stats job publishes from,
-    so the two never disagree on how an op is counted.
-    """
+    """Implemented ``operators``, ``specs``, ``workloads`` of implemented ops and, where they
+    import, ``kernels``, counted as the manifest stats job counts them; None without
+    *manifest*."""
     if manifest is None:
         return None
     try:
@@ -1146,7 +999,8 @@ def _library_scale(manifest: dict | None) -> dict[str, int] | None:
     return scale
 
 
-def _get_git_commit() -> str:
+def git_commit() -> str:
+    """The checkout's short commit hash, or ``unknown``."""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -1154,9 +1008,9 @@ def _get_git_commit() -> str:
             text=True,
             timeout=5,
         )
-        return result.stdout.strip() if result.returncode == 0 else "unknown"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return "unknown"
+    return (result.returncode == 0 and result.stdout.strip()) or "unknown"
 
 
 def _get_gpu_name() -> str:
@@ -1350,16 +1204,14 @@ def generate_report(
 ) -> str:
     """Generate markdown report."""
     lines = []
-    commit = _get_git_commit()
+    commit = git_commit()
     gpu = _get_gpu_name()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     sol_fails = [a for a in (sol_anomalies or []) if a["level"] == "FAIL"]
     sig = _coverage_signals(coverage) if coverage else None
 
     # ── Header ────────────────────────────────────────────────────────────
-    # Every testcase, not only those a reference comparison attributed to an op:
-    # the rest run and fail the job just the same, and counting only the attributed
-    # ones reported a pass rate over half the suite.
+    # Every testcase, not only those attributed to an op: the rest fail the job just the same.
     outcomes = [r["outcome"] for r in (test_results or [])]
     n_bench_ops = len(bench_ops) if bench_ops else 0
     n_failures = sum(1 for d in (test_ops or {}).values() if d["failed"] > 0)
@@ -1573,12 +1425,7 @@ def generate_report(
         lines.append("| Test | Error |")
         lines.append("|:-----|:------|")
         for f in bench_failures:
-            name = f["name"]
-            msg = f.get("failure_message") or ""
-            if len(msg) > 120:
-                msg = msg[:120] + "..."
-            msg = msg.replace("|", "\\|")
-            lines.append(f"| {name} | {msg} |")
+            lines.append(f"| {f['name']} | {_table_cell(f.get('failure_message') or '')} |")
         lines.append("")
 
     # ── Movement tables ───────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
+from workloads.numerics import Exact, zeroed_input
 from workloads.workload_base import WorkloadBase
 
 __all__ = [
@@ -43,8 +44,6 @@ class EngramGateConvFwdWorkload(_EngramGateConvWorkload):
         return engram_gate_conv_fwd_torch(H, k, v, rms_w_h, rms_w_v, conv_w, self.eps)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, zeroed_input
-
         atol = 0.1 if inputs[0].dtype == torch.float16 else 0.2
         return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=atol, rtol=0.1)
 
@@ -58,28 +57,12 @@ class EngramGateConvBwdWorkload(_EngramGateConvWorkload):
         _, *saved = engram_gate_conv_fwd_torch(*forward_inputs, self.eps)
         return (dY, *forward_inputs, *saved)
 
-    def ref_program(
-        self, dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
-    ):
-        return ref_engram_gate_conv_bwd(
-            dY,
-            H,
-            k,
-            v,
-            rms_w_h,
-            rms_w_v,
-            conv_w,
-            vhat,
-            alpha,
-            rrms_h,
-            rrms_k,
-            rrms_v,
-            self.eps,
-        )
+    def ref_program(self, *inputs):
+        """The gradients from ``(dY, H, k, v, rms_w_h, rms_w_v, conv_w)`` and the saved
+        ``(vhat, alpha, rrms_h, rrms_k, rrms_v)``."""
+        return ref_engram_gate_conv_bwd(*inputs, self.eps)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, zeroed_input
-
         atol = 0.2 if inputs[0].dtype == torch.float16 else 0.3
         return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=atol, rtol=0.2)
 
@@ -140,8 +123,6 @@ class EngramDecodeWorkload(WorkloadBase):
         )
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, zeroed_input
-
         atol = 0.05 if inputs[0].dtype == torch.float16 else 0.1
         return Exact(controls=(zeroed_input(0, "first-input-zeroed"),), atol=atol, rtol=0.05)
 

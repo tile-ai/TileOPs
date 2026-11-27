@@ -4,6 +4,7 @@ import itertools
 
 import pytest
 import torch
+from fla.ops.gla import chunk_gla, fused_recurrent_gla
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.linear_attention.gla.call_spec import GLACall
@@ -31,16 +32,6 @@ from workloads.linear_attention.gla import (
     inference_verification,
 )
 from workloads.numerics import compare_outputs
-
-try:
-    from fla.ops.gla import chunk_gla
-except ImportError:
-    chunk_gla = None
-
-try:
-    from fla.ops.gla import fused_recurrent_gla
-except ImportError:
-    fused_recurrent_gla = None
 
 
 class GLAChunkFwdFixture(FixtureBase):
@@ -88,8 +79,8 @@ def test_gla_fwd(
 
     ref_o, ref_h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
-    # --- FLA reference (if available; its Triton kernels need CUDA) ---
-    fla = chunk_gla is not None and run_device_is_cuda()
+    # FLA's Triton kernels need CUDA.
+    fla = run_device_is_cuda()
     if fla:
         fla_o, _ = chunk_gla(q.float(), k.float(), v.float(), g.float(), scale=scale)
         compare_outputs(fla_o.to(dtype), ref_o.to(dtype), chunkwise_verification(dtype))
@@ -199,7 +190,7 @@ class GLAChunkBwdFixture(FixtureBase):
                 pytest.param(1, 256, 4, 128, 64, 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 256, 4, 64, 128, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 256, 4, 64, 128, 64, torch.bfloat16, False, marks=pytest.mark.full),
-                # Tuned mode on a mixed-head call.
+                # Tuned mode.
                 pytest.param(1, 256, 4, 128, 128, 32, torch.float16, True, marks=pytest.mark.full),
                 # At chunk 128, head dims 64 / 64, the backward fits only SM90's shared memory.
                 pytest.param(
@@ -243,8 +234,8 @@ def test_gla_bwd(
     ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}
 
-    # --- FLA reference via autograd (if available; its Triton kernels need CUDA) ---
-    fla = chunk_gla is not None and run_device_is_cuda()
+    # FLA's Triton kernels need CUDA.
+    fla = run_device_is_cuda()
     if fla:
         fla_dq, fla_dk, fla_dv, fla_dg = _fla_autograd_bwd(do, q, k, v, g, scale=scale)
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
@@ -255,7 +246,6 @@ def test_gla_bwd(
             chunkwise_verification(dtype, backward=True),
         )
 
-    # --- TileOPs backward, fed the reference's chunk states ---
     _, h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
     dht = torch.zeros(B, H, K, V, device=run_device(), dtype=torch.float32)
@@ -440,25 +430,30 @@ class GLAFwdTest(GLAFwdWorkload, TestBase):
     pass
 
 
-@pytest.mark.smoke
-@pytest.mark.usefixtures("isolated_registry")
-def test_gla_fwd_reaches_external_target_with_optional_inputs() -> None:
-    calls = []
+def _stub_gla_builder(calls: list | None = None):
+    """A target builder whose kernel returns empty outputs of the right shapes, recording each
+    build's specs and params in *calls*."""
 
     def build_kernel(*specs, **params):
-        calls.append((specs, params))
+        if calls is not None:
+            calls.append((specs, params))
 
         def kernel(q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
-            del k, g, initial_state, cu_seqlens_cpu
             state_batch = q.shape[0] if cu_seqlens is None else cu_seqlens.shape[0] - 1
-            return (
-                torch.empty_like(v),
-                torch.empty(state_batch, q.shape[2], q.shape[3], v.shape[3], dtype=torch.float32),
+            return torch.empty_like(v), torch.empty(
+                state_batch, q.shape[2], q.shape[3], v.shape[3], dtype=torch.float32
             )
 
         return kernel
 
-    registry.register_kernel_builder("GLAFwdOp", "gla_test", build_kernel)
+    return build_kernel
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("isolated_registry")
+def test_gla_fwd_reaches_external_target_with_optional_inputs() -> None:
+    calls = []
+    registry.register_kernel_builder("GLAFwdOp", "gla_test", _stub_gla_builder(calls))
     q = torch.randn(1, 7, 2, 8, dtype=torch.float16)
     k = torch.randn_like(q)
     v = torch.randn(1, 7, 2, 6, dtype=torch.float16)
@@ -496,16 +491,7 @@ def test_gla_fwd_reaches_external_target_with_optional_inputs() -> None:
 @pytest.mark.usefixtures("isolated_registry")
 @pytest.mark.parametrize("seeded", [False, True])
 def test_gla_fwd_roofline_counts_packed_states(seeded: bool) -> None:
-    def build_kernel(*specs, **params):
-        def kernel(q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu):
-            state_batch = q.shape[0] if cu_seqlens is None else cu_seqlens.shape[0] - 1
-            return torch.empty_like(v), torch.empty(
-                state_batch, q.shape[2], q.shape[3], v.shape[3], dtype=torch.float32
-            )
-
-        return kernel
-
-    registry.register_kernel_builder("GLAFwdOp", "gla_test", build_kernel)
+    registry.register_kernel_builder("GLAFwdOp", "gla_test", _stub_gla_builder())
     op = GLAFwdOp(target="gla_test")
     q, k, g = (torch.empty(1, 7, 2, 8, dtype=torch.float16) for _ in range(3))
     v = torch.empty(1, 7, 2, 6, dtype=torch.float16)
@@ -563,8 +549,6 @@ def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: floa
     bfloat16 case the per-sequence one. The longest row spans several partitions, so the
     state a chunk is read with is one the scan composed.
     """
-    if chunk_gla is None:
-        pytest.skip("FLA not installed")
     torch.manual_seed(2237)
     lengths = [1, 7, 63, 64, 100, 600]
     total, heads = sum(lengths), 2
@@ -628,8 +612,6 @@ def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
     the largest bfloat16 and the other below the smallest, and their product would be a NaN
     the cancelled exponent never has.
     """
-    if chunk_gla is None:
-        pytest.skip("FLA not installed")
     torch.manual_seed(2237)
     lengths = [100, 156]
     total, heads, dim = sum(lengths), 2, 64
@@ -674,10 +656,8 @@ def test_gla_long_prefill_uses_partitioned_kernel(
     inputs = test.gen_inputs()
     inputs[3].mul_(gate_scale)
     op = GLAFwdOp()
-    test.check(
-        op,
-        *inputs,
-    )
+    test.check(op, *inputs)
+    assert [type(kernel) for kernel in op.iter_kernels()] == [GLADensePrefillPartitionedKernel]
 
 
 @pytest.mark.in_tree_kernels
@@ -735,8 +715,7 @@ class GLADecodeFixture(FixtureBase):
                 pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
-                # A key dim the default key tile covers in one tile, whose state load hung
-                # on SM90 when lowered to a TMA bulk copy.
+                # A key dim the default key tile covers in one tile: one state copy a step.
                 pytest.param(1, 4, 16, 64, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 4, 16, 64, torch.float16, False, marks=pytest.mark.full),
             ],
@@ -841,9 +820,6 @@ def test_gla_decode_vs_fla(
     tune: bool,
 ) -> None:
     """Compare TileOPs GLA decode against FLA fused_recurrent_gla with T=1."""
-    if fused_recurrent_gla is None:
-        pytest.skip("FLA not installed")
-
     torch.manual_seed(42)
     B, H, DK, DV = batch, heads, dim_k, dim_v
     scale = DK**-0.5

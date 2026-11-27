@@ -1,16 +1,14 @@
 """Workloads and references of the sampling ops: logit filters and token draws.
 
 The references of the random ops draw their uniforms from Philox4x32-10 keyed by ``seed``
-and counted by ``(draw, row, offset)``, written in integer tensor arithmetic so that the
-draws are the same on every device, meta included. A kernel draws categorical samples from
-its own Philox stream, so sampled tokens are compared with these by distribution. The in-tree
-chain speculative sampling kernel takes its acceptance uniforms from this stream and matches
-the accepted lengths exactly; the shared verification compares accepted lengths by
-distribution so that an implementation drawing its own stream can be checked too.
+and counted by ``(draw, row, offset)``, in integer tensor arithmetic, so the draws are the
+same on every device. Sampled tokens and accepted lengths are compared by distribution, so an
+implementation drawing its own stream passes too.
 """
 
 import torch
 
+from workloads.numerics import Custom, logit_mask_validator
 from workloads.workload_base import CallWorkload
 
 _INF = float("inf")
@@ -189,11 +187,8 @@ class TopPMaskWorkload(CallWorkload):
     """Logits of one ``TopPMaskFwdOp`` call, with ``top_p`` uniform in ``[0.5, 0.95)``.
 
     The first row takes 1 instead, the contract's upper endpoint, which keeps every token of
-    positive probability, so the row passes through whole. ``top_p_mask`` still masks a token
-    its float32 sum rounds away there; the verification accepts either, since such a token
-    sits within its margin of ``top_p``. The lower endpoint 0 masks a row whole, a row no
-    comparator agrees on, so ``tests/ops/test_sampling.py`` covers it rather than a workload
-    every benchmark reads.
+    positive probability, so the row passes through whole. A token its float32 sum rounds
+    away there sits within its margin of ``top_p``, and the verification accepts either.
     """
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -240,8 +235,6 @@ class SamplingFromProbsWorkload(CallWorkload):
         return sampling_from_probs(probs, seed, offset)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         probs, seed, offset = inputs
 
         def validate(tokens, expected):
@@ -287,8 +280,6 @@ class ChainSpeculativeSamplingWorkload(CallWorkload):
         return chain_speculative_sampling(draft_probs, draft_token_ids, target_probs, seed, offset)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
-
         draft, draft_ids, target, seed, offset = inputs
         batch, num_draft, vocab = draft.shape
 
@@ -353,8 +344,6 @@ class ChainSpeculativeSamplingWorkload(CallWorkload):
 
 
 def top_k_mask_verification(logits):
-    from workloads.numerics import Custom, logit_mask_validator
-
     return Custom(
         logit_mask_validator(logits, torch.zeros_like(logits, dtype=torch.bool)),
         "exact top-k mask and retained logit bits",
@@ -362,8 +351,6 @@ def top_k_mask_verification(logits):
 
 
 def min_p_mask_verification(logits, min_p):
-    from workloads.numerics import Custom, logit_mask_validator
-
     values = logits.float()
     threshold = values.amax(-1, keepdim=True) + min_p[:, None].log()
     return Custom(
@@ -373,8 +360,6 @@ def min_p_mask_verification(logits, min_p):
 
 
 def top_p_mask_verification(logits, p, *, k=None):
-    from workloads.numerics import Custom, logit_mask_validator
-
     selected = logits if k is None else top_k_mask(logits, k)
     near = (probability_above(selected.float().softmax(-1)) - p[:, None]).abs() <= 1e-4
     return Custom(

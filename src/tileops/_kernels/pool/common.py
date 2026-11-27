@@ -1,3 +1,4 @@
+import dataclasses
 import itertools
 import math
 from collections.abc import Callable
@@ -7,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.pool.call_spec import AdaptivePool2dCall, AvgPoolCall, MaxPoolCall
 
 # Every pool kernel reduces its windows in fp32 and casts back at the store: a narrow
@@ -89,16 +90,6 @@ def window_span(
     return WindowSpan(vector_elems, head, round_up(reach, vector_elems))
 
 
-def axis_inside(
-    size_in: int, size_out: int, kernel: int, stride: int, pad: int, dilation: int
-) -> bool:
-    """Whether every window on this axis lies inside the input.
-
-    True makes the axis's bounds test a compile-time truth, and it drops out.
-    """
-    return pad == 0 and (size_out - 1) * stride + (kernel - 1) * dilation < size_in
-
-
 def pool_output_dim(
     input_size: int,
     kernel_size: int,
@@ -118,6 +109,42 @@ def pool_output_dim(
         out -= 1
 
     return max(out, 0)
+
+
+def without_device(call):
+    """*call* naming no device, as a builder cache key: a program serves every GPU of one
+    build target."""
+    return dataclasses.replace(call, device=None)
+
+
+def max_pool_out(call: MaxPoolCall) -> tuple[int, ...]:
+    """The output extent of each spatial axis of *call*."""
+    return tuple(
+        pool_output_dim(size, k, s, p, call.ceil_mode, d)
+        for size, k, s, p, d in zip(
+            call.size, call.window, call.stride, call.pad, call.dilation, strict=True
+        )
+    )
+
+
+def axes_inside(call: MaxPoolCall, out: tuple[int, ...]) -> tuple[bool, ...]:
+    """Per axis, whether every window lies inside the input.
+
+    True makes that axis's bounds test a compile-time truth, and it drops out.
+    """
+    return tuple(
+        p == 0 and (o - 1) * s + (k - 1) * d < size
+        for size, o, k, s, p, d in zip(
+            call.size, out, call.window, call.stride, call.pad, call.dilation, strict=True
+        )
+    )
+
+
+def shaped(result: Any, shape: tuple[int, ...]) -> Any:
+    """*result*, a tensor or a tuple of tensors, each viewed as *shape*."""
+    if isinstance(result, torch.Tensor):
+        return result.view(shape)
+    return tuple(t.view(shape) for t in result)
 
 
 def register_plane_refusal(call: AvgPoolCall | MaxPoolCall) -> str | None:
@@ -162,8 +189,7 @@ class AvgPoolWindow(NamedTuple):
     """One average-pooling problem, and the extents and facts that follow from it.
 
     The per-axis fields carry one entry per spatial axis, so the same type serves 1d, 2d
-    and 3d. A kernel builder is cached on this, so everything it derives is derived here
-    once and cannot differ between the builders of one family.
+    and 3d. Kernel builders are cached on it.
     """
 
     rows: int
@@ -274,49 +300,54 @@ def max_adaptive_bin_extent(size_in: int, size_out: int) -> int:
     return max(end - start for start, end in extents)
 
 
-class AdaptivePool2dKernelBase(Kernel):
-    """Shared scaffold for the adaptive 2D pool kernels.
+class AvgPoolKernelBase(Kernel):
+    """What the average-pool kernels share: construction from the call and the launch.
 
-    The variants differ only in their reduction and in whether they emit
-    indices. Everything around that -- the dtype gate, the config space, the
-    argument marshalling -- is the same, so a subclass binds two callables and
-    declares nothing else:
-
-    - ``_build`` the cached builder that traces the prim_func.
-    - ``_launch`` the run of the compiled program the forward call goes through.
+    A subclass names ``_build``, which takes the call's :class:`AvgPoolWindow` and the
+    dtype's TileLang name.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     _build: ClassVar[Callable[..., Any]]
 
-    @classmethod
-    def entry_for(cls, call: AdaptivePool2dCall) -> Entry:
-        return call, lambda: cls(
-            call.n, call.c_in, call.h_in, call.w_in, call.out_h, call.out_w, call.dtype
-        )
+    def __init__(self, call: AvgPoolCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.call = call
+        self.dtype = call.dtype
+        self.window = AvgPoolWindow.of(call)
+        self.kernel = self._build(self.window, self.dtype_str)
+        self.init_config(config)
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        out_h: int,
-        out_w: int,
-        dtype: torch.dtype,
-        config: dict | None = None,
-    ) -> None:
-        super().__init__()
-        if dtype not in {torch.float16, torch.bfloat16}:
-            raise ValueError(f"{type(self).__name__} supports float16 and bfloat16, got {dtype}")
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.out_h = out_h
-        self.out_w = out_w
-        self.dtype = dtype
-        self.kernel = type(self)._build(n, c_in, h_in, w_in, out_h, out_w, self.dtype_str)
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._require_devices(x=x)
+        window = self.window
+        out = self.program(self._compile)(x.reshape(window.rows, *window.size))
+        return out.view(self.call.n, self.call.c_in, *window.out)
+
+
+class AdaptivePool2dKernelBase(Kernel):
+    """What the adaptive 2D pool kernels share: the dtype gate, the config space and the
+    launch.
+
+    A subclass names ``_build``, which takes the call and the dtype's TileLang name.
+    """
+
+    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    _build: ClassVar[Callable[..., Any]]
+
+    def __init__(self, call: AdaptivePool2dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        if call.dtype not in {torch.float16, torch.bfloat16}:
+            raise ValueError(
+                f"{type(self).__name__} supports float16 and bfloat16, got {call.dtype}"
+            )
+        self.call = call
+        self.dtype = call.dtype
+        self.kernel = self._build(without_device(call), self.dtype_str)
         self.init_config(config)
 
     @property
@@ -330,48 +361,43 @@ class AdaptivePool2dKernelBase(Kernel):
             for block_m, threads in itertools.product([128, 256, 512], [128, 256, 512])
         ]
 
-    def forward(self, x: torch.Tensor):
-        """Pool ``x``, ``[N, C, H, W]`` or unbatched ``[C, H, W]``; outputs follow its rank."""
-        self._require_devices(x=x)
-        unbatched = x.dim() == 3
-        result = self._launch(self.program(self._compile), x.unsqueeze(0) if unbatched else x)
-        if not unbatched:
-            return result
-        if isinstance(result, (tuple, list)):
-            return tuple(t.squeeze(0) for t in result)
-        return result.squeeze(0)
-
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(**cfg)
 
-    def _launch(self, program, x: torch.Tensor) -> Any:
-        """Run *program* on the batched ``x`` and shape its outputs as ``[N, C, out_h, out_w]``."""
-        raise NotImplementedError
+    def forward(self, x: torch.Tensor) -> Any:
+        """Pool ``x``, ``[N, C, H, W]`` or unbatched ``[C, H, W]``; outputs follow its rank."""
+        self._require_devices(x=x)
+        call = self.call
+        result = self.program(self._compile)(self._input(x))
+        return shaped(result, (*x.shape[:-2], call.out_h, call.out_w))
+
+    def _input(self, x: torch.Tensor) -> torch.Tensor:
+        """``x`` as the program reads it."""
+        return x.reshape(self.call.n * self.call.c_in, self.call.h_in, self.call.w_in)
 
 
 class MaxPoolKernelBase(Kernel):
-    """What the 2d and 3d max-pool kernels share: how a call constructs one, the config
-    space and the launch.
+    """What the max-pool kernels share: construction from the call, the config space and
+    the launch.
 
-    A subclass builds ``self.kernel`` in its constructor and supplies ``_launch``.
+    A subclass names ``_build``, which takes the call and the dtype's TileLang name.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    _build: ClassVar[Callable[..., Any]]
 
-    @classmethod
-    def entry_for(cls, call: MaxPoolCall) -> Entry:
-        return call, lambda: cls(
-            call.n,
-            call.c_in,
-            *call.size,
-            *call.window,
-            *call.stride,
-            *call.pad,
-            *call.dilation,
-            call.ceil_mode,
-            call.dtype,
-        )
+    def __init__(self, call: MaxPoolCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        if call.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
+            raise ValueError(
+                f"{type(self).__name__} supports float16, bfloat16, and float32, got {call.dtype}"
+            )
+        self.call = call
+        self.dtype = call.dtype
+        self.out = max_pool_out(call)
+        self.kernel = self._build(without_device(call), self.dtype_str)
+        self.init_config(config)
 
     @property
     def default_config(self) -> dict:
@@ -385,14 +411,12 @@ class MaxPoolKernelBase(Kernel):
             if threads <= block_m
         ]
 
-    def forward(self, x: torch.Tensor) -> Any:
-        self._require_devices(x=x)
-        return self._launch(self.program(self._compile), x)
-
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(**cfg)
 
-    def _launch(self, program, x: torch.Tensor) -> Any:
-        """Run *program* on ``x`` and shape its outputs as the interface publishes them."""
-        raise NotImplementedError
+    def forward(self, x: torch.Tensor) -> Any:
+        self._require_devices(x=x)
+        call = self.call
+        result = self.program(self._compile)(x.reshape(call.n * call.c_in, *call.size))
+        return shaped(result, (call.n, call.c_in, *self.out))

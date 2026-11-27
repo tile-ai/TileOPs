@@ -1,14 +1,4 @@
-"""Elementwise op package.
-
-Re-exports every public symbol of the package module so that
-``from tileops._ops.elementwise import <Symbol>`` continues to work.
-
-Concrete ops are organised one cluster per leaf module
-(``arithmetic.py``, ``activations.py``, ``clamp.py``, ...). Umbrella
-template classes (``UnaryOp`` / ``BinaryOp`` / ``FusedGatedOp``) live in
-``_base.py``. Each op's compile-boundary operators are generated from its
-manifest signature when the class is created.
-"""
+"""Elementwise ops, one cluster per leaf module; the umbrella bases live in ``_base.py``."""
 
 from tileops._ops.elementwise._base import BinaryOp, FusedGatedOp, UnaryOp
 from tileops._ops.elementwise.activations import (

@@ -12,7 +12,6 @@ from tileops._kernels.sampling import (
     SamplingCall,
 )
 from tileops._ops.op_base import Op
-from tileops.backend import Target
 
 __all__ = ["ChainSpeculativeSamplingFwdOp"]
 
@@ -46,19 +45,6 @@ class ChainSpeculativeSamplingFwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "chain_speculative_sampling": ChainSpeculativeSamplingFwdInterface
     }
-
-    def __init__(
-        self,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtypes are taken from each call.
-
-        Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
-        """
-        super().__init__(target=target)
 
     def forward(
         self,

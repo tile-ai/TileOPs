@@ -8,6 +8,7 @@ from typing import Literal
 import torch
 
 from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.constants import QUANT_SCALE_BLOCK
 from tileops._kernels.kernel_base import KernelInterface
 
 __all__ = [
@@ -171,8 +172,7 @@ class GEMMFwdInterface(KernelInterface):
         Every tensor is contiguous on ``call.device`` in ``call.dtype``, which is
         ``float16`` or ``bfloat16``. The contraction accumulates in ``float32``, the
         bias is added to the ``float32`` sum, and the result is rounded once. A call
-        passes a bias exactly where ``call.has_bias`` says it does; the in-tree dense
-        kernels serve both from one entry and choose the biased program from ``bias``.
+        passes a bias exactly where ``call.has_bias`` says it does.
 
         Args:
             a: ``(call.m, call.k)``, or ``(call.k, call.m)`` when ``call.trans_a``.
@@ -180,7 +180,8 @@ class GEMMFwdInterface(KernelInterface):
             bias: ``(call.n,)``, added to every row, or ``None``.
 
         Returns:
-            A new ``(call.m, call.n)`` tensor in ``call.dtype``.
+            A new ``(call.m, call.n)`` tensor in ``call.out_dtype``, or ``call.dtype`` when
+            that is ``None``.
         """
 
 
@@ -203,9 +204,10 @@ class GEMMFP8FwdInterface(KernelInterface):
         Every tensor is contiguous on ``call.device``. The scales are ``float32`` and
         their shapes are ``call.scale_a_shape`` and ``call.scale_b_shape``: either both
         ``(1, 1)``, or ``scale_a`` per 1x128 block along K and ``scale_b`` per 1x128 or
-        per 128x128 block (:meth:`block_scale_grid`). The program is compiled for one
-        side of ``call.has_bias``, so a call passes a bias exactly where the call spec
-        said it would.
+        per 128x128 block (:meth:`block_scale_grid`). The scaled product accumulates in
+        ``float32``, the bias is added to that sum, and the result is rounded once. The
+        program is compiled for one side of ``call.has_bias``, so a call passes a bias
+        exactly where the call spec said it would.
 
         Args:
             a: ``(call.m, call.k)`` in ``call.dtype``.
@@ -227,12 +229,12 @@ class GEMMFP8FwdInterface(KernelInterface):
         128x128 block, ``[ceil(n / 128), ceil(k / 128)]``. At ``n == 1`` the two grids
         coincide and mean the same product; that shape reads as ``"1d1d"``.
         """
-        scale_k = -(-call.k // 128)
+        scale_k = -(-call.k // QUANT_SCALE_BLOCK)
         if call.scale_a_shape != (call.m, scale_k):
             return None
         if call.scale_b_shape == (call.n, scale_k):
             return "1d1d"
-        if call.scale_b_shape == (-(-call.n // 128), scale_k):
+        if call.scale_b_shape == (-(-call.n // QUANT_SCALE_BLOCK), scale_k):
             return "1d2d"
         return None
 
@@ -418,9 +420,8 @@ class BMMFP8FwdInterface(KernelInterface):
     ) -> torch.Tensor:
         """Multiply the two batches and apply both scales; nothing is in place.
 
-        Every tensor is contiguous on ``call.device``. FP8 WGMMA reads *b* K-innermost
-        and has no transposed operand mode, so the op hands it that way whatever axis
-        order the caller passed.
+        Every tensor is contiguous on ``call.device``; *b* is K-innermost, since FP8 WGMMA
+        has no transposed operand mode.
 
         Args:
             a: ``(call.batch, call.m, call.k)`` in ``call.dtype``.

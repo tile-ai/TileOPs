@@ -254,8 +254,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
             a=inverse,
             g=self.zero_gate,
             b=beta,
-            initial_state=None,
-            output_final_state=True,
             cu_seqlens=offsets,
             num_warmup_chunks=replay_per_head,
             k_rnorm=k_rnorm,
@@ -272,7 +270,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
             self.zero_gate,
             beta,
             initial_state=start_state,
-            output_final_state=True,
             cu_seqlens=offsets,
             cp_seq_map=sequence_of,
             raw_cu_seqlens=raw_cu,
@@ -316,8 +313,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
                 self.zero_gate.dtype,
                 beta_dtype,
                 torch.int32,
-                is_varlen=True,
-                is_cp=True,
                 l2norm=self.l2norm,
             )
             scan = partition_scan_program(heads, dim, start_dtype, dtype, state_dtype is not None)
@@ -332,7 +327,6 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
                 beta_dtype,
                 torch.int32,
                 h0_dtype=start_dtype,
-                is_varlen=True,
                 is_cp=True,
                 l2norm=self.l2norm,
                 sm_count=self.build_target.sm_count,

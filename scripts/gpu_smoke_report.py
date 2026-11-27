@@ -4,21 +4,15 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
+import sys
 import xml.etree.ElementTree as ET
-from collections import OrderedDict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from nightly_report import git_commit, testcase_fields, testcase_properties
 
 _PASS = "\u2705"
 _FAIL = "\u274c"
-
-
-def _get_properties(testcase: ET.Element) -> dict[str, str]:
-    props: dict[str, str] = {}
-    for ps in testcase.iter("properties"):
-        for prop in ps.iter("property"):
-            props[prop.attrib["name"]] = prop.attrib.get("value", "")
-    return props
 
 
 def _get_failure_reason(testcase: ET.Element) -> str:
@@ -49,57 +43,21 @@ def _escape_markdown_cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
-def _get_git_commit() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return "unknown"
-    if result.returncode != 0:
-        return "unknown"
-    return result.stdout.strip() or "unknown"
-
-
-def parse_test_xml(path: str) -> list[dict[str, str]]:
-    tree = ET.parse(path)
-    results: list[dict[str, str]] = []
-    for testcase in tree.iter("testcase"):
-        props = _get_properties(testcase)
-        skipped = testcase.find("skipped")
-        failure = testcase.find("failure")
-        error = testcase.find("error")
-        if skipped is not None:
-            outcome = "skipped"
-        elif failure is not None or error is not None:
-            outcome = "failed"
-        else:
-            outcome = "passed"
-
-        classname = testcase.attrib.get("classname", "")
-        name = testcase.attrib.get("name", "")
-        results.append(
-            {
-                "nodeid": f"{classname}::{name}",
-                "name": name,
-                "outcome": outcome,
-                "op": props.get("op", ""),
-                "op_module": props.get("op_module", ""),
-                "failure_reason": _get_failure_reason(testcase),
-            }
-        )
+def parse_test_xml(path: str) -> list[dict]:
+    results = []
+    for testcase in ET.parse(path).iter("testcase"):
+        entry = testcase_fields(testcase, testcase_properties(testcase))
+        entry["failure_reason"] = _get_failure_reason(testcase)
+        results.append(entry)
     return results
 
 
-def generate_report(results: list[dict[str, str]], target: str) -> str:
+def generate_report(results: list[dict], target: str) -> str:
     total_cases = len(results)
     failed_cases = [result for result in results if result["outcome"] == "failed"]
     passed_count = sum(1 for result in results if result["outcome"] == "passed")
     skipped_count = sum(1 for result in results if result["outcome"] == "skipped")
-    failed_ops = list(OrderedDict.fromkeys(result["op"] for result in failed_cases if result["op"]))
+    failed_ops = list(dict.fromkeys(result["op"] for result in failed_cases if result["op"]))
 
     correctness = f"{_PASS} Pass" if not failed_cases else f"{_FAIL} {len(failed_cases)} failed"
     failures_ops_str = (
@@ -110,7 +68,7 @@ def generate_report(results: list[dict[str, str]], target: str) -> str:
     lines = [
         f"# {health} TileOPs GPU Smoke Report",
         "",
-        f"> `{_get_git_commit()}`",
+        f"> `{git_commit()}`",
         "",
         "## Summary",
         "",

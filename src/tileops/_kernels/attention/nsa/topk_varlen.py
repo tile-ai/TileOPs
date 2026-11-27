@@ -38,14 +38,8 @@ def _nsa_topk_varlen_kernel(
 ) -> Callable:
     """Build the selection kernel for one call shape.
 
-    A CTA takes ``block_t`` tokens of one compressed block of one request and one KV head:
-    every token of a block has the same candidates, the chunks of its request up to that
-    block. It stages their ``group`` query heads, scaled in the input dtype as FLA does, as
-    one K-major tile and streams the request's compressed keys in ``block_n``-chunk tiles
-    twice: pass 1 keeps each row's online log-sum-exp over the closed chunks, pass 2 sums
-    the open chunks' probabilities over the group in registers into one importance row per
-    token. Each warp then sorts whole rows best first, ties to the lower chunk id, and
-    writes the first ``selected_block_num`` ids, -1 past the candidates.
+    A CTA takes ``block_t`` tokens of one compressed block of one request and one KV head.
+    Each row's ids come best first, ties to the lower chunk id, -1 past the candidates.
     """
     head_kv = heads // group
     # The fewest tokens whose rows fill whole WGMMA row tiles.
@@ -88,11 +82,8 @@ def _nsa_topk_varlen_kernel(
         def bitonic(slots_per_lane, vals, keys, lane, tv, tk, flag):
             """Sort 32 * slots_per_lane (importance, id) pairs best first in one warp.
 
-            Element i lives in lane i % 32, slot i // 32. Stage k merges runs of length k with
-            strides k / 2 ... 1: a stride under 32 pairs lanes through a shuffle, a wider one
-            pairs slots inside the lane. Every operand is staged in a scratch local before a
-            slot is overwritten. The narrow SM89 route uses serial slot loops to bound generated IR;
-            other routes retain unrolled comparisons. Stage and merge-stride loops are serial.
+            Element i lives in lane i % 32, slot i // 32. The narrow SM89 route uses serial slot
+            loops to bound generated IR.
             """
             levels = (WARP_LANES * slots_per_lane).bit_length() - 1
             with T.serial(levels) as level:
@@ -182,6 +173,19 @@ def _nsa_topk_varlen_kernel(
                         with T.If(p < selected_block_num), T.Then():
                             T.buffer_store(block_indices, -1, [tok0 + t, h, p])
 
+        @T.macro
+        def score_tile(k_cmp, q_s, k_s, s_f, n0, n_cand, boc, h):
+            """Scores of the row tile against candidate chunks ``n0 ..`` of KV head *h*."""
+            for n, d in T.Parallel(block_n, dim):
+                k_s[n, d] = T.if_then_else(
+                    n0 + n < n_cand,
+                    k_cmp[T.min(boc + n0 + n, chunk_num - 1), h, d],
+                    T.Cast(dtype, 0),
+                )
+            T.clear(s_f)
+            policy = T.GemmWarpPolicy.FullCol if rows == 48 else T.GemmWarpPolicy.FullRow
+            T.gemm(q_s, k_s, s_f, transpose_B=True, policy=policy)
+
         @T.prim_func
         def _nsa_topk_varlen_main(
             q: T.Tensor((c_seq_len, heads, dim), dtype),
@@ -252,22 +256,7 @@ def _nsa_topk_varlen_kernel(
                     T.fill(l_f, 0.0)
                     for it in T.serial(n_tiles):
                         n0 = it * block_n
-                        for n, d in T.Parallel(block_n, dim):
-                            k_s[n, d] = T.if_then_else(
-                                n0 + n < n_cand,
-                                k_cmp[T.min(boc + n0 + n, chunk_num - 1), h, d],
-                                T.Cast(dtype, 0),
-                            )
-                        T.clear(s_f)
-                        T.gemm(
-                            q_s,
-                            k_s,
-                            s_f,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullCol
-                            if rows == 48
-                            else T.GemmWarpPolicy.FullRow,
-                        )
+                        score_tile(k_cmp, q_s, k_s, s_f, n0, n_cand, boc, h)
                         for r, n in T.Parallel(rows, block_n):
                             closed = (cur * bs + sub * block_t + r // group + 1) // bs
                             s_f[r, n] = T.if_then_else(n0 + n < closed, s_f[r, n], neg_inf)
@@ -293,22 +282,7 @@ def _nsa_topk_varlen_kernel(
                     # Pass 2: probabilities of the open chunks, summed over the group in registers.
                     for it in T.serial(n_tiles):
                         n0 = it * block_n
-                        for n, d in T.Parallel(block_n, dim):
-                            k_s[n, d] = T.if_then_else(
-                                n0 + n < n_cand,
-                                k_cmp[T.min(boc + n0 + n, chunk_num - 1), h, d],
-                                T.Cast(dtype, 0),
-                            )
-                        T.clear(s_f)
-                        T.gemm(
-                            q_s,
-                            k_s,
-                            s_f,
-                            transpose_B=True,
-                            policy=T.GemmWarpPolicy.FullCol
-                            if rows == 48
-                            else T.GemmWarpPolicy.FullRow,
-                        )
+                        score_tile(k_cmp, q_s, k_s, s_f, n0, n_cand, boc, h)
                         for t, g, n in T.Parallel(block_t, group, block_n):
                             p3[t, g, n] = T.if_then_else(
                                 n0 + n < cur,

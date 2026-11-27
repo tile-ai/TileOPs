@@ -21,7 +21,7 @@ If CUDA and TileLang are already installed system-wide and the build fails while
 PIP_NO_BUILD_ISOLATION=1 pip install -e . --group dev -c constraints.txt
 ```
 
-The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pytest and its plugins, the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
+The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pytest and its plugins, the references tests import (einops, flash-linear-attention, safetensors, transformers) and ninja for the PrivateUse1 test backend. The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
 
 ## Dev Docker image
 

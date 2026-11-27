@@ -1,12 +1,15 @@
 """Workload definitions for the pool op family."""
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 import torch.nn.functional as F
 
 from workloads.device import run_device
+from workloads.numerics import Exact
+from workloads.sequence_metadata import make_cu_seqlens, prepare_chunk_indices
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
@@ -15,26 +18,16 @@ def max_pool_ref(ndim: int) -> Callable:
     return getattr(F, f"max_pool{ndim}d")
 
 
+@dataclass(eq=False)
 class AvgPoolWorkload(WorkloadBase):
-    def __init__(
-        self,
-        ndim: int,
-        kernel_size: int | tuple[int, ...],
-        stride: int | tuple[int, ...] | None,
-        padding: int | tuple[int, ...],
-        ceil_mode: bool,
-        count_include_pad: bool,
-        divisor_override: int | None,
-        dtype: torch.dtype,
-    ) -> None:
-        self.ndim = ndim
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.ceil_mode = ceil_mode
-        self.count_include_pad = count_include_pad
-        self.divisor_override = divisor_override
-        self.dtype = dtype
+    ndim: int
+    kernel_size: int | tuple[int, ...]
+    stride: int | tuple[int, ...] | None
+    padding: int | tuple[int, ...]
+    ceil_mode: bool
+    count_include_pad: bool
+    divisor_override: int | None
+    dtype: torch.dtype
 
     def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
         return (torch.randn(*shape, device=run_device(), dtype=self.dtype),)
@@ -58,28 +51,17 @@ class AvgPoolWorkload(WorkloadBase):
         return pool_verification(maximum=False)
 
 
+@dataclass(eq=False)
 class MaxPoolWorkload(WorkloadBase):
-    def __init__(
-        self,
-        ndim: int,
-        kernel_size: tuple[int, ...],
-        stride: tuple[int, ...] | None,
-        padding: tuple[int, ...],
-        dilation: tuple[int, ...],
-        ceil_mode: bool,
-        dtype: torch.dtype,
-        contiguous: bool = True,
-        return_indices: bool = False,
-    ) -> None:
-        self.ndim = ndim
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.ceil_mode = ceil_mode
-        self.dtype = dtype
-        self.contiguous = contiguous
-        self.return_indices = return_indices
+    ndim: int
+    kernel_size: tuple[int, ...]
+    stride: tuple[int, ...] | None
+    padding: tuple[int, ...]
+    dilation: tuple[int, ...]
+    ceil_mode: bool
+    dtype: torch.dtype
+    contiguous: bool = True
+    return_indices: bool = False
 
     def gen_inputs(self, *shape: int) -> tuple[torch.Tensor]:
         x = torch.randn(*shape, device=run_device(), dtype=self.dtype)
@@ -105,27 +87,19 @@ class MaxPoolWorkload(WorkloadBase):
         return pool_verification(maximum=True)
 
 
+@dataclass(eq=False)
 class AdaptivePool2dWorkload(WorkloadBase):
     """One NCHW tensor for the adaptive 2D pool family.
 
     ``output_size`` shapes no input; it rides along because the op needs it.
     """
 
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        output_size: int | None | tuple[int | None, int | None],
-        dtype: torch.dtype,
-    ) -> None:
-        self.n = n
-        self.c_in = c_in
-        self.h_in = h_in
-        self.w_in = w_in
-        self.output_size = output_size
-        self.dtype = dtype
+    n: int
+    c_in: int
+    h_in: int
+    w_in: int
+    output_size: int | None | tuple[int | None, int | None]
+    dtype: torch.dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
         x = torch.randn(
@@ -245,6 +219,7 @@ class AdaptiveMaxPool2dCall(CallWorkload, AdaptiveMaxPool2dWorkload):
     gen_inputs = CallWorkload.gen_inputs
 
 
+@dataclass(eq=False)
 class MeanPoolingWorkload(WorkloadBase):
     """One chunked-sequence-mean case: its shape, its dtype, and how it is split.
 
@@ -252,23 +227,16 @@ class MeanPoolingWorkload(WorkloadBase):
     from; without it the split is uniform and the call passes neither tensor.
     """
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim: int,
-        chunk_size: int,
-        dtype: torch.dtype,
-        seq_lens: Sequence[int] | None = None,
-    ) -> None:
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim = dim
-        self.chunk_size = chunk_size
-        self.dtype = dtype
-        self.seq_lens = None if seq_lens is None else list(seq_lens)
+    batch: int
+    seq_len: int
+    heads: int
+    dim: int
+    chunk_size: int
+    dtype: torch.dtype
+    seq_lens: Sequence[int] | None = None
+
+    def __post_init__(self) -> None:
+        self.seq_lens = None if self.seq_lens is None else list(self.seq_lens)
 
     def gen_inputs(self) -> tuple:
         x = torch.randn(
@@ -276,7 +244,6 @@ class MeanPoolingWorkload(WorkloadBase):
         )
         if self.seq_lens is None:
             return (x,)
-        from workloads.sequence_metadata import make_cu_seqlens, prepare_chunk_indices
 
         # The ragged split: cumulative boundaries and one (sequence, chunk) pair per chunk.
         cu_seqlens = make_cu_seqlens(self.seq_lens)
@@ -356,6 +323,4 @@ class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):
 
 def pool_verification(*, maximum):
     """Max pooling selects values and indices exactly; averages incur rounding."""
-    from workloads.numerics import Exact
-
     return Exact(atol=0, rtol=0) if maximum else Exact()

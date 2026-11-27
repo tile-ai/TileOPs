@@ -174,8 +174,6 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
     """What the two per-group kernels share: the calls they refuse and how they launch."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    # The integer tensors are outputs, written before anything reads them.
-    autotune_accepts_random_int_inputs = True
     # Elements a thread holds per chunk: four 16-byte float16 vectors, which pack into four
     # 32-bit words of int4 codes.
     _CHUNK: ClassVar[int] = 32
@@ -207,10 +205,6 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         )
         self.init_config(config)
 
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(w=w)
         n, k = self.call.rows, self.call.cols
@@ -229,10 +223,7 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
 class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
     """Quantize each group of ``w`` against its own range, adjacent lanes of a warp to a group.
 
-    Serves a ``group_size`` of 32 to ``32 * WARP_LANES`` elements, a power of two. A lane
-    holds 32 contiguous elements in registers, the lanes of a group reduce its range by
-    shuffles, and each lane packs its codes into the four words they fill. On SM90 a group
-    of 64 in an input of at most 64 MiB takes 16 elements a lane, four lanes a group.
+    Serves a ``group_size`` of 32 to ``32 * WARP_LANES`` elements, a power of two.
 
     Args:
         call: The call's shape, dtype, group size and device facts.
@@ -278,8 +269,7 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     Serves a ``group_size`` that is a multiple of 128, up to ``_MAX_THREADS`` threads holding
     ``_MAX_CPT`` chunks of 32 elements each (``group_size == K`` is per-channel
-    quantization). The CTA holds its group in registers, reduces the range by shuffles and
-    across warps in shared memory, and packs the codes from the registers.
+    quantization).
 
     Args:
         call: The call's shape, dtype, group size and device facts.

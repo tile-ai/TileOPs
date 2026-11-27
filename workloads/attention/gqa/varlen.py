@@ -1,5 +1,6 @@
 import inspect
 import math
+from dataclasses import dataclass
 
 import torch
 
@@ -21,26 +22,16 @@ __all__ = [
 ]
 
 
+@dataclass(eq=False)
 class GQAPrefillVarlenFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        q_lens: list[int],
-        kv_lens: list[int],
-        dim: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.q_lens = q_lens
-        self.kv_lens = kv_lens
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
+    batch: int
+    heads: int
+    heads_kv: int
+    q_lens: list[int]
+    kv_lens: list[int]
+    dim: int
+    is_causal: bool
+    dtype: torch.dtype
 
     @property
     def total_q(self) -> int:
@@ -71,42 +62,27 @@ class GQAPrefillVarlenFwdWorkload(WorkloadBase):
         return q, k, v, make_cu_seqlens(self.q_lens), make_cu_seqlens(self.kv_lens)
 
 
+@dataclass(eq=False)
 class GQAVarlenFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        seqlens_q: list[int],
-        seqlens_k: list[int],
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        is_causal: bool,
-        wl: int,
-        wr: int,
-        dtype: torch.dtype,
-        sm_scale: float | None = None,
-        softcap: float | None = None,
-        pos_encoding_mode: str = "none",
-        rotary_dim: int | None = None,
-        rope_layout: str = "neox",
-        has_sinks: bool = False,
-    ) -> None:
-        self.batch = batch
-        self.seqlens_q = seqlens_q
-        self.seqlens_k = seqlens_k
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.is_causal = is_causal
-        self.wl = wl
-        self.wr = wr
-        self.dtype = dtype
-        self.sm_scale = sm_scale
-        self.softcap = softcap
-        self.pos_encoding_mode = pos_encoding_mode
-        self.rotary_dim = dim if rotary_dim is None else rotary_dim
-        self.rope_layout = rope_layout
-        self.has_sinks = has_sinks
+    batch: int
+    seqlens_q: list[int]
+    seqlens_k: list[int]
+    heads: int
+    heads_kv: int
+    dim: int
+    is_causal: bool
+    wl: int
+    wr: int
+    dtype: torch.dtype
+    sm_scale: float | None = None
+    softcap: float | None = None
+    pos_encoding_mode: str = "none"
+    rotary_dim: int | None = None
+    rope_layout: str = "neox"
+    has_sinks: bool = False
+
+    def __post_init__(self) -> None:
+        self.rotary_dim = self.dim if self.rotary_dim is None else self.rotary_dim
 
     @property
     def max_seqlen_q(self) -> int:
@@ -131,10 +107,8 @@ class GQAVarlenFwdWorkload(WorkloadBase):
         )
         if self.pos_encoding_mode != "rope":
             return self._with_sinks((q, k, v, cu_seqlens_q, cu_seqlens_k))
-        # Angles span a whole turn. A narrow draw puts every cosine near one and every sine
-        # near zero, which makes the rotation near-identity: a kernel that skips it, pairs
-        # the wrong channels, or rotates the channels a partial width should leave alone
-        # then lands inside the tolerance and the row proves nothing.
+        # Angles span a whole turn: a near-identity rotation would let a kernel that skips
+        # or misplaces it pass.
         angles = torch.rand(
             max(max(self.seqlens_k), 1), self.rotary_dim // 2, device=run_device()
         ) * (2 * math.pi)
@@ -365,31 +339,45 @@ class GQAVarlenSinkWorkload(GQAVarlenScaledWorkload):
         return inputs
 
 
+def _varlen_arguments(call) -> tuple[tuple, dict]:
+    """The positional arguments of a varlen workload of *call*, over the request lengths its
+    offsets carry, and the keyword arguments the unscaled and scaled forms share."""
+    indices, params = call.indices, call.params
+    q_lens = _segments(call.metadata_values("cu_seqlens_q"))
+    positional = (
+        len(q_lens),
+        q_lens,
+        _segments(call.metadata_values("cu_seqlens_kv")),
+        indices["H"],
+        indices["H_kv"],
+        indices["D"],
+        params["is_causal"],
+        params.get("window_size_left", -1),
+        params.get("window_size_right", -1),
+        _dtype(call, "q"),
+    )
+    shared = dict(
+        sm_scale=params.get("sm_scale"),
+        softcap=params.get("softcap"),
+        has_sinks=call.present("sinks"),
+    )
+    return positional, shared
+
+
 class GQAVarlenCall(CallWorkload, GQAVarlenFwdWorkload):
-    """A manifest call of GQAVarlenFwdOp, over the request lengths its offsets carry."""
+    """A manifest call of GQAVarlenFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        indices, params = call.indices, call.params
-        q_lens = _segments(call.metadata_values("cu_seqlens_q"))
+        positional, shared = _varlen_arguments(call)
+        params = call.params
         GQAVarlenFwdWorkload.__init__(
             self,
-            len(q_lens),
-            q_lens,
-            _segments(call.metadata_values("cu_seqlens_kv")),
-            indices["H"],
-            indices["H_kv"],
-            indices["D"],
-            params["is_causal"],
-            params.get("window_size_left", -1),
-            params.get("window_size_right", -1),
-            _dtype(call, "q"),
-            sm_scale=params.get("sm_scale"),
-            softcap=params.get("softcap"),
+            *positional,
+            **shared,
             pos_encoding_mode=params.get("pos_encoding_mode", "none"),
-            rotary_dim=indices.get("R") if params.get("pos_encoding_mode") == "rope" else None,
+            rotary_dim=call.indices.get("R") if params.get("pos_encoding_mode") == "rope" else None,
             rope_layout=params.get("rope_layout", "neox"),
-            has_sinks=call.present("sinks"),
         )
 
     gen_inputs = GQAVarlenFwdWorkload.gen_inputs
@@ -404,28 +392,16 @@ class GQAVarlenScaledCall(CallWorkload, GQAVarlenScaledWorkload):
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
-        indices, params = call.indices, call.params
-        q_lens = _segments(call.metadata_values("cu_seqlens_q"))
+        positional, shared = _varlen_arguments(call)
+        params = call.params
         out_dtype = params["out_dtype"]
-        rope = params["pos_encoding_mode"] == "rope"
         GQAVarlenScaledWorkload.__init__(
             self,
-            len(q_lens),
-            q_lens,
-            _segments(call.metadata_values("cu_seqlens_kv")),
-            indices["H"],
-            indices["H_kv"],
-            indices["D"],
-            params["is_causal"],
-            params.get("window_size_left", -1),
-            params.get("window_size_right", -1),
-            _dtype(call, "q"),
-            sm_scale=params.get("sm_scale"),
-            softcap=params.get("softcap"),
+            *positional,
+            **shared,
             out_dtype=None if out_dtype is None else getattr(torch, out_dtype),
-            rotary_dim=indices["R"] if rope else None,
+            rotary_dim=call.indices["R"] if params["pos_encoding_mode"] == "rope" else None,
             rope_layout=params["rope_layout"],
-            has_sinks=call.present("sinks"),
         )
 
     gen_inputs = GQAVarlenScaledWorkload.gen_inputs

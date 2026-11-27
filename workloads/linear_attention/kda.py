@@ -1,4 +1,5 @@
 import itertools
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -23,6 +24,7 @@ def _channel_log_gates(like: torch.Tensor) -> torch.Tensor:
     return F.logsigmoid(torch.rand(like.shape, device=like.device)).to(like.dtype)
 
 
+@dataclass(eq=False)
 class KDAFwdWorkload(WorkloadBase):
     """BTHD Kimi Delta Attention (KDA) prefill or decode, equal-length or packed.
 
@@ -32,27 +34,18 @@ class KDAFwdWorkload(WorkloadBase):
     post-sigmoid step size, the variant the in-tree kernels serve.
     """
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim: int,
-        dtype: torch.dtype,
-        has_initial_state: bool = True,
-        value_heads: int | None = None,
-        sequence_lengths: tuple[int, ...] | None = None,
-        l2norm: bool = True,
-    ) -> None:
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim = dim
-        self.dtype = dtype
-        self.has_initial_state = has_initial_state
-        self.value_heads = heads if value_heads is None else value_heads
-        self.sequence_lengths = sequence_lengths
-        self.l2norm = l2norm
+    batch: int
+    seq_len: int
+    heads: int
+    dim: int
+    dtype: torch.dtype
+    has_initial_state: bool = True
+    value_heads: int | None = None
+    sequence_lengths: tuple[int, ...] | None = None
+    l2norm: bool = True
+
+    def __post_init__(self) -> None:
+        self.value_heads = self.heads if self.value_heads is None else self.value_heads
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
         packed = self.sequence_lengths is not None
@@ -175,15 +168,10 @@ def kda_ref(
     l2norm=False,
     state_v_first=False,
 ):
-    """The KDA recurrence evaluated independently of the in-tree kernels and of FLA.
-
-    Per token: the state decays by ``exp(g)`` along its key axis, the delta rule writes
-    ``beta * (v - k^T S)`` along ``k``, and the output reads ``q^T S``. The recurrence runs
-    chunk by chunk in FP64: within a chunk the written values solve the unit
-    lower-triangular system exactly, with every per-channel decay gap materialized, so no
-    gap is exponentiated with a positive argument. The sequence boundaries come from the
-    call's offsets, and a sequence with no token ends on the state it started from.
-    """
+    """``(o, final_state)`` of the KDA recurrence in FP64 over the sequences the call's offsets
+    bound: per token the state decays by ``exp(g)`` along its key axis, the delta rule writes
+    ``beta * (v - k^T S)`` along ``k``, and the output reads ``q^T S``. A sequence with no
+    token ends on the state it started from."""
     dtype = torch.float64
     scale = q.shape[-1] ** -0.5 if scale is None else scale
     group = v.shape[2] // q.shape[2]

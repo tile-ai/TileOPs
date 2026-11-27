@@ -18,6 +18,21 @@ from tileops.backend import Target
 __all__ = ["DeltaNetChunkBwdOp", "DeltaNetChunkFwdOp"]
 
 
+def _chunk_call(chunk_size: int, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
+    """The facts of one call: the shapes read off the tensors and the op's chunk length."""
+    batch, heads, seq_len, dim_k = q.shape
+    return DeltaNetChunkCall(
+        batch=batch,
+        heads=heads,
+        seq_len=seq_len,
+        chunk_size=chunk_size,
+        dim_k=dim_k,
+        dim_v=v.shape[3],
+        dtype=q.dtype,
+        device=q.device,
+    )
+
+
 class DeltaNetChunkFwdOp(Op):
     """DeltaNet forward operator (ungated).
 
@@ -76,22 +91,8 @@ class DeltaNetChunkFwdOp(Op):
         Returns:
             Tuple of (o, h, Aw, Au, w, u).
         """
-        kernel = self.kernel_for("deltanet_chunk_fwd", lambda: self._call(q, v))
+        kernel = self.kernel_for("deltanet_chunk_fwd", lambda: _chunk_call(self.chunk_size, q, v))
         return kernel(q, k, v, beta)
-
-    def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
-        """The facts of one call: the shapes read off the tensors and the op's chunk length."""
-        batch, heads, seq_len, dim_k = q.shape
-        return DeltaNetChunkCall(
-            batch=batch,
-            heads=heads,
-            seq_len=seq_len,
-            chunk_size=self.chunk_size,
-            dim_k=dim_k,
-            dim_v=v.shape[3],
-            dtype=q.dtype,
-            device=q.device,
-        )
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -159,22 +160,8 @@ class DeltaNetChunkBwdOp(Op):
             Tuple of (dq, dk, dv, dbeta).
         """
         inputs = (do, q, k, v, beta, h, Aw, Au, w, u)
-        kernel = self.kernel_for("deltanet_chunk_bwd", lambda: self._call(q, v))
+        kernel = self.kernel_for("deltanet_chunk_bwd", lambda: _chunk_call(self.chunk_size, q, v))
         return kernel(*inputs)
-
-    def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
-        """The facts of one call: the shapes read off the tensors and the op's chunk length."""
-        batch, heads, seq_len, dim_k = q.shape
-        return DeltaNetChunkCall(
-            batch=batch,
-            heads=heads,
-            seq_len=seq_len,
-            chunk_size=self.chunk_size,
-            dim_k=dim_k,
-            dim_v=v.shape[3],
-            dtype=q.dtype,
-            device=q.device,
-        )
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

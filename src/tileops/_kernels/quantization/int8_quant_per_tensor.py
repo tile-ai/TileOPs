@@ -72,23 +72,19 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
             )
             return T.if_then_else(num[1] == T.float32(0), signed, rounded)
 
+        def at(t, bx, tx):
+            # Offset of thread ``tx``'s vector in tile ``t`` of CTA ``bx``.
+            return (t * grid + bx) * tile + tx * vec
+
         @T.macro
         def load_vector(dst, row, src, offset, evict_first: bool):
             # evict_first for data nothing reads from memory again.
-            if evict_first:
-                T.call_extern(
-                    "handle",
-                    "tileops::load16_evict_first",
-                    T.address_of(dst[row, 0]),
-                    T.address_of(src[offset]),
-                )
-            else:
-                T.call_extern(
-                    "handle",
-                    "tileops::load16",
-                    T.address_of(dst[row, 0]),
-                    T.address_of(src[offset]),
-                )
+            T.call_extern(
+                "handle",
+                "tileops::load16_evict_first" if evict_first else "tileops::load16",
+                T.address_of(dst[row, 0]),
+                T.address_of(src[offset]),
+            )
 
         @T.macro
         def block_max(val, warp_max):
@@ -129,7 +125,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
             # The most recently read tiles first, so that the re-read ones find L2
             # warm; nothing reads them again, hence evict-first.
             if ragged > 0 and bx < ragged:
-                store(q, out, num, (whole * grid + bx) * tile + tx * vec, extra, 0, prescale)
+                store(q, out, num, at(whole, bx, tx), extra, 0, prescale)
             if tail > 0 and bx == grid - 1:
                 if tx < tail // vec:
                     store(q, out, num, tiles * tile + tx * vec, extra, 0, prescale)
@@ -150,16 +146,16 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                             q[offset + c] = code(T.cast(extra[0, c], "float32"), num, prescale)
             first = reg + smem + rounds * batch
             for i in T.unroll(rest):
-                load_vector(cur, i, x, ((first + i) * grid + bx) * tile + tx * vec, True)
+                load_vector(cur, i, x, at(first + i, bx, tx), True)
             for i in T.unroll(rest):
-                store(q, out, num, ((first + i) * grid + bx) * tile + tx * vec, cur, i, prescale)
+                store(q, out, num, at(first + i, bx, tx), cur, i, prescale)
             for r in T.serial(rounds):
                 for i in T.unroll(batch):
                     load_vector(
                         cur,
                         i,
                         x,
-                        ((reg + smem + (rounds - 1 - r) * batch + i) * grid + bx) * tile + tx * vec,
+                        at(reg + smem + (rounds - 1 - r) * batch + i, bx, tx),
                         True,
                     )
                 for i in T.unroll(batch):
@@ -167,7 +163,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                         q,
                         out,
                         num,
-                        ((reg + smem + (rounds - 1 - r) * batch + i) * grid + bx) * tile + tx * vec,
+                        at(reg + smem + (rounds - 1 - r) * batch + i, bx, tx),
                         cur,
                         i,
                         prescale,
@@ -175,9 +171,9 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
             for j in T.unroll(smem, unroll_factor=batch):
                 for c in T.vectorized(width):
                     cur[0, c] = in_smem[j, tx * width + c]
-                store(q, out, num, ((reg + j) * grid + bx) * tile + tx * vec, cur, 0, prescale)
+                store(q, out, num, at(reg + j, bx, tx), cur, 0, prescale)
             for j in T.unroll(reg):
-                store(q, out, num, (j * grid + bx) * tile + tx * vec, in_regs, j, prescale)
+                store(q, out, num, at(j, bx, tx), in_regs, j, prescale)
 
         @T.prim_func
         def _int8_quant_per_tensor_main(
@@ -207,7 +203,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                 # of vectors. Only the last CTA has a tail, and it has no ragged tile. Both
                 # are read first and held in registers.
                 if ragged > 0 and bx < ragged:
-                    load_vector(extra, 0, x, (whole * grid + bx) * tile + tx * vec, True)
+                    load_vector(extra, 0, x, at(whole, bx, tx), True)
                 if tail > 0 and bx == grid - 1:
                     if tx < tail // vec:
                         load_vector(extra, 0, x, tiles * tile + tx * vec, True)
@@ -227,7 +223,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                 # nothing reads them from memory again; the streamed ones stay cacheable for
                 # phase 2.
                 for j in T.unroll(reg):
-                    load_vector(in_regs, j, x, (j * grid + bx) * tile + tx * vec, True)
+                    load_vector(in_regs, j, x, at(j, bx, tx), True)
                 for j in T.unroll(reg):
                     fold(acc, in_regs, j)
                 for r in T.serial(T.ceildiv(smem, batch)):
@@ -237,7 +233,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                                 cur,
                                 i,
                                 x,
-                                ((reg + r * batch + i) * grid + bx) * tile + tx * vec,
+                                at(reg + r * batch + i, bx, tx),
                                 True,
                             )
                     for i in T.unroll(batch):
@@ -251,7 +247,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                             cur,
                             i,
                             x,
-                            ((reg + smem + r * batch + i) * grid + bx) * tile + tx * vec,
+                            at(reg + smem + r * batch + i, bx, tx),
                             False,
                         )
                     for i in T.unroll(batch):
@@ -261,7 +257,7 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
                         cur,
                         i,
                         x,
-                        ((reg + smem + rounds * batch + i) * grid + bx) * tile + tx * vec,
+                        at(reg + smem + rounds * batch + i, bx, tx),
                         False,
                     )
                 for i in T.unroll(rest):
@@ -306,12 +302,9 @@ def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
 
 
 class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
-    """Quantize ``x`` against one scale in one cooperative launch, reading ``x`` about once.
-
-    A grid-wide amax has to finish before any value is quantized, so the launch holds as
-    much of ``x`` on chip as shared memory and registers take across a grid barrier and
-    reads only the rest a second time. ``q`` is bit-equal to the torch reference: the scale
-    is the product torch computes, and the quotient is correctly rounded.
+    """Quantize ``x`` against one scale in one cooperative launch, holding as much of ``x``
+    on chip across the grid barrier as shared memory and registers take. ``q`` is bit-equal
+    to the torch reference.
 
     Args:
         call: The call's shape, dtype and device facts.
@@ -319,8 +312,6 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    # The integer tensors are the partials and ``q``, both written before anything reads them.
-    autotune_accepts_random_int_inputs = True
 
     # Keep one CTA per SM resident for the barrier; shrink blocks for small inputs.
     _THREADS: ClassVar[int] = 512
@@ -364,10 +355,6 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
     @property
     def default_config(self) -> dict:
         return {"reg_tiles": self._reg_tiles, "smem_tiles": self._smem_tiles, "batch": self._BATCH}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         partial = torch.empty(self._grid, dtype=torch.int32, device=x.device)

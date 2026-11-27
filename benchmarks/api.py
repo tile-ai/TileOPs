@@ -52,34 +52,10 @@ BASELINE = "baseline"
 # The report name of the case's reference compiled by Inductor.
 TORCH_COMPILE_TAG = "torch-compile"
 
-# --tileops-verify runs the correctness check only, omitting timing.
-_verifying = False
-
-
-def verifying() -> bool:
-    """Whether this run omits timing after the correctness check."""
-    return _verifying
-
-
-def set_verifying(value: bool) -> None:
-    """Put the run into verification mode. The benchmark conftest owns this."""
-    global _verifying
-    _verifying = value
-
-
-# --tileops-nightly runs the nightly sweep's cases.
-_nightly = False
-
-
-def nightly() -> bool:
-    """Whether this run is the nightly sweep."""
-    return _nightly
-
-
-def set_nightly(value: bool) -> None:
-    """Put the run into nightly mode. The benchmark conftest owns this."""
-    global _nightly
-    _nightly = value
+# Set by the benchmark conftest: --tileops-verify runs the correctness check only, omitting
+# timing; --tileops-nightly runs the nightly sweep's cases.
+verify_only = False
+nightly_sweep = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -204,7 +180,7 @@ def cases(op: "str | type") -> list[Case]:
         Case(call.case_id, call, workload, calling)
         for call in (
             instantiate(plan, row, dtype_case)
-            for row, dtype_case in bench_calls(plan, load_workloads(name), _nightly)
+            for row, dtype_case in bench_calls(plan, load_workloads(name), nightly_sweep)
         )
     ]
 
@@ -275,7 +251,7 @@ class Runner:
             # implementation serves yet, the row is unavailable, which the op states when called.
             _raise_if_unavailable(plan[TILEOPS], self.case.inputs, exc)
             raise
-        if verifying():
+        if verify_only:
             return {}
         torch.accelerator.synchronize()
         gc.collect()
@@ -350,7 +326,7 @@ class Runner:
         first_pass: dict[str, tuple[float, str]] = {}
         for name in names + names[::-1]:
             impl = plan[name]
-            if _nightly and name in meta and self._slow_reference(name, impl, first_pass):
+            if nightly_sweep and name in meta and self._slow_reference(name, impl, first_pass):
                 continue
             previous = meta.get(name)
             with torch.no_grad():

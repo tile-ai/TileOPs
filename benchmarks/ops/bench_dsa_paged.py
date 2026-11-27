@@ -78,7 +78,7 @@ def _flashmla_bf16(case: bench.Case, rows: torch.Tensor) -> "bench.Implementatio
     return bench.Implementation(run=fn, args=())
 
 
-@pytest.mark.parametrize("case", bench.cases(DSAPagedFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(DSAPagedFwdOp))
 def test_dsa_paged_bench(case) -> None:
     op = DSAPagedFwdOp(**case.arguments)
     bench.Runner(op, case).compare({"flashmla": _flashmla(case)})

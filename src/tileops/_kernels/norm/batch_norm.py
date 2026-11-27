@@ -216,33 +216,21 @@ def _batch_norm_fwd_train_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
-    eps: float = 1e-5,
-    momentum: float = 0.1,
-    has_weight: bool = True,
-    has_bias: bool = True,
-    has_stats: bool = True,
+    dtype: str,
+    eps: float,
+    momentum: float,
+    has_weight: bool,
+    has_bias: bool,
+    has_stats: bool,
 ) -> Callable:
-    """Return the JIT-compiled training-forward kernel factory.
+    """Return the JIT-compiled training-forward kernel factory, one channel a block.
 
-    Kernel computes, per channel, with ``K`` its first element:
-      1. mean   = K + sum(x - K) / L
-      2. var    = sum((x - mean)^2) / L, from each slot's square sum around its own mean
-      3. rstd   = 1 / sqrt(var + eps)
-      4. y      = weight * (x - mean) * rstd + bias
-      5. running_mean/var updated with *momentum*.
-
-    Saved mean and rstd are needed by the backward pass.
-
-    Element *l* of channel *c* is ``x[l // S, c, l % S]``, so the channel is read
-    in place with no transposed copy.
-
-    Persistent path (block_l >= L): after pass 1 loads all L elements into
-    x_shared, pass 2 normalizes directly from x_shared — no second global read.
-
-    Non-persistent path (block_l < L): two global reads (classic two-pass BN).
-
-    A *block_l* that does not divide L masks the last tile; threads must divide block_l.
+    Per channel, with ``K`` its first element: ``mean = K + sum(x - K) / L``; ``var`` from each
+    slot's square sum around its own mean; ``rstd = 1 / sqrt(var + eps)``;
+    ``y = weight * (x - mean) * rstd + bias``; running statistics updated with *momentum*.
+    Element *l* of channel *c* is ``x[l // S, c, l % S]``. Where ``block_l >= L`` the channel
+    stays in shared memory for the second pass; else it is read twice. A *block_l* that does not
+    divide L masks the last tile; threads divide block_l.
     """
     accum_dtype = "float32"
     L = N * S
@@ -464,12 +452,12 @@ def _batch_norm_fwd_train_split_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
-    eps: float = 1e-5,
-    momentum: float = 0.1,
-    has_weight: bool = True,
-    has_bias: bool = True,
-    has_stats: bool = True,
+    dtype: str,
+    eps: float,
+    momentum: float,
+    has_weight: bool,
+    has_bias: bool,
+    has_stats: bool,
 ) -> Callable:
     """Return the three-stage training-forward factories for a long channel.
 
@@ -979,29 +967,21 @@ def _batch_norm_fwd_train_wide_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
-    eps: float = 1e-5,
-    momentum: float = 0.1,
-    has_weight: bool = True,
-    has_bias: bool = True,
-    has_stats: bool = True,
+    dtype: str,
+    eps: float,
+    momentum: float,
+    has_weight: bool,
+    has_bias: bool,
+    has_stats: bool,
 ) -> Callable:
-    """Return the JIT-compiled training-forward factory for a register-held channel.
+    """Return the JIT-compiled training-forward factory for a channel held in one block's
+    registers: one read and one write of the tensor.
 
-    A channel short enough to fit in one block's registers is read once into
-    registers and normalised from there, with no shared-memory staging and no
-    second global read: global traffic is one read and one write of the tensor.
-
-    The block first sums the raw elements and their squares, a warp by shuffles and the
-    block after one exchange, and keeps those statistics where `make_raw_sums_hold` holds.
-    Otherwise each thread sums its elements less each group's first and merges its
-    groups by Chan's update, a warp merges its threads' in one shuffle round, and the block
-    merges the warps' after one exchange. Both orders are fixed, so the running statistics
-    this kernel writes back are the same on every run.
-
-    Requirements: ``num_per_thread`` divides *S*, so a thread's vector never
-    straddles two batch items and its address stays affine; ``threads`` is a
-    multiple of the warp width.
+    The block sums the raw elements and their squares and keeps those statistics where
+    `make_raw_sums_hold` holds; otherwise it merges per-thread sums less each group's first by
+    Chan's update. Both orders are fixed, so the running statistics are the same on every run.
+    ``num_per_thread`` divides *S*, so a thread's vector never straddles two batch items, and
+    ``threads`` is a multiple of the warp width.
     """
     accum_dtype = "float32"
     L = N * S
@@ -1385,21 +1365,16 @@ def _batch_norm_fwd_train_whole_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
-    eps: float = 1e-5,
-    momentum: float = 0.1,
-    has_weight: bool = True,
-    has_bias: bool = True,
-    has_stats: bool = True,
+    dtype: str,
+    eps: float,
+    momentum: float,
+    has_weight: bool,
+    has_bias: bool,
+    has_stats: bool,
 ) -> Callable:
-    """Return the JIT-compiled training-forward factory for a channel per thread.
-
-    A channel is *S* elements contiguous at a time, so a short spatial extent
-    — ``S == 1`` for an ``(N, C)`` input — leaves a block that owns one channel
-    one useful element per cache line, whatever the tile size. One channel per
-    *thread* instead puts neighbouring channels in neighbouring threads, so a
-    warp's reads fall in the same lines. A channel that fits in a thread's
-    registers needs no cross-thread reduction, no shared memory and no barrier.
+    """Return the JIT-compiled training-forward factory for one channel a thread, held in its
+    registers: neighbouring channels in neighbouring threads share cache lines where *S* is
+    short, and no cross-thread reduction is needed.
     """
     accum_dtype = "float32"
     L = N * S
@@ -1629,15 +1604,7 @@ class _BatchNormFwdTrain(_BatchNormKernel, BatchNormTrainFwdInterface):
         return y, mean_out, rstd_out
 
 
-class _BatchNormFwdTrainHeldKernel(_BatchNormFwdTrain):
-    """Training forward with a channel held in registers, launched with ``self.launch``."""
-
-    def _compile(self, cfg: dict):
-        """The program, launched as ``self.launch`` says."""
-        return self.kernel(*self.launch)
-
-
-class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
+class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrain):
     """Training forward with one channel per thread, held in its registers.
 
     Serves a channel one thread holds. It stays apart from the Wide program: channels map
@@ -1678,16 +1645,17 @@ class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
         super().__init__(device_index=device_index)
         self.C = C
         self.dtype = dtype
-        # Wider than the channels it covers when there are few, so the block still has
-        # enough warps to cover load latency.
-        block_threads = 256
-        self.launch = (block_threads,)
         self.kernel = _batch_norm_fwd_train_whole_kernel(
             N, C, S, self.dtype_str, eps, momentum, *presence
         )
 
+    def _compile(self, cfg: dict):
+        """The program, 256 threads a block: wider than the channels it covers when there are
+        few, so the block still has enough warps to cover load latency."""
+        return self.kernel(256)
 
-class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
+
+class BatchNormFwdTrainWideKernel(_BatchNormFwdTrain):
     """Training forward with one channel per block, held in the block's registers.
 
     Serves a channel one block holds and one thread does not.
@@ -1751,6 +1719,10 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
         self.kernel = _batch_norm_fwd_train_wide_kernel(
             N, C, S, self.dtype_str, eps, momentum, *presence
         )
+
+    def _compile(self, cfg: dict):
+        """The program, launched as ``self.launch`` says."""
+        return self.kernel(*self.launch)
 
 
 class BatchNormFwdTrainSplitKernel(_BatchNormFwdTrain):
@@ -1993,19 +1965,14 @@ def _batch_norm_fwd_infer_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
-    eps: float = 1e-5,
-    input_dtype_params: bool = False,
-    has_weight: bool = True,
-    has_bias: bool = True,
+    dtype: str,
+    eps: float,
+    input_dtype_params: bool,
+    has_weight: bool,
+    has_bias: bool,
 ) -> Callable:
-    """Return the JIT-compiled inference-forward kernel factory.
-
-    Inference reads no statistic off the input, so the whole op is one map:
-    ``y = x * scale + shift`` with a scale and shift the channel picks. The
-    grid is over elements, not channels, and the channel of element ``i`` is
-    ``(i // S) % C`` of the flat ``(N, C, S)`` layout, so nothing is transposed
-    on the way in or out.
+    """Return the JIT-compiled inference-forward kernel factory: one map
+    ``y = x * scale + shift`` over elements, element ``i`` in channel ``(i // S) % C``.
 
     Args:
         N: Batch size.
@@ -2268,29 +2235,19 @@ def _batch_norm_bwd_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
+    dtype: str,
 ) -> Callable:
-    """Return the JIT-compiled backward kernel factory.
+    """Return the JIT-compiled backward kernel factory: from the saved mean and rstd,
 
-    Given saved mean and rstd from the training forward pass, computes:
-      grad_bias[c]   = sum_i( grad_out[c, i] )
-      grad_weight[c] = sum_i( grad_out[c, i] * x_hat[c, i] )
+      grad_bias[c]   = sum_i(grad_out[c, i])
+      grad_weight[c] = sum_i(grad_out[c, i] * x_hat[c, i])
       grad_x[c, i]   = weight[c] * rstd[c] / L
-                       * ( L * grad_out[c, i]
-                           - grad_bias[c]
-                           - x_hat[c, i] * grad_weight[c] )
+                       * (L * grad_out[c, i] - grad_bias[c] - x_hat[c, i] * grad_weight[c])
 
-    where x_hat[c, i] = (x[c, i] - mean[c]) * rstd[c].
-
-    Element *l* of channel *c* is ``[l // S, c, l % S]`` of every tensor.
-
-    Persistent path (block_l >= L): after pass 1 accumulates grad_bias /
-    grad_weight while loading grad_out and x into shared memory, pass 2 computes
-    grad_x directly from shared memory — eliminates the second global read.
-
-    Non-persistent path (block_l < L): two global reads (classic two-pass BN bwd).
-
-    A *block_l* that does not divide L masks the last tile.
+    with ``x_hat[c, i] = (x[c, i] - mean[c]) * rstd[c]``. Element *l* of channel *c* is
+    ``[l // S, c, l % S]`` of every tensor. Where ``block_l >= L`` the second pass reads
+    ``grad_out`` and ``x`` from shared memory; else from global. A *block_l* that does not divide
+    L masks the last tile.
     """
     accum_dtype = "float32"
     L = N * S
@@ -2395,29 +2352,14 @@ def _batch_norm_bwd_kernel(
                         gx = w_rstd_over_L * (
                             T.cast(L, accum_dtype) * go_val - sum_do[0] - x_hat * sum_do_xhat[0]
                         )
-                        if ragged:
-                            if j < L:
-                                grad_x[j // S, bc, j % S] = T.cast(gx, dtype)
-                        else:
+                        if (not ragged) or j < L:
                             grad_x[j // S, bc, j % S] = T.cast(gx, dtype)
                 else:
                     # T.copy inside T.Pipelined races with the async copy.
                     for l_tile in T.Pipelined(tiles, num_stages=0):
                         for _i, j in T.Parallel(1, block_l):
                             l = l_tile * block_l + j
-                            if ragged:
-                                if l < L:
-                                    go_val = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
-                                    x_hat = (
-                                        T.cast(x[l // S, bc, l % S], accum_dtype) - mean_val
-                                    ) * rstd_val
-                                    gx = w_rstd_over_L * (
-                                        T.cast(L, accum_dtype) * go_val
-                                        - sum_do[0]
-                                        - x_hat * sum_do_xhat[0]
-                                    )
-                                    grad_x[l // S, bc, l % S] = T.cast(gx, dtype)
-                            else:
+                            if (not ragged) or l < L:
                                 go_val = T.cast(grad_out[l // S, bc, l % S], accum_dtype)
                                 x_hat = (
                                     T.cast(x[l // S, bc, l % S], accum_dtype) - mean_val
@@ -2439,7 +2381,7 @@ def _batch_norm_bwd_wide_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
+    dtype: str,
 ) -> Callable:
     """Return the JIT-compiled backward factory for a register-held channel.
 
@@ -2573,7 +2515,7 @@ def _batch_norm_bwd_split_kernel(
     N: int,
     C: int,
     S: int,
-    dtype: str = "float16",
+    dtype: str,
 ) -> Callable:
     """Return the three-stage backward factories for a long channel.
 

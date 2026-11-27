@@ -41,11 +41,8 @@ __all__ = [
 
 
 class _RowNormKernel(Kernel):
-    """What both kernels here share: the row's tiling and the config space for it.
-
-    Whether the row is read from global memory straight into register fragments
-    decides which reduction the program uses and which block widths are worth
-    offering, so both follow from one predicate rather than from either caller.
+    """The row tiling and config space both GroupNorm kernels share; whether a row is read into
+    register fragments decides both the reduction and the block widths offered.
 
     Args:
         D: Row length = (C / G) * spatial_size.
@@ -435,6 +432,32 @@ def make_warp_row_norm(n, dtype, eps, vec, affine):
     return held_n, reduce_row, write_row
 
 
+def _row_program(body, M, D, dtype, channels, affine):
+    """The program running macro *body* over ``(M, D)`` rows: ``main(x, weight, bias, y)`` with a
+    ``(channels,)`` weight and bias where *affine*, else ``main_no_affine(x, y)``."""
+    if affine:
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, D), dtype],
+            weight: T.Tensor[(channels,), dtype],
+            bias: T.Tensor[(channels,), dtype],
+            y: T.Tensor[(M, D), dtype],
+        ):
+            body(x, weight, bias, y)
+
+        return main
+
+    @T.prim_func
+    def main_no_affine(
+        x: T.Tensor[(M, D), dtype],
+        y: T.Tensor[(M, D), dtype],
+    ):
+        body(x, None, None, y)
+
+    return main_no_affine
+
+
 def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
     """Up to ``threads / 32`` rows a block, one a warp; see `make_warp_row_norm`.
 
@@ -451,44 +474,27 @@ def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
     threads = warps * WARP_LANES
     held_n, reduce_row, write_row = make_warp_row_norm(D, dtype, eps, vec, affine)
 
-    if affine:
-
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, D), dtype],
-            weight: T.Tensor[(num_groups,), dtype],
-            bias: T.Tensor[(num_groups,), dtype],
-            y: T.Tensor[(M, D), dtype],
-        ):
-            with T.Kernel(T.ceildiv(M, warps), threads=threads) as bx:
-                m = bx * warps + T.get_thread_binding() // WARP_LANES
+    @T.macro
+    def body(x, weight, bias, y):
+        with T.Kernel(T.ceildiv(M, warps), threads=threads) as bx:
+            m = bx * warps + T.get_thread_binding() // WARP_LANES
+            if affine:
                 scale = T.alloc_local((1,), "float32")
                 shift = T.alloc_local((1,), "float32")
-                held = T.alloc_local((held_n,), dtype)
-                centred = T.alloc_local((held_n,), "float32")
-                stats = T.alloc_local((8,), "float32")
+            held = T.alloc_local((held_n,), dtype)
+            centred = T.alloc_local((held_n,), "float32")
+            stats = T.alloc_local((8,), "float32")
+            if affine:
                 # Ahead of the row load, so the two reads are in flight while it runs.
                 scale[0] = T.cast(weight[T.min(m, M - 1) % num_groups], "float32")
                 shift[0] = T.cast(bias[T.min(m, M - 1) % num_groups], "float32")
                 reduce_row(x, T.min(m, M - 1), held, centred, stats)
                 write_row(y, T.min(m, M - 1), m < M, centred, stats, scale, shift)
+            else:
+                reduce_row(x, T.min(m, M - 1), held, centred, stats)
+                write_row(y, T.min(m, M - 1), m < M, centred, stats, None, None)
 
-        return main
-
-    @T.prim_func
-    def main_no_affine(
-        x: T.Tensor[(M, D), dtype],
-        y: T.Tensor[(M, D), dtype],
-    ):
-        with T.Kernel(T.ceildiv(M, warps), threads=threads) as bx:
-            m = bx * warps + T.get_thread_binding() // WARP_LANES
-            held = T.alloc_local((held_n,), dtype)
-            centred = T.alloc_local((held_n,), "float32")
-            stats = T.alloc_local((8,), "float32")
-            reduce_row(x, T.min(m, M - 1), held, centred, stats)
-            write_row(y, T.min(m, M - 1), m < M, centred, stats, None, None)
-
-    return main_no_affine
+    return _row_program(body, M, D, dtype, num_groups, affine)
 
 
 def _held_rows(M, D, eps, dtype, vec, threads, num_groups, channels_per_group, affine):
@@ -499,7 +505,6 @@ def _held_rows(M, D, eps, dtype, vec, threads, num_groups, channels_per_group, a
     full = vectors // threads
     warps = threads // WARP_LANES
     spatial_size = D // channels_per_group
-    C = num_groups * channels_per_group
     # One channel owns every column of an access exactly when channels start on one.
     access_in_channel = spatial_size % vec == 0
     # One channel owns the whole row exactly when a group holds one channel.
@@ -643,27 +648,7 @@ def _held_rows(M, D, eps, dtype, vec, threads, num_groups, channels_per_group, a
             else:
                 write(y, row, tx, held, centred, merged, ref, weight, bias, None, False)
 
-    if affine:
-
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, D), dtype],
-            weight: T.Tensor[(C,), dtype],
-            bias: T.Tensor[(C,), dtype],
-            y: T.Tensor[(M, D), dtype],
-        ):
-            body(x, weight, bias, y)
-
-        return main
-
-    @T.prim_func
-    def main_no_affine(
-        x: T.Tensor[(M, D), dtype],
-        y: T.Tensor[(M, D), dtype],
-    ):
-        body(x, None, None, y)
-
-    return main_no_affine
+    return _row_program(body, M, D, dtype, num_groups * channels_per_group, affine)
 
 
 def _staged_rows(M, D, eps, dtype, block_m, threads, num_groups, channels_per_group, affine):
@@ -675,7 +660,6 @@ def _staged_rows(M, D, eps, dtype, block_m, threads, num_groups, channels_per_gr
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
     spatial_size = D // channels_per_group
-    C = num_groups * channels_per_group
     # A non-aligned D or a tail row block reads and writes past the end unless guarded.
     guarded = D_padded != D or M % block_m != 0
     # One channel owns the whole row exactly when a group holds one channel.
@@ -748,37 +732,14 @@ def _staged_rows(M, D, eps, dtype, block_m, threads, num_groups, channels_per_gr
                             (x_f32[i, j] - centre[i]) * rstd[i], dtype
                         )
 
-    if affine:
-
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M, D), dtype],
-            weight: T.Tensor[(C,), dtype],
-            bias: T.Tensor[(C,), dtype],
-            y: T.Tensor[(M, D), dtype],
-        ):
-            body(x, weight, bias, y)
-
-        return main
-
-    @T.prim_func
-    def main_no_affine(
-        x: T.Tensor[(M, D), dtype],
-        y: T.Tensor[(M, D), dtype],
-    ):
-        body(x, None, None, y)
-
-    return main_no_affine
+    return _row_program(body, M, D, dtype, num_groups * channels_per_group, affine)
 
 
 @target_cache(maxsize=32)
-def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, warp_vec, held_vec):
-    """Build a row-wise normalization kernel with a per-channel affine.
-
-    This is the core computation shared by GroupNorm and InstanceNorm. The
-    caller is responsible for reshaping the input into (M, D); weight and
-    bias stay in their natural per-channel (C,) layout and are gathered by
-    the channel each element belongs to.
+def _group_norm_kernel(
+    M, D, eps, dtype, num_groups, channels_per_group, warp_vec, held_vec, affine
+):
+    """Build a GroupNorm / InstanceNorm program over ``(M, D)`` rows.
 
     Args:
         M: Number of rows = N * G.
@@ -791,36 +752,29 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, warp_ve
         warp_vec: Vector width of the warp-a-row body, or ``None``. Only a group of one
             channel takes it.
         held_vec: Vector width of the block-a-row body, or ``None`` for the staged body.
+        affine: Whether the program takes a ``(C,)`` weight and bias, gathered by each
+            element's channel, after ``x``.
     """
 
-    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[3 if affine else 1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
         if warp_vec is not None:
-            return _warp_rows(M, D, eps, dtype, warp_vec, threads, num_groups, True)
+            return _warp_rows(M, D, eps, dtype, warp_vec, threads, num_groups, affine)
         if held_vec is not None:
             return _held_rows(
-                M, D, eps, dtype, held_vec, threads, num_groups, channels_per_group, True
+                M, D, eps, dtype, held_vec, threads, num_groups, channels_per_group, affine
             )
         return _staged_rows(
-            M, D, eps, dtype, block_m, threads, num_groups, channels_per_group, True
+            M, D, eps, dtype, block_m, threads, num_groups, channels_per_group, affine
         )
 
     return _func
 
 
 class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
-    """GroupNorm forward kernel with a per-channel affine.
-
-    Normalizes each group's (C/G, *spatial) slice independently and applies
-    ``weight[c]`` / ``bias[c]`` to every element, with *c* derived from the
-    element's position in the row. Input is pre-reshaped to (M, D) where
-    M = N*G, D = (C/G)*spatial_size; weight and bias keep their (C,) layout.
-
-    InstanceNorm uses this kernel with ``num_groups=C`` and
-    ``channels_per_group=1``.
-
-    Supports SM80+ architectures. Uses 256-element alignment for shared
-    memory copies. Single shared buffer reused for input load and output store.
+    """GroupNorm forward with a per-channel affine over ``(M, D)`` rows, ``M = N * G`` and
+    ``D = (C / G) * spatial_size``; ``weight[c]`` / ``bias[c]`` apply by each element's channel.
+    InstanceNorm uses it with ``num_groups=C`` and ``channels_per_group=1``.
 
     Args:
         D: Row length = (C / G) * spatial_size.
@@ -909,47 +863,13 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
             self.channels_per_group,
             self._warp_row_vector(),
             self._held_row_vector(),
+            True,
         )
         return kernel(cfg["block_m"], cfg["threads"])
 
 
-@target_cache(maxsize=32)
-def _group_norm_no_affine_kernel(M, D, eps, dtype, warp_vec, held_vec):
-    """Build a row-wise normalization kernel for shape (M, D) without affine.
-
-    Same numerics and same boundary handling as `_group_norm_kernel`,
-    but omits the trailing weight/bias multiply-add — output is
-    ``(x - mean) * rstd``. Used for the no-affine variants of GroupNorm and
-    InstanceNorm.
-
-    Args:
-        M: Number of rows = N * G.
-        D: Row length = (C / G) * spatial_size.
-        eps: Epsilon for numerical stability.
-        dtype: TileLang dtype string.
-        warp_vec: Vector width of the warp-a-row body, or ``None``.
-        held_vec: Vector width of the block-a-row body, or ``None`` for the staged body.
-    """
-
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
-    def _func(block_m, threads):
-        if warp_vec is not None:
-            return _warp_rows(M, D, eps, dtype, warp_vec, threads, 1, False)
-        if held_vec is not None:
-            return _held_rows(M, D, eps, dtype, held_vec, threads, 1, 1, False)
-        return _staged_rows(M, D, eps, dtype, block_m, threads, 1, 1, False)
-
-    return _func
-
-
 class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
-    """GroupNorm forward kernel without affine scale/shift.
-
-    Computes ``y = (x - mean) * rstd`` row-wise for shape $[M \\times D]$ reshaped
-    inputs. Shares the build/launch parameters and shared-memory layout of
-    `GroupNormKernel`; only the output stage differs (no weight/bias
-    multiply-add). Used by the no-affine variants of GroupNorm and
-    InstanceNorm.
+    """GroupNorm forward without an affine: ``y = (x - mean) * rstd`` over ``(M, D)`` rows.
 
     Args:
         D: Row length = (C / G) * spatial_size.
@@ -1004,12 +924,15 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
-        self.kernel = kernel = _group_norm_no_affine_kernel(
+        self.kernel = kernel = _group_norm_kernel(
             m,
             self.D,
             self.eps,
             self.dtype_str,
+            1,
+            1,
             self._warp_row_vector(),
             self._held_row_vector(),
+            False,
         )
         return kernel(cfg["block_m"], cfg["threads"])

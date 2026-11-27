@@ -20,10 +20,6 @@ __all__ = ["MoEPermuteAlignFwdOp"]
 class MoEPermuteAlignFwdOp(Op):
     """Route tokens to experts and pad each expert's token count to block_size.
 
-    Takes ``topk_ids`` and produces the three index arrays required by MoE
-    grouped GEMM: sorted token indices, per-block expert ids, and the total
-    padded token count.
-
     With ``numel = T * K`` routes and ``count[e]`` of them on expert ``e``, the result is:
 
     - ``num_tokens_post_pad``: the sum over experts of ``count[e]`` rounded up to

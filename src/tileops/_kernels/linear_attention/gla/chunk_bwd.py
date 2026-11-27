@@ -14,14 +14,13 @@ Reference:
     https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gla/chunk.py
 """
 
-import warnings
 from collections.abc import Callable
 
 import tilelang
 import torch
 from tilelang import language as T
 
-from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
+from tileops._kernels.autotune import candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -30,10 +29,12 @@ from tileops._kernels.linear_attention.call_spec import (
     GLAChunkCall,
     head_count_refusal,
 )
+from tileops._kernels.linear_attention.gla.call_spec import PASS_CONFIGS
 from tileops._kernels.linear_attention.gla.chunk_fwd import (
     chunk_gate_cumsum,
     gla_state_walk_kernel,
     state_walk_plan,
+    tune_launch,
 )
 
 __all__ = ["GLAChunkBwdKernel"]
@@ -61,11 +62,7 @@ def _gla_bwd_update_kernel(
 
     @tilelang.jit(
         out_idx=[-2, -1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _update_func(threads=128):
         @T.prim_func
@@ -174,11 +171,7 @@ def _gla_bwd_chunk_kernel(
 
     @tilelang.jit(
         out_idx=[-4, -3, -2, -1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _chunk_func(threads=128):
         @T.macro
@@ -715,53 +708,22 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Custom autotuning for multi-kernel backward pass."""
-        if self.autotune_configs is None:
-            return
-
         B, T, H, K, V = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v)
         BT = self.chunk_size
         NT = T // BT
         dtype_torch = self.dtype
 
-        q = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        k = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        v = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1
-        g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype_torch).abs()
-        h = torch.randn(B, NT + 1, H, K, V, device="cuda", dtype=torch.float32) * 0.01
-        do = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1
-        dht = torch.zeros(B, H, K, V, dtype=torch.float32, device="cuda")
+        q = torch.randn(B, T, H, K, device=self._build_device, dtype=dtype_torch) * 0.1
+        k = torch.randn(B, T, H, K, device=self._build_device, dtype=dtype_torch) * 0.1
+        v = torch.randn(B, T, H, V, device=self._build_device, dtype=dtype_torch) * 0.1
+        g = -torch.rand(B, T, H, K, device=self._build_device, dtype=dtype_torch).abs()
+        h = torch.randn(B, NT + 1, H, K, V, device=self._build_device, dtype=torch.float32) * 0.01
+        do = torch.randn(B, T, H, V, device=self._build_device, dtype=dtype_torch) * 0.1
+        dht = torch.zeros(B, H, K, V, dtype=torch.float32, device=self._build_device)
 
-        best_lat = float("inf")
-        best_cfg = None
-
-        for cfg in self.tuning_candidates(self.autotune_configs):
-            try:
-                with self._trying(cfg):
-                    self.forward(q, k, v, g, h, do, dht)
-                    torch.cuda.synchronize()
-
-                    lat = candidate_busy_ms(
-                        lambda: self.forward(q, k, v, g, h, do, dht), warmup, rep
-                    )
-                    if lat < best_lat:
-                        best_lat = lat
-                        best_cfg = cfg
-            except TUNING_FATAL:
-                raise
-            except Exception as e:
-                warnings.warn(
-                    f"Autotune config {cfg} failed: {e}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                continue
-
-        if best_cfg is None:
-            warnings.warn(
-                "Autotuning failed; the published config stays", RuntimeWarning, stacklevel=2
-            )
-            return
-        self._publish(best_cfg, self._programs)
+        tune_launch(
+            self, lambda: self.forward(q, k, v, g, h, do, dht), warmup, rep, candidate_busy_ms
+        )
 
     def forward(
         self,

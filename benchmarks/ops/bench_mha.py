@@ -92,7 +92,7 @@ def _flashinfer_mha_decode_paged(workload, q, k, v, block_table, cache_seqlens):
     return run_fn
 
 
-@pytest.mark.parametrize("case", bench.cases(MHAPagedFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MHAPagedFwdOp))
 def test_mha_decode_paged_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs

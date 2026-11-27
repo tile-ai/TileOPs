@@ -78,7 +78,7 @@ def _vllm_native(inputs):
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(MergeAttentionStatesFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MergeAttentionStatesFwdOp))
 def test_merge_attention_states_bench(case):
     op = MergeAttentionStatesFwdOp(**case.arguments)
     if op.lse_base == "2":

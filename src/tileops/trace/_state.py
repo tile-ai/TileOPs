@@ -1,24 +1,12 @@
-"""Per-thread trace build state shared between the annotation API and the transform.
+"""Per-thread trace build state shared by the annotation API and ``trace.lower``.
 
-The trace tool splits responsibilities:
+The ``trace.*`` markers emit ``tl_trace_marker`` placeholders into the kernel body and
+intern the names they reference into this thread's ``TraceState``; ``trace.lower`` reads
+those tables after the build to make the host decode maps, then retires the state
+(``begin_build_epoch``) so the next build starts clean.
 
-* The module-level ``tileops.trace._api.trace`` namespace emits lightweight
-  *placeholders* (``tl_trace_marker`` ``call_extern`` nodes) into the kernel body
-  and interns the human-readable names referenced by those placeholders into id
-  tables.
-* The ``tileops.trace._passes.lower`` transform reads those same intern tables
-  back out (to build the host-side decode maps) after the kernel is built.
-
-The two halves never call each other directly; they communicate through the
-build registry installed here. The ``trace.*`` markers populate a fresh
-``TraceState`` per build epoch (``build_state``); ``trace.lower`` reads
-it, then retires the epoch (``begin_build_epoch``) so the next build starts
-clean.
-
-Each thread holds its own registry: TileLang builds a kernel on the calling thread,
-so one epoch on a thread brackets exactly one build, and builds on separate threads
-never share interned names. Nested builds on one thread share that thread's registry
-and are not supported.
+TileLang builds a kernel on the calling thread, so one epoch on a thread brackets exactly
+one build. Nested builds on one thread share its state and are not supported.
 """
 
 import threading
@@ -32,166 +20,85 @@ __all__ = [
     "build_state",
 ]
 
-# Placeholder symbol name. A trace placeholder is
-# ``T.evaluate(T.call_extern("handle", MARKER, event_id, kind, lane, gid, payload))``.
-# The id args are compile-time-constant interned ids; ``payload`` is the one
-# runtime arg (a PrimExpr). The transform locates the placeholder by matching
-# ``StringImm`` arg0 == MARKER.
+# A placeholder is ``T.evaluate(T.call_extern("handle", MARKER, event_id, kind, lane, gid,
+# payload))``: compile-time ids and one runtime payload. ``trace.lower`` matches arg0.
 MARKER = "tl_trace_marker"
 
 
 class TraceState:
-    """Build-global intern tables + the active group stack for one build.
+    """The intern tables and the active group stack of one build.
 
-    A fresh instance backs each build epoch (see ``build_state``). The
-    annotation API mutates it as it emits placeholders; the transform reads the
-    reverse maps to label the host-side decode.
-
-    Event names, group names, and lane names each live in a **separate** intern
-    namespace: an event name interns to a 24-bit ``event_id`` packed into the
-    record, a group name interns to a ``gid`` that selects the slot row, and a
-    lane name interns to a 4-bit ``lane_id`` packed into the record.
-
-    Attributes:
-        id_to_name: Reverse event-id map (``event_id -> name``).
-        group_id_to_name: Reverse group-id map (``gid -> name``).
-        group_id_to_lead: Group-id to elected lead lane (``gid -> lead``).
-        lane_id_to_name: Reverse lane-id map (``lane_id -> name``).
-        declared_flows: Build-time-declared ``(src_name, dst_name)`` flow pairs.
+    Event, group and lane names intern in separate namespaces, each numbered from 0 in
+    first-use order: an event name to the 24-bit ``event_id`` and a lane name to the
+    4-bit lane id packed into a record, a group name to the ``gid`` that selects the
+    slot row. The ``*_to_name`` maps, ``group_id_to_lead`` and ``declared_flows`` are
+    what ``trace.lower`` copies into the host decode maps.
     """
 
     def __init__(self) -> None:
-        # event-name -> event_id (sequential from 0) + reverse for the host.
-        self._name_to_id: dict[str, int] = {}
         self.id_to_name: dict[int, str] = {}
-
-        # group-name -> gid (sequential from 0) + reverses for host/transform.
-        self._group_to_id: dict[str, int] = {}
         self.group_id_to_name: dict[int, str] = {}
         self.group_id_to_lead: dict[int, int] = {}
-
-        # lane-name -> lane_id (sequential from 0) + reverse for the host.
-        self._lane_to_id: dict[str, int] = {}
         self.lane_id_to_name: dict[int, str] = {}
-
-        # Build-time-declared flows: each a (src_name, dst_name) pair. The host
-        # pairs same-named slices per CTA in timestamp order to draw arrows.
         self.declared_flows: list[tuple[str, str]] = []
-
-        # Active-group stack of (name, lead); the live group is the top. gids are
-        # assigned lazily on first emit (see active_gid) so a kernel that declares
-        # its own groups gets a contiguous gid range.
-        # The default group's writer is thread 0.
+        # The live group is the top. A gid is interned on the group's first marker, so a
+        # kernel that declares its own groups gets a contiguous gid range. The default
+        # group's writer is thread 0.
         self._group_stack: list[tuple[str, int]] = [("default", 0)]
 
-    # -- group stack ------------------------------------------------------
+    @staticmethod
+    def _intern(id_to_name: dict[int, str], name: str) -> "tuple[int, bool]":
+        """The id of *name* in *id_to_name*, and whether it was added now."""
+        for known_id, known in id_to_name.items():
+            if known == name:
+                return known_id, False
+        new_id = len(id_to_name)
+        id_to_name[new_id] = name
+        return new_id, True
 
     @property
     def active_gid(self) -> int:
         """Group id of the live group, interning its name on first use."""
         name, lead = self._group_stack[-1]
-        return self._intern_group(name, lead)
-
-    def push_group(self, name: str, lead: int) -> None:
-        """Make ``(name, lead)`` the live group until the matching ``pop_group``."""
-        self._group_stack.append((name, lead))
-
-    def pop_group(self) -> None:
-        """Restore the previously live group (undo one ``push_group``)."""
-        self._group_stack.pop()
-
-    # -- intern tables ----------------------------------------------------
-
-    def intern_event(self, name: str) -> int:
-        """Intern an event ``name`` to a stable 24-bit event id.
-
-        Args:
-            name: Human-readable event name.
-
-        Returns:
-            The interned event id; stable across repeated lookups of ``name``.
-        """
-        eid = self._name_to_id.get(name)
-        if eid is None:
-            eid = len(self._name_to_id)
-            self._name_to_id[name] = eid
-            self.id_to_name[eid] = name
-        return eid
-
-    def intern_lane(self, name: str) -> int:
-        """Intern a lane ``name`` to a stable 4-bit lane id.
-
-        Args:
-            name: Render sub-lane name (e.g. ``"main"``, ``"tma"``).
-
-        Returns:
-            The interned lane id; stable across repeated lookups of ``name``.
-
-        Raises:
-            ValueError: If interning ``name`` would exceed the 16-lane cap of the
-                4-bit packed lane field.
-        """
-        lane_id = self._lane_to_id.get(name)
-        if lane_id is None:
-            if len(self._lane_to_id) >= MAX_LANES:
-                raise ValueError(
-                    f"too many distinct lanes: the packed lane field holds at most "
-                    f"{MAX_LANES}; cannot intern {name!r} (have "
-                    f"{sorted(self._lane_to_id)})"
-                )
-            lane_id = len(self._lane_to_id)
-            self._lane_to_id[name] = lane_id
-            self.lane_id_to_name[lane_id] = name
-        return lane_id
-
-    def _intern_group(self, name: str, lead: int) -> int:
-        """Intern a group ``name`` (with its ``lead``) to a stable gid."""
-        gid = self._group_to_id.get(name)
-        if gid is None:
-            gid = len(self._group_to_id)
-            self._group_to_id[name] = gid
-            self.group_id_to_name[gid] = name
+        gid, added = self._intern(self.group_id_to_name, name)
+        if added:
             self.group_id_to_lead[gid] = lead
         return gid
 
+    def push_group(self, name: str, lead: int) -> None:
+        self._group_stack.append((name, lead))
+
+    def pop_group(self) -> None:
+        self._group_stack.pop()
+
+    def intern_event(self, name: str) -> int:
+        return self._intern(self.id_to_name, name)[0]
+
+    def intern_lane(self, name: str) -> int:
+        """Intern a lane name; raises ``ValueError`` past the 4-bit lane field's capacity."""
+        if name not in self.lane_id_to_name.values() and len(self.lane_id_to_name) >= MAX_LANES:
+            raise ValueError(
+                f"too many distinct lanes: the packed lane field holds at most "
+                f"{MAX_LANES}; cannot intern {name!r} (have "
+                f"{sorted(self.lane_id_to_name.values())})"
+            )
+        return self._intern(self.lane_id_to_name, name)[0]
+
     def declare_flow(self, src_name: str, dst_name: str) -> None:
-        """Record a build-time flow declaration between two named ranges.
-
-        The declaration emits no runtime record; the host renders it by pairing
-        each CTA's ``src_name`` slices with its ``dst_name`` slices in timestamp
-        order (see ``tileops.trace._decode.compute_flows``).
-
-        Args:
-            src_name: Source (producer) range name.
-            dst_name: Destination (consumer) range name.
-        """
+        """Record a ``(src_name, dst_name)`` flow; ``compute_flows`` renders it."""
         self.declared_flows.append((src_name, dst_name))
 
 
-# ``trace.lower`` reads the registry right after the build it transforms, then retires
-# it via begin_build_epoch(); the next marker on that thread installs a fresh one.
 _BUILD = threading.local()
 
 
 def begin_build_epoch() -> None:
-    """Retire this thread's build registry so its next marker starts a fresh one.
-
-    Called by ``tileops.trace._passes.lower`` after it has consumed a build's
-    interned maps, and by ``strip``, which consumes none. The next ``build_state``
-    lookup installs a new empty ``TraceState``.
-    """
+    """Retire this thread's state; its next marker starts a fresh one."""
     _BUILD.state = None
 
 
 def build_state() -> TraceState:
-    """Return this thread's live build registry, installing a fresh one if none is active.
-
-    Lazily creates the registry on the first marker of a build epoch so a kernel
-    which emits no markers never allocates one.
-
-    Returns:
-        The current build epoch's ``TraceState``.
-    """
+    """This thread's ``TraceState``, created on the first marker of a build epoch."""
     state = getattr(_BUILD, "state", None)
     if state is None:
         state = _BUILD.state = TraceState()

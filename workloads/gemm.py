@@ -2,12 +2,15 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from itertools import accumulate
 from typing import Any
 
 import torch
 
 from workloads.device import run_device
+from workloads.numerics import Custom, Exact, NegativeControl, assert_normalized_error, zeroed_input
+from workloads.quantization.quantize import int8_quant_per_channel, int8_quant_per_tensor
 from workloads.workload_base import WorkloadBase
 
 W4A16_GROUP_SIZE = 128
@@ -41,44 +44,27 @@ def matmul_fp32_reduction(
 def _summation_order_verification(dtype: torch.dtype, length: int):
     """Tolerances of a product rounded to *dtype* that sums *length* terms per output element.
 
-    The kernel sums them in another order than the float32 reference; a cancelled output
-    keeps only that order's error, which grows with *length*.
-
-    A float32 output of 16-bit products keeps the tensor cores' accumulation error: each
-    step adds its products to the float32 sum with truncation, so the error of standard
-    normal operands grows as ``length ** 1.5`` (on H200, at most 1.5e-3 over 4096 terms
-    and 7.0e-3 over 16384, as cuBLAS's 16-bit GEMM with a float32 output). The bound
-    keeps three times that, and stays far below the error of rounding to bfloat16
-    (1.0 over 4096 terms).
+    A cancelled output keeps only the summation order's error, which grows with *length*. A
+    float32 output of 16-bit products keeps the tensor cores' truncating accumulation, whose
+    error on standard-normal operands grows as ``length ** 1.5``; the bound stays far below
+    the error of rounding to bfloat16.
     """
-    from workloads.numerics import Exact
-
     if dtype == torch.float32:
         return Exact(atol=max(1e-4, 2e-3 * (length / 2048) ** 1.5), rtol=1e-5)
     tol = 1e-3 if dtype == torch.float16 else 1.6e-2
     return Exact(atol=tol * max(1.0, length / 2048), rtol=tol)
 
 
+@dataclass(eq=False)
 class GEMMWorkload(WorkloadBase):
-    def __init__(
-        self,
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        trans_a: bool = False,
-        trans_b: bool = False,
-        bias: bool = False,
-        out_dtype: torch.dtype | None = None,
-    ):
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.trans_a = trans_a
-        self.trans_b = trans_b
-        self.bias = bias
-        self.out_dtype = out_dtype
+    m: int
+    n: int
+    k: int
+    dtype: torch.dtype
+    trans_a: bool = False
+    trans_b: bool = False
+    bias: bool = False
+    out_dtype: torch.dtype | None = None
 
     @classmethod
     def from_call(cls, call: Any) -> "GEMMWorkload":
@@ -132,24 +118,15 @@ class GEMMWorkload(WorkloadBase):
         return _summation_order_verification(self.out_dtype or self.dtype, self.k)
 
 
+@dataclass(eq=False)
 class GEMMFP8Workload(WorkloadBase):
-    def __init__(
-        self,
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        scale_mode: str,
-        out_dtype: torch.dtype = torch.bfloat16,
-        bias: bool = False,
-    ) -> None:
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.scale_mode = scale_mode
-        self.out_dtype = out_dtype
-        self.bias = bias
+    m: int
+    n: int
+    k: int
+    dtype: torch.dtype
+    scale_mode: str
+    out_dtype: torch.dtype = torch.bfloat16
+    bias: bool = False
 
     @classmethod
     def from_call(cls, call: Any) -> "GEMMFP8Workload":
@@ -206,9 +183,7 @@ class GEMMFP8Workload(WorkloadBase):
             return scale.repeat_interleave(128, dim=0).repeat_interleave(128, dim=1)[:rows, :cols]
         raise ValueError(f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
 
-    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
-        a, b, a_scale, b_scale = inputs[:4]
-        bias = inputs[4] if len(inputs) == 5 else None
+    def ref_program(self, a, b, a_scale, b_scale, bias=None) -> torch.Tensor:
         a_f = a.float() * self._expand_scale(a_scale, self.m, self.k)
         b_f = b.float() * self._expand_scale(b_scale, self.n, self.k)
         out = torch.matmul(a_f, b_f.T)
@@ -220,6 +195,7 @@ class GEMMFP8Workload(WorkloadBase):
         return fp8_matmul_verification(self.k)
 
 
+@dataclass(eq=False)
 class GEMMINT8W8A8Workload(WorkloadBase):
     """INT8 activations and weights, each with one scale per tensor or one per output row.
 
@@ -228,23 +204,13 @@ class GEMMINT8W8A8Workload(WorkloadBase):
     per tensor.
     """
 
-    def __init__(
-        self,
-        m: int,
-        n: int,
-        k: int,
-        per_token: bool,
-        per_channel: bool,
-        out_dtype: torch.dtype = torch.bfloat16,
-        bias: bool = False,
-    ) -> None:
-        self.m = m
-        self.n = n
-        self.k = k
-        self.per_token = per_token
-        self.per_channel = per_channel
-        self.out_dtype = out_dtype
-        self.bias = bias
+    m: int
+    n: int
+    k: int
+    per_token: bool
+    per_channel: bool
+    out_dtype: torch.dtype = torch.bfloat16
+    bias: bool = False
 
     @classmethod
     def from_call(cls, call: Any) -> "GEMMINT8W8A8Workload":
@@ -262,8 +228,6 @@ class GEMMINT8W8A8Workload(WorkloadBase):
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        from workloads.quantization.quantize import int8_quant_per_channel, int8_quant_per_tensor
-
         x = torch.randn(self.m, self.k, device=run_device())
         w = torch.randn(self.n, self.k, device=run_device())
         if self.per_token:
@@ -283,13 +247,11 @@ class GEMMINT8W8A8Workload(WorkloadBase):
             return (*inputs, torch.randn(self.n, device=run_device(), dtype=self.out_dtype))
         return inputs
 
-    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
+    def ref_program(self, a, b, a_scale, b_scale, bias=None) -> torch.Tensor:
         """The exact int32 product, then the fp32 epilogue and one rounding to ``out_dtype``.
 
         Every partial sum is an integer below ``127 * 127 * K``, exact in float64.
         """
-        a, b, a_scale, b_scale = inputs[:4]
-        bias = inputs[4] if len(inputs) == 5 else None
         acc = torch.matmul(a.double(), b.double().T).float()
         out = acc * a_scale * b_scale
         if bias is not None:
@@ -297,8 +259,6 @@ class GEMMINT8W8A8Workload(WorkloadBase):
         return out.to(self.out_dtype)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, zeroed_input
-
         # The product is exact on both sides; only the fp32 order of the two scale multiplies
         # and the bias add may differ, which moves a result across at most one rounding
         # boundary of the output: one ulp, 2^-7 of the value in bfloat16, 2^-10 in float16.
@@ -480,8 +440,6 @@ class GEMMW4A16Workload(WorkloadBase):
         return torch.matmul(activation.float(), weight.T).to(activation.dtype)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=7e-2, rtol=5e-2)
 
 
@@ -575,6 +533,7 @@ def gemm_w4a8_reference(
     return out.to(torch.bfloat16)
 
 
+@dataclass(eq=False)
 class GEMMW4A8Workload(WorkloadBase):
     """FP8 activations times signed INT4 weights with a group, a channel and a token scale.
 
@@ -593,11 +552,10 @@ class GEMMW4A8Workload(WorkloadBase):
     # The reference reads row-major weights; a call carries them in the op's repack order.
     reference_takes_call_inputs = False
 
-    def __init__(self, m: int, n: int, k: int, group_size: int) -> None:
-        self.m = m
-        self.n = n
-        self.k = k
-        self.group_size = group_size
+    m: int
+    n: int
+    k: int
+    group_size: int
 
     @classmethod
     def from_call(cls, call: Any) -> "GEMMW4A8Workload":
@@ -606,12 +564,9 @@ class GEMMW4A8Workload(WorkloadBase):
         return cls(indices["M"], indices["N"], indices["K"], indices["group_size"])
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        """Return activation, packed weight, group scale, channel scale and token scale.
-
-        Activations are normal samples scaled by 0.25 before FP8 rounding. Signed INT4
-        values cover [-8, 7], group scales are sampled from [0.03, 0.08) before FP8 rounding,
-        and channel and token scales are sampled from [0.5, 1.5).
-        """
+        """Activation, packed weight, group scale, channel scale and token scale: activations
+        ``0.25 * randn`` and group scales in ``[0.03, 0.08)``, both rounded to FP8; INT4
+        values over ``[-8, 7]``; channel and token scales in ``[0.5, 1.5)``."""
         device = run_device()
         activation = (torch.randn(self.m, self.k, device=device) * 0.25).to(torch.float8_e4m3fn)
         q = torch.randint(-8, 8, (self.n, self.k), device=device, dtype=torch.int16)
@@ -620,9 +575,8 @@ class GEMMW4A8Workload(WorkloadBase):
         group_scale = (0.03 + 0.05 * torch.rand(self.n, groups, device=device)).to(
             torch.float8_e4m3fn
         )
-        scale_lower = 0.5
-        channel_scale = scale_lower + torch.rand(self.n, device=device)
-        token_scale = scale_lower + torch.rand(self.m, device=device)
+        channel_scale = 0.5 + torch.rand(self.n, device=device)
+        token_scale = 0.5 + torch.rand(self.m, device=device)
         return activation, packed, group_scale, channel_scale, token_scale
 
     def ref_program(
@@ -643,12 +597,6 @@ class GEMMW4A8Workload(WorkloadBase):
         )
 
     def verification(self, *inputs):
-        from workloads.numerics import (
-            Custom,
-            NegativeControl,
-            assert_normalized_error,
-        )
-
         activation, packed, group, channel, token = inputs
         weight = _w4a8_weight(packed, group, self.group_size)
         assert activation.float().isfinite().all() and weight.isfinite().all(), (
@@ -709,15 +657,15 @@ class GEMMW4A8MixedSignWorkload(GEMMW4A8Workload):
         return activation, packed, signed.to(torch.float8_e4m3fn), channel_scale, token_scale
 
 
+@dataclass(eq=False)
 class BMMWorkload(WorkloadBase):
     """Workload for batched matmul: a=[B,M,K], b=[B,K,N] -> d=[B,M,N]."""
 
-    def __init__(self, batch: int, m: int, n: int, k: int, dtype: torch.dtype):
-        self.batch = batch
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
+    batch: int
+    m: int
+    n: int
+    k: int
+    dtype: torch.dtype
 
     @classmethod
     def from_call(cls, call: Any) -> "BMMWorkload":
@@ -748,6 +696,7 @@ class BMMBatchStridedWorkload(BMMWorkload):
         return a.transpose(0, 1).contiguous().transpose(0, 1), b
 
 
+@dataclass(eq=False)
 class BMMFP8Workload(WorkloadBase):
     """Workload for batched FP8 GEMM.
 
@@ -755,23 +704,13 @@ class BMMFP8Workload(WorkloadBase):
     ``trans_b``; ``a_scale`` / ``b_scale`` are rank-0 fp32 scalars in ``[0.5, 1.5)``.
     """
 
-    def __init__(
-        self,
-        batch: int,
-        m: int,
-        n: int,
-        k: int,
-        dtype: torch.dtype,
-        out_dtype: torch.dtype = torch.bfloat16,
-        trans_b: bool = False,
-    ) -> None:
-        self.batch = batch
-        self.m = m
-        self.n = n
-        self.k = k
-        self.dtype = dtype
-        self.out_dtype = out_dtype
-        self.trans_b = trans_b
+    batch: int
+    m: int
+    n: int
+    k: int
+    dtype: torch.dtype
+    out_dtype: torch.dtype = torch.bfloat16
+    trans_b: bool = False
 
     @classmethod
     def from_call(cls, call: Any) -> "BMMFP8Workload":
@@ -801,8 +740,7 @@ class BMMFP8Workload(WorkloadBase):
         b_scale = 0.5 + torch.rand((), device=run_device(), dtype=torch.float32)
         return a, b, a_scale, b_scale
 
-    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
-        a, b, a_scale, b_scale = inputs
+    def ref_program(self, a, b, a_scale, b_scale) -> torch.Tensor:
         if self.trans_b:
             b = b.transpose(-2, -1)
         return torch.bmm(a.float() * a_scale, b.float() * b_scale).to(self.out_dtype)
@@ -914,8 +852,6 @@ class GroupedGEMMWorkload(WorkloadBase):
 
 def fp8_matmul_verification(k):
     """FP8 accumulation noise grows with the square root of the reduction length."""
-    from workloads.numerics import Exact, zeroed_input
-
     return Exact(
         atol=2e-2 * max(1.0, k / 1024) ** 0.5,
         rtol=2e-2,
@@ -951,6 +887,4 @@ class GEMMW4A16BasisWorkload(GEMMW4A16Workload):
         return self.expected.to(activation.device)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
         return Exact(atol=0, rtol=0)

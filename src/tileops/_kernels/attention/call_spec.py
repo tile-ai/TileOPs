@@ -117,11 +117,9 @@ class AttentionCall(CallSpec):
         (the warp-specialized program); ``None`` where a prefill program or the general
         decode program serves it.
 
-        Up to 64 query positions, the warp-specialized program's 64-row blocks of a KV head's
-        group at every position load the keys and values for fewer rows than 128-position
-        prefill tiles. For one position, each program serves where its CTAs fill the SMs best;
-        a unit is one batch entry, KV head and 64-row block of its group. The
-        warp-specialized program does not fuse RoPE.
+        For one position, each program serves where its CTAs fill the SMs best; a unit is one
+        batch entry, KV head and 64-row block of its group. The warp-specialized program does not
+        fuse RoPE.
         """
         if self.is_fp8 or self.uses_sliding_window or self.arch != 90:
             return None
@@ -973,11 +971,9 @@ class MergeAttentionStatesFwdInterface(KernelInterface):
 
 @dataclasses.dataclass(frozen=True)
 class PagedKVCacheWriteCall(CallSpec):
-    """The cache geometry and dtypes of one write; the token count arrives with the tensors.
+    """The cache geometry and dtypes of one write.
 
-    The token count is deliberately absent. A serving process writes one token per decode
-    step, so keying a build on it would compile a kernel per step; the rows are a dynamic
-    extent of the tensors the call passes instead.
+    The token count is a dynamic extent of the tensors, so one build serves every decode step.
     """
 
     heads_kv: int = 0

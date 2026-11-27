@@ -1,8 +1,7 @@
-"""The kernel dispatch contract: selection, the dispatch cache, and the three extension points.
+"""The kernel dispatch contract: selection, the dispatch cache, and the extension points.
 
-The mechanism is driven through a fake family whose implementations run on the CPU, so
-selection, caching and installation checks need no device. The contract tests use a shipped
-kernel interface and write their implementations against it only.
+A fake family of CPU implementations drives selection, caching and installation; the contract
+tests implement a shipped kernel interface.
 """
 
 import dataclasses
@@ -91,15 +90,6 @@ class _ScaleOp(Op):
         "negative": _NEGATIVE,
     }
     interfaces = {"scale": _Scaling}
-
-    def __init__(self, *, target=None) -> None:
-        super().__init__(target=target)
-
-    def _infer_output_shapes(self, *shapes, dtypes=None):
-        return {}
-
-    def eval_roofline(self):
-        return (0, 0)
 
     def forward(self, x):
         return x
@@ -339,11 +329,7 @@ def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
 
 
 def test_a_record_on_a_device_without_cuda_facts_reads_none() -> None:
-    """A record resolves no CUDA fact, and copying it — which reads every field — still works.
-
-    Named as CPU rather than left unstated on a CUDA-free host: `_read_device_facts`
-    takes the same branch for both, and only the first runs where a card exists.
-    """
+    """A CPU record resolves no CUDA fact, and copying it, which reads every field, works."""
     call = _Call(n=8, device=torch.device("cpu"))
 
     assert (call.arch, call.sm_count, call.smem_budget) == (-1, 0, 0)
@@ -388,8 +374,7 @@ def test_an_installed_implementation_set_cannot_change() -> None:
 def test_a_call_without_a_device_resolves_again_when_the_current_device_is_stubbed_to_change(
     device_beside_cpu, monkeypatch
 ) -> None:
-    """The one-accelerator form of the two-device test below: the current device is stubbed
-    to the CPU, then to the run device."""
+    """The current device, stubbed to the CPU, then to another device, keys the entry."""
     seen = []
     on_current = _implementation(
         "OnCurrentDevice",

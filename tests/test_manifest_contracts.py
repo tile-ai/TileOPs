@@ -10,6 +10,7 @@ import inspect
 import pytest
 import torch
 
+from tests.manifest_calls import implemented_ops
 from tileops._ops._signature_codegen import CheckError
 from tileops.backend import OpNotAvailableError
 from tileops.manifest import load_adts, load_manifest
@@ -22,7 +23,7 @@ from tileops.manifest._workload import instantiate
 pytestmark = pytest.mark.smoke
 
 _MANIFEST = load_manifest()
-_IMPLEMENTED = sorted(n for n, e in _MANIFEST.items() if e.get("status") == "implemented")
+_IMPLEMENTED = implemented_ops()
 
 
 def _calls(name: str):

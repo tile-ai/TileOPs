@@ -1,11 +1,4 @@
-"""Benchmarks for the Engram gate-conv and decode ops.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from each op's ``eval_roofline()``.
-
-One ``test_*_bench`` per op, so every op this file is declared the benchmark
-of records a row of its own.
-"""
+"""Benchmarks for the Engram gate-conv and decode ops."""
 
 import pytest
 import torch
@@ -16,9 +9,8 @@ from tileops._ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGat
 from tileops._ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(EngramGateConvFwdOp), ids=lambda case: case.id)
-def test_engram_gate_conv_fwd_bench(case):
-    op = EngramGateConvFwdOp(**case.arguments)
+def _bench_against_reference(op_cls, case) -> None:
+    op = op_cls(**case.arguments)
     op.request_tune()
     bench.Runner(op, case).compare(
         {
@@ -28,26 +20,18 @@ def test_engram_gate_conv_fwd_bench(case):
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(EngramGateConvBwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(EngramGateConvFwdOp))
+def test_engram_gate_conv_fwd_bench(case):
+    _bench_against_reference(EngramGateConvFwdOp, case)
+
+
+@pytest.mark.parametrize("case", bench.cases(EngramGateConvBwdOp))
 def test_engram_gate_conv_bwd_bench(case):
     op = EngramGateConvBwdOp(**case.arguments)
     op.request_tune()
-    reference = case.reference
-
-    @torch.enable_grad()
-    def ref_with_grad(*args):
-        return reference(*args)
-
-    bench.Runner(op, case).compare({"torch": ref_with_grad})
+    bench.Runner(op, case).compare({"torch": torch.enable_grad()(case.reference)})
 
 
-@pytest.mark.parametrize("case", bench.cases(EngramDecodeFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(EngramDecodeFwdOp))
 def test_engram_decode_bench(case):
-    op = EngramDecodeFwdOp(**case.arguments)
-    op.request_tune()
-    bench.Runner(op, case).compare(
-        {
-            "torch-ref": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
-        }
-    )
+    _bench_against_reference(EngramDecodeFwdOp, case)

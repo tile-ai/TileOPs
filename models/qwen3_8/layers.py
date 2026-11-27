@@ -13,7 +13,7 @@ import torch
 from models.qwen3_8.config import LINEAR_ATTENTION, Qwen3_8Config
 from models.qwen3_8.ops import ModelOps
 
-__all__ = ["MLP", "DecoderLayer", "GatedAttention", "GatedDeltaNet", "Step"]
+__all__ = ["DecoderLayer", "GatedAttention", "GatedDeltaNet", "Step"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -173,19 +173,10 @@ class GatedAttention:
         return ops.gemm(o, self.o_proj)
 
 
-class MLP:
-    """SwiGLU MLP; ``gate_up_proj`` stacks HF's ``gate_proj`` rows, then ``up_proj``'s."""
-
-    def __init__(self) -> None:
-        self.gate_up_proj: torch.Tensor
-        self.down_proj: torch.Tensor
-
-    def __call__(self, ops: ModelOps, x: torch.Tensor) -> torch.Tensor:
-        return ops.gemm(ops.silu_and_mul(ops.gemm(x, self.gate_up_proj)), self.down_proj)
-
-
 class DecoderLayer:
-    """Pre-norm residual block: token mixer, then MLP.
+    """Pre-norm residual block: token mixer, then SwiGLU MLP.
+
+    ``gate_up_proj`` stacks HF's MLP ``gate_proj`` rows, then ``up_proj``'s.
 
     A call takes the previous layer's ``(out, residual)`` and returns its own; the layer's
     hidden state, HF's decoder-layer output, is ``out + residual``. The first layer takes
@@ -202,7 +193,8 @@ class DecoderLayer:
             self.mixer: GatedDeltaNet | GatedAttention = GatedDeltaNet(cfg, device)
         else:
             self.mixer = GatedAttention(cfg, max_seq_len, device)
-        self.mlp = MLP()
+        self.gate_up_proj: torch.Tensor
+        self.down_proj: torch.Tensor
 
     def reset(self) -> None:
         self.mixer.reset()
@@ -216,4 +208,5 @@ class DecoderLayer:
         else:
             h, residual = ops.add_norm(x, residual, self.input_norm)
         h, residual = ops.add_norm(self.mixer(ops, h, step), residual, self.post_norm)
-        return self.mlp(ops, h), residual
+        mlp = ops.gemm(ops.silu_and_mul(ops.gemm(h, self.gate_up_proj)), self.down_proj)
+        return mlp, residual

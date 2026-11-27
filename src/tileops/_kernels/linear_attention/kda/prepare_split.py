@@ -25,6 +25,24 @@ from tileops._kernels.linear_attention.kda.gate import (
 )
 
 
+@T.macro
+def _locate_chunk(tiling, chunk_size, ic, offsets, cum, seqs):
+    """Chunk *ic*'s first packed token and its rows, 0 past the ``cum[seqs]`` live chunks.
+
+    A CTA past the last live chunk decodes that chunk, so its reads stay in bounds.
+    """
+    lo = T.alloc_local([1], "int32")
+    hi = T.alloc_local([1], "int32")
+    seq = T.alloc_local([1], "int32")
+    first = T.alloc_local([1], "int32")
+    tiling.decode(T.min(ic, cum[seqs] - 1), cum, lo, hi, seq, first)
+    bos = T.cast(offsets[seq[0]], "int32") + first[0]
+    rows = T.if_then_else(
+        ic < cum[seqs], T.min(chunk_size, T.cast(offsets[seq[0] + 1], "int32") - bos), 0
+    )
+    return bos, rows
+
+
 @target_cache(maxsize=64)
 def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None, raw=True):
     """The FP32 chunk-local inclusive prefix of the log decay, times LOG2E.
@@ -85,10 +103,6 @@ def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None,
         def body(g, cu, a, bias, gc):
             with T.Kernel(chunks, HV, threads=K // vec) as (ic, head):
                 cum = T.alloc_shared([seqs + 1], "int32")
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                seq = T.alloc_local([1], "int32")
-                first = T.alloc_local([1], "int32")
                 log_rate = T.alloc_local([1], "float32")
                 raw_tile = T.alloc_fragment([SUB, K], dtype)
                 out = T.alloc_fragment([SUB, K], "float32")
@@ -104,11 +118,7 @@ def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None,
                 )
                 T.annotate_layout({raw_tile: tile, out: tile, running: channel, offset: channel})
                 tiling.cumsum_offsets(cu, cum)
-                tiling.decode(T.min(ic, cum[seqs] - 1), cum, lo, hi, seq, first)
-                bos = T.cast(cu[seq[0]], "int32") + first[0]
-                rows = T.if_then_else(
-                    ic < cum[seqs], T.min(BT, T.cast(cu[seq[0] + 1], "int32") - bos), 0
-                )
+                bos, rows = _locate_chunk(tiling, BT, ic, cu, cum, seqs)
                 if raw:
                     # Loaded once per program: in-loop parameter loads serialize each token's chain.
                     log_rate[0] = a[head]
@@ -405,10 +415,6 @@ def _diagonal_reduce_program(
                 lane = tx % 32
                 warp = tx // 32
                 cum = T.alloc_shared([num_seqs + 1], "int32")
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                seq = T.alloc_local([1], "int32")
-                first = T.alloc_local([1], "int32")
                 kr = T.alloc_shared([BC, K], dtype)
                 qr = T.alloc_shared([BC, K], dtype)
                 gr = T.alloc_shared([BC, K], "float32")
@@ -421,11 +427,7 @@ def _diagonal_reduce_program(
                     T.alloc_local([2 * BW], "float32"),
                 )
                 tiling.cumsum_offsets(cu, cum)
-                tiling.decode(T.min(ic, cum[num_seqs] - 1), cum, lo, hi, seq, first)
-                bos = T.cast(cu[seq[0]], "int32") + first[0]
-                rows = T.if_then_else(
-                    ic < cum[num_seqs], T.min(BT, T.cast(cu[seq[0] + 1], "int32") - bos), 0
-                )
+                bos, rows = _locate_chunk(tiling, BT, ic, cu, cum, num_seqs)
                 if rows > blk * BC:
                     stage(q, k, gc, kr, qr, gr, bos, head, blk * BC)
                     T.ptx_wait_group(0)
@@ -498,20 +500,12 @@ def _diagonal_program(
                 part = tx % GROUP
                 gi = tx // GROUP
                 cum = T.alloc_shared([num_seqs + 1], "int32")
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                seq = T.alloc_local([1], "int32")
-                first = T.alloc_local([1], "int32")
                 kr = T.alloc_shared([BC, K], dtype)
                 qr = T.alloc_shared([BC, K], dtype)
                 gr = T.alloc_shared([BC, K], "float32")
                 regs = buffers()
                 tiling.cumsum_offsets(cu, cum)
-                tiling.decode(T.min(ic, cum[num_seqs] - 1), cum, lo, hi, seq, first)
-                bos = T.cast(cu[seq[0]], "int32") + first[0]
-                rows = T.if_then_else(
-                    ic < cum[num_seqs], T.min(BT, T.cast(cu[seq[0] + 1], "int32") - bos), 0
-                )
+                bos, rows = _locate_chunk(tiling, BT, ic, cu, cum, num_seqs)
                 base = blk * BC
                 if rows > base:
                     T.async_copy(k[0, bos + base : bos + base + BC, _key_head(head, G), :], kr)
@@ -695,10 +689,6 @@ def _offdiagonal_program(
             with T.Kernel(3 if mode == "split" else 1, chunks, HV, threads=threads) as (ib, ic, ih):
                 tx = T.get_thread_binding()
                 cum = T.alloc_shared([num_seqs + 1], "int32")
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                seq = T.alloc_local([1], "int32")
-                first = T.alloc_local([1], "int32")
                 # Right factors of the current row block, one row per earlier token, or of
                 # all three (rows 0-15 block 1, 16-47 block 2, 48-95 block 3) at once.
                 rs = T.alloc_shared([BT + 2 * BC if mode == "concurrent" else BT - BC, K], accum)
@@ -712,11 +702,7 @@ def _offdiagonal_program(
                 acc = T.alloc_local([2 * PAIR * COLS], accum)
                 bufs = (tq, tk, tg, tr, lq, lk, rv, acc)
                 tiling.cumsum_offsets(cu, cum)
-                tiling.decode(T.min(ic, cum[num_seqs] - 1), cum, lo, hi, seq, first)
-                bos = T.cast(cu[seq[0]], "int32") + first[0]
-                rows = T.if_then_else(
-                    ic < cum[num_seqs], T.min(BT, T.cast(cu[seq[0] + 1], "int32") - bos), 0
-                )
+                bos, rows = _locate_chunk(tiling, BT, ic, cu, cum, num_seqs)
                 if mode == "concurrent":
                     if rows > BC:
                         right_factors(k, gc, rs, bos, ih, BC, 0)
@@ -1032,7 +1018,7 @@ def split_prepare_program(*parameters, **options):
     beta_sigmoid = options.get("beta_sigmoid", False)
     allow_neg_eigval = options.get("allow_neg_eigval", False)
     grid_chunks = options.get("grid_chunks")
-    raw = options.get("gate_in_kernel", True)
+    raw = options["gate_in_kernel"]
     if raw:
         gate = _gate_program(
             tokens,

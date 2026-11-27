@@ -1,6 +1,7 @@
 """Workload definitions for the MHA paged decode op."""
 
 import math
+from dataclasses import dataclass
 
 import torch
 
@@ -10,26 +11,16 @@ from workloads.numerics import Custom, reference_tolerance
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
+@dataclass(eq=False)
 class MHADecodePagedWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        seqlen_q: int,
-        seqlen_kv: int,
-        dim: int,
-        page_size: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.seqlen_q = seqlen_q
-        self.seqlen_kv = seqlen_kv
-        self.dim = dim
-        self.page_size = page_size
-        self.is_causal = is_causal
-        self.dtype = dtype
+    batch: int
+    heads: int
+    seqlen_q: int
+    seqlen_kv: int
+    dim: int
+    page_size: int
+    is_causal: bool
+    dtype: torch.dtype
 
     def gen_inputs(
         self,
@@ -94,11 +85,8 @@ class MHADecodePagedWorkload(WorkloadBase):
         return torch.cat(out_list, dim=0)
 
     def verification(self, *inputs):
-        # A kernel rounds the softmax weights to the input type for the value product, which
-        # leaves a bfloat16 output one ulp, 2**-7 relative, off the correctly rounded
-        # reference where the exact value sits near a rounding midpoint. bfloat16 is bounded
-        # at that ulp plus half an ulp of 1.0, which rejects two ulp at magnitude one; other
-        # dtypes take the default bound.
+        # Weights rounded to bfloat16 for the value product leave the output one ulp off; the
+        # bound is that ulp plus half an ulp of 1.0, which still rejects two.
         if inputs[0].dtype == torch.bfloat16:
             tolerance = {"atol": 2**-8, "rtol": 2**-7}
         else:

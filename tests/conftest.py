@@ -22,14 +22,6 @@ from workloads.device import (
     run_device_is_cuda,
     torch_compile_unavailable,
 )
-from workloads.gemm import fp32_matmul_reduction
-
-
-@pytest.fixture
-def fp32_gemm_reduction():
-    """Use full FP32 reduction in the cuBLAS reference and restore its prior settings."""
-    with fp32_matmul_reduction():
-        yield
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:

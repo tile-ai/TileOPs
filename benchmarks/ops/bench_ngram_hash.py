@@ -7,7 +7,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference, private_
 from tileops.sequence_modeling import NGramHashFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(NGramHashFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(NGramHashFwdOp))
 def test_ngram_hash_bench(case):
     op = NGramHashFwdOp(**case.arguments)
     bench.Runner(op, case).compare(

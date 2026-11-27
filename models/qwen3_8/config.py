@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
-from pathlib import Path
 
 __all__ = ["Qwen3_8Config"]
 
@@ -114,9 +112,3 @@ class Qwen3_8Config:
             mrope_section=tuple(rope["mrope_section"]),
             eos_token_id=config["eos_token_id"],
         )
-
-    @classmethod
-    def from_pretrained(cls, path: str | Path) -> Qwen3_8Config:
-        """Read ``config.json`` from a checkpoint directory."""
-        with open(Path(path) / "config.json") as f:
-            return cls.from_hf(json.load(f))

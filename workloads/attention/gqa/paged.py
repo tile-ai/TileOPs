@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
@@ -34,6 +36,7 @@ def _dequant_scale(shape: tuple[int, ...], device) -> torch.Tensor:
     return torch.where(torch.rand(shape, device=device) < 0.5, low, 1.0 / low)
 
 
+@dataclass(eq=False)
 class GQAPagedFwdWorkload(WorkloadBase):
     """Read-only paged GQA over packed queries and rank-4 KV pages.
 
@@ -42,51 +45,30 @@ class GQAPagedFwdWorkload(WorkloadBase):
     ``cache_lens[b] - q_lens[b] + i``.
     """
 
-    def __init__(
-        self,
-        heads: int,
-        heads_kv: int,
-        dim: int,
-        q_lens: list[int],
-        cache_lens: list[int],
-        page_size: int,
-        max_pages_per_req: int,
-        num_pages: int,
-        dtype: torch.dtype,
-        is_causal: bool = True,
-        window_size_left: int = -1,
-        window_size_right: int = -1,
-        sm_scale: float | None = None,
-        softcap: float | None = None,
-        out_dtype: torch.dtype | None = None,
-        pos_encoding_mode: str = "none",
-        rotary_dim: int | None = None,
-        rope_layout: str = "neox",
-        has_sinks: bool = False,
-        cache_dtype: torch.dtype | None = None,
-        per_request_scales: bool = False,
-    ) -> None:
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.dim = dim
-        self.q_lens = q_lens
-        self.cache_lens = cache_lens
-        self.page_size = page_size
-        self.max_pages_per_req = max_pages_per_req
-        self.num_pages = num_pages
-        self.dtype = dtype
-        self.is_causal = is_causal
-        self.window_size_left = window_size_left
-        self.window_size_right = window_size_right
-        self.sm_scale = sm_scale
-        self.softcap = softcap
-        self.out_dtype = out_dtype
-        self.pos_encoding_mode = pos_encoding_mode
-        self.rotary_dim = rotary_dim
-        self.rope_layout = rope_layout
-        self.has_sinks = has_sinks
-        self.cache_dtype = cache_dtype or dtype
-        self.per_request_scales = per_request_scales
+    heads: int
+    heads_kv: int
+    dim: int
+    q_lens: list[int]
+    cache_lens: list[int]
+    page_size: int
+    max_pages_per_req: int
+    num_pages: int
+    dtype: torch.dtype
+    is_causal: bool = True
+    window_size_left: int = -1
+    window_size_right: int = -1
+    sm_scale: float | None = None
+    softcap: float | None = None
+    out_dtype: torch.dtype | None = None
+    pos_encoding_mode: str = "none"
+    rotary_dim: int | None = None
+    rope_layout: str = "neox"
+    has_sinks: bool = False
+    cache_dtype: torch.dtype | None = None
+    per_request_scales: bool = False
+
+    def __post_init__(self) -> None:
+        self.cache_dtype = self.cache_dtype or self.dtype
 
     @property
     def batch(self) -> int:
@@ -307,10 +289,7 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
         """Keep manifest metadata, drawing FP8 operands and their scales by ``fp8_tensors``
-        and cosine/sine pairs from rotation angles.
-
-        Independent normal draws for the two tables scale channels as well as rotating
-        them, sharpening the softmax instead of representing the declared RoPE workload.
+        and cosine/sine pairs from rotation angles, so the tables rotate without scaling.
         """
         inputs = list(CallWorkload.gen_inputs(self))
         q8, k8, v8, scales = self.fp8_tensors(inputs[0].device)

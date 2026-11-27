@@ -270,17 +270,9 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
 ) -> Callable:
     """Persistent SM90 compression attention: each CTA walks a run of token tiles of one KV head.
 
-    A tile is the 64 query rows of tile_t tokens of one KV head. One warpgroup per CTA;
-    its elected thread issues the TMAs. The next tile's queries load into a two-stage
-    ring while this tile computes, as two 64-column halves. K and V of the tile's chunk
-    block stay in shared memory until the tile's request or block changes. QK is two
-    16-key halves of n=16 SS WGMMAs over both DK halves; P feeds n=64 RS WGMMAs over
-    both DV halves. The normalized O halves are staged in the query stage QK has
-    finished reading and leave by TMA, with the log-sum-exp beside them.
-
-    A tile that straddles a request boundary makes one pass per request, and a row
-    scores only its own request's closed chunks; passes and chunk blocks past the first
-    rescale the running output (online softmax).
+    A tile is the 64 query rows of tile_t tokens of one KV head. A tile that straddles a
+    request boundary makes one pass per request, and a row scores only its own request's
+    closed chunks.
     """
     scale_log2 = scale * LOG2E
     head_kv = heads // group

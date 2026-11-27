@@ -24,7 +24,6 @@ from tileops._ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops._ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops._utils import get_sm_count
 from tileops.backend import BUILTIN
-from workloads.device import run_device
 from workloads.norm import (
     AdaLayerNormFarFromZeroWorkload,
     AdaLayerNormOutlierLeadWorkload,
@@ -44,21 +43,16 @@ class AdaLayerNormFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                # Standard aligned shapes -- fp32
+                # bf16 stands for both 2-byte dtypes past smoke.
                 pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
-                # Standard aligned shapes -- fp16
                 pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-                # Standard aligned shapes -- bf16
                 pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float32, marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(4096, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-power-of-two hidden dims
                 pytest.param(1024, 3000, torch.float32, marks=pytest.mark.full),
-                pytest.param(1024, 3000, torch.float16, marks=pytest.mark.full),
                 pytest.param(1024, 3000, torch.bfloat16, marks=pytest.mark.full),
                 # Tail-M: M not divisible by block_m
-                pytest.param(1025, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(1025, 4096, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
@@ -260,30 +254,14 @@ def test_ada_layer_norm_async_policy_edge_correctness(
     test.check(op, *test.gen_inputs())
 
 
-class AdaLayerNorm3DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq, hidden, dtype",
-            [
-                pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@AdaLayerNorm3DFixture
-def test_ada_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    scale = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    shift = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-
-    op = AdaLayerNormFwdOp()
-
-    test = AdaLayerNormTest(batch * seq, hidden, dtype)
-    test.check(op, x, scale, shift)
+@pytest.mark.smoke
+@pytest.mark.parametrize("zero", [False, True], ids=["ada", "ada-zero"])
+def test_ada_layer_norm_3d(zero: bool) -> None:
+    """Leading axes fold into rows, the modulation tensors' with them."""
+    batch, seq, hidden, dtype = 2, 512, 4096, torch.bfloat16
+    test = (AdaLayerNormZeroTest if zero else AdaLayerNormTest)(batch * seq, hidden, dtype)
+    inputs = (t.view(batch, seq, hidden) for t in test.gen_inputs())
+    test.check(AdaLayerNormZeroFwdOp() if zero else AdaLayerNormFwdOp(), *inputs)
 
 
 class AdaLayerNormZeroTest(AdaLayerNormZeroWorkload, TestBase):
@@ -295,21 +273,16 @@ class AdaLayerNormZeroFixture(FixtureBase):
         (
             "m, n, dtype",
             [
-                # Standard aligned shapes -- fp32
+                # bf16 stands for both 2-byte dtypes past smoke.
                 pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
-                # Standard aligned shapes -- fp16
                 pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-                # Standard aligned shapes -- bf16
                 pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float32, marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(4096, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-power-of-two hidden dims
                 pytest.param(1024, 3000, torch.float32, marks=pytest.mark.full),
-                pytest.param(1024, 3000, torch.float16, marks=pytest.mark.full),
                 pytest.param(1024, 3000, torch.bfloat16, marks=pytest.mark.full),
                 # Tail-M: M not divisible by block_m
-                pytest.param(1025, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(1025, 4096, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
@@ -333,33 +306,6 @@ def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(
     test = AdaLayerNormZeroTest(m, n, dtype)
     op = AdaLayerNormZeroFwdOp(eps=test.eps, target=BUILTIN)
     test.check(op, *test.gen_inputs())
-
-
-class AdaLayerNormZero3DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq, hidden, dtype",
-            [
-                pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@AdaLayerNormZero3DFixture
-def test_ada_layer_norm_zero_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    scale = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    shift = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    gate = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-
-    op = AdaLayerNormZeroFwdOp()
-
-    test = AdaLayerNormZeroTest(batch * seq, hidden, dtype)
-    test.check(op, x, scale, shift, gate)
 
 
 _TUNE = [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)]

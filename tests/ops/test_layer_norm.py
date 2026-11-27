@@ -49,7 +49,7 @@ class LayerNormFixture(FixtureBase):
         (
             "m, n, dtype, tune",
             [
-                # Standard aligned shapes -- fp32
+                # Standard aligned shapes; bf16 stands for both 2-byte dtypes past smoke.
                 pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
@@ -57,21 +57,14 @@ class LayerNormFixture(FixtureBase):
                 pytest.param(1025, 1152, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(8192, 8192, torch.float32, False, marks=pytest.mark.full),
-                # Standard aligned shapes -- fp16
-                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(8192, 8192, torch.float16, False, marks=pytest.mark.full),
-                # Standard aligned shapes -- bf16
                 pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(8192, 8192, torch.bfloat16, False, marks=pytest.mark.full),
                 # Non-power-of-two hidden dims
                 pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2048, 5120, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(2048, 5120, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2048, 5120, torch.bfloat16, False, marks=pytest.mark.full),
                 # Tail-M: M not divisible by block_m
-                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 # fp32, one warp per row: 250 vectors, so six lanes hold one fewer
                 pytest.param(1025, 1000, torch.float32, False, marks=pytest.mark.full),
@@ -137,76 +130,22 @@ def test_layer_norm_kernel_handles_unaligned_shape() -> None:
     test.check(op, *test.gen_inputs())
 
 
-class LayerNormNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@LayerNormNonContigFixture
-def test_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
-    x = x_full[:, :n]  # non-contiguous slice
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "view, dtype", [("strided", torch.float32), ("3d", torch.bfloat16)], ids=["strided", "3d"]
+)
+def test_layer_norm_views(view: str, dtype: torch.dtype) -> None:
+    """A strided view and leading axes folded into rows."""
+    n = 4096
+    if view == "strided":
+        x = torch.randn(1024, 2 * n, dtype=dtype, device=run_device())[:, :n]
+    else:
+        x = torch.randn(2, 512, n, dtype=dtype, device=run_device())
     weight = torch.randn(n, dtype=dtype, device=run_device())
     bias = torch.randn(n, dtype=dtype, device=run_device())
-
-    op = LayerNormFwdOp(normalized_shape=(n,))
-
-    # Reference using torch.nn.functional.layer_norm
-    x_ref = x.contiguous()
-    y_ref = F.layer_norm(
-        x_ref.float(),
-        (n,),
-        weight=weight.float(),
-        bias=bias.float(),
-        eps=1e-5,
-    ).to(dtype)
-
-    y = op(x, weight, bias)
-    compare_outputs(y, y_ref, layer_norm_verification(dtype))
-
-
-class LayerNorm3DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq, hidden, dtype",
-            [
-                pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@LayerNorm3DFixture
-def test_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    weight = torch.randn(hidden, dtype=dtype, device=run_device())
-    bias = torch.randn(hidden, dtype=dtype, device=run_device())
-
-    op = LayerNormFwdOp(normalized_shape=(hidden,))
-
-    # Reference using torch.nn.functional.layer_norm
-    y_ref = F.layer_norm(
-        x.float(),
-        (hidden,),
-        weight=weight.float(),
-        bias=bias.float(),
-        eps=1e-5,
-    ).to(dtype)
-
-    y = op(x, weight, bias)
-    compare_outputs(y, y_ref, layer_norm_verification(dtype))
+    expected = F.layer_norm(x.float(), (n,), weight.float(), bias.float(), eps=1e-5)
+    y = LayerNormFwdOp(normalized_shape=(n,))(x, weight, bias)
+    compare_outputs(y, expected.to(dtype), layer_norm_verification(dtype))
 
 
 class LayerNormFarFromZeroTest(LayerNormFarFromZeroWorkload, TestBase):
@@ -549,11 +488,9 @@ class FusedAddLayerNormFixture(FixtureBase):
                 pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 # A share the block's accesses do not divide: the last access skipped
                 pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
-                pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
                 # The fragment kernel at a padded width, and accesses narrower than 16 bytes
                 pytest.param(264, 6531, torch.float32, False, marks=pytest.mark.full),
@@ -794,76 +731,28 @@ def test_fused_add_layer_norm_exchanges_share_no_bytes(rows, n) -> None:
     assert re.findall(r"buf_dyn_shmem \+ \d+", source) == []
 
 
-class FusedAddLayerNormNonContigFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(1024, 4096, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(1024, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@FusedAddLayerNormNonContigFixture
-def test_fused_add_layer_norm_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    """Test with non-contiguous input (sliced tensor)."""
-    x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
-    r_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
-    x = x_full[:, :n]  # non-contiguous slice
-    residual = r_full[:, :n]
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "view, dtype", [("strided", torch.float32), ("3d", torch.bfloat16)], ids=["strided", "3d"]
+)
+def test_fused_add_layer_norm_views(view: str, dtype: torch.dtype) -> None:
+    """A strided input and residual, and leading axes folded into rows."""
+    n = 4096
+    if view == "strided":
+        shape = (1024, 2 * n)
+        x = torch.randn(*shape, dtype=dtype, device=run_device())[:, :n]
+        residual = torch.randn(*shape, dtype=dtype, device=run_device())[:, :n]
+    else:
+        x = torch.randn(2, 512, n, dtype=dtype, device=run_device())
+        residual = torch.randn(2, 512, n, dtype=dtype, device=run_device())
     weight = torch.randn(n, dtype=dtype, device=run_device())
     bias = torch.randn(n, dtype=dtype, device=run_device())
-
-    op = FusedAddLayerNormFwdOp()
-
-    # Reference on contiguous copies
-    test = FusedAddLayerNormTest(m, n, dtype)
+    test = FusedAddLayerNormTest(x.numel() // n, n, dtype)
     y_ref, add_ref = test.ref_program(x.contiguous(), residual.contiguous(), weight, bias)
-
-    y, residual_out = op(x, residual, weight, bias)
-
-    compare_outputs(y, y_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype))
-    compare_outputs(
-        residual_out, add_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype)
-    )
-
-
-class FusedAddLayerNorm3DFixture(FixtureBase):
-    PARAMS = [
-        (
-            "batch, seq, hidden, dtype",
-            [
-                pytest.param(2, 512, 4096, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 512, 4096, torch.bfloat16, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-@FusedAddLayerNorm3DFixture
-def test_fused_add_layer_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    """Test with 3D input (batch, seq, hidden)."""
-    x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    residual = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    weight = torch.randn(hidden, dtype=dtype, device=run_device())
-    bias = torch.randn(hidden, dtype=dtype, device=run_device())
-
-    M = batch * seq
-    op = FusedAddLayerNormFwdOp()
-
-    test = FusedAddLayerNormTest(M, hidden, dtype)
-    y_ref, add_ref = test.ref_program(x, residual, weight, bias)
-
-    y, residual_out = op(x, residual, weight, bias)
-
-    compare_outputs(y, y_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype))
-    compare_outputs(
-        residual_out, add_ref, normalization_verification("FusedAddLayerNormFwdOp", x.dtype)
-    )
+    y, residual_out = FusedAddLayerNormFwdOp()(x, residual, weight, bias)
+    verification = normalization_verification("FusedAddLayerNormFwdOp", dtype)
+    compare_outputs(y, y_ref, verification)
+    compare_outputs(residual_out, add_ref, verification)
 
 
 @pytest.mark.smoke

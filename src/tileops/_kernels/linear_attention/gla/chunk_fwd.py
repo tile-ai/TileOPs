@@ -14,6 +14,7 @@ from tileops._kernels.linear_attention.call_spec import (
     GLAChunkFwdInterface,
     head_count_refusal,
 )
+from tileops._kernels.linear_attention.gla.call_spec import PASS_CONFIGS
 from tileops._kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 
 
@@ -33,11 +34,7 @@ def gla_precompute_g_kernel(
 
     @tilelang.jit(
         out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _fn(threads=128):
         g_shape = [batch, seq_len, heads, dim_k]
@@ -113,11 +110,7 @@ def gla_fwd_h_kernel(
 
     @tilelang.jit(
         out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _h_func(num_stages, threads=128):
         if dim_v_part < min_gemm_n(threads):
@@ -277,11 +270,7 @@ def _gla_fwd_update_kernel(
 
     @tilelang.jit(
         out_idx=[-2, -1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _update_func(threads=128):
         @T.prim_func
@@ -354,11 +343,7 @@ def gla_state_walk_kernel(
 
     @tilelang.jit(
         out_idx=[-2, -1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _walk_func(num_stages, threads):
         init_state_shape = [batch, heads, dim_k, dim_v] if has_initial_state else [1]
@@ -460,11 +445,7 @@ def _gla_fwd_output_kernel(
 
     @tilelang.jit(
         out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        },
+        pass_configs=PASS_CONFIGS,
     )
     def _output_func(threads=128):
         @T.prim_func
@@ -571,6 +552,36 @@ def _gla_fwd_output_kernel(
     return _output_func
 
 
+def tune_launch(kernel, launch, warmup: int, rep: int, read) -> None:
+    """Time *launch* by *read* under each of *kernel*'s tuning candidates and publish the
+    fastest; a candidate that fails is skipped with a warning, and when all fail the
+    published config stays.
+
+    Why *read*: each caller passes its own module's ``candidate_busy_ms``, the name a test
+    replaces to stub that module's readings.
+    """
+    best_lat = float("inf")
+    best_cfg = None
+    for cfg in kernel.tuning_candidates(kernel.autotune_configs):
+        try:
+            with kernel._trying(cfg):
+                launch()
+                torch.cuda.synchronize()
+                lat = read(launch, warmup, rep)
+        except TUNING_FATAL:
+            raise
+        except Exception as e:
+            warnings.warn(f"Autotune config {cfg} failed: {e}", RuntimeWarning, stacklevel=3)
+            continue
+        if lat < best_lat:
+            best_lat = lat
+            best_cfg = cfg
+    if best_cfg is None:
+        warnings.warn("Autotuning failed; the published config stays", RuntimeWarning, stacklevel=3)
+        return
+    kernel._publish(best_cfg, kernel._programs)
+
+
 class GLAChunkedFwdKernel(Kernel):
     """Gated Linear Attention (GLA) chunked forward: what its programs share.
 
@@ -593,11 +604,11 @@ class GLAChunkedFwdKernel(Kernel):
         dim_v: int,
         chunk_size: int,
         scale: float,
-        output_final_state: bool = False,
         dtype: torch.dtype = torch.float16,
         config: dict | None = None,
+        device_index: int | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.seq_len = seq_len
         self.heads = heads
@@ -605,7 +616,6 @@ class GLAChunkedFwdKernel(Kernel):
         self.dim_v = dim_v
         self.chunk_size = chunk_size
         self.scale = scale
-        self.output_final_state = output_final_state
         self.dtype_name = str(dtype).split(".")[-1]
         reason = self.region_refusal(dim_k, dim_v, chunk_size)
         if reason:
@@ -703,45 +713,17 @@ class GLAChunkedFwdKernel(Kernel):
         B, T, H, K, V = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v)
         dtype_torch = getattr(torch, self.dtype_name)
 
-        q = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        k = torch.randn(B, T, H, K, device="cuda", dtype=dtype_torch) * 0.1
-        v = torch.randn(B, T, H, V, device="cuda", dtype=dtype_torch) * 0.1
-        g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype_torch).abs()
+        q = torch.randn(B, T, H, K, device=self._build_device, dtype=dtype_torch) * 0.1
+        k = torch.randn(B, T, H, K, device=self._build_device, dtype=dtype_torch) * 0.1
+        v = torch.randn(B, T, H, V, device=self._build_device, dtype=dtype_torch) * 0.1
+        g = -torch.rand(B, T, H, K, device=self._build_device, dtype=dtype_torch).abs()
         # State-reading specializations need a real input while tuning. Zero-state
         # specializations ignore it; prepare it once, outside the timed calls.
         initial_state = torch.zeros(B, H, K, V, device=q.device, dtype=torch.float32)
 
-        best_lat = float("inf")
-        best_cfg = None
-
-        for cfg in self.tuning_candidates(self.autotune_configs):
-            try:
-                with self._trying(cfg):
-                    self.forward(q, k, v, g, initial_state)
-                    torch.cuda.synchronize()
-
-                    lat = candidate_busy_ms(
-                        lambda: self.forward(q, k, v, g, initial_state), warmup, rep
-                    )
-                    if lat < best_lat:
-                        best_lat = lat
-                        best_cfg = cfg
-            except TUNING_FATAL:
-                raise
-            except Exception as e:
-                warnings.warn(
-                    f"Autotune config {cfg} failed: {e}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                continue
-
-        if best_cfg is None:
-            warnings.warn(
-                "Autotuning failed; the published config stays", RuntimeWarning, stacklevel=2
-            )
-            return
-        self._publish(best_cfg, self._programs)
+        tune_launch(
+            self, lambda: self.forward(q, k, v, g, initial_state), warmup, rep, candidate_busy_ms
+        )
 
 
 class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
@@ -892,5 +874,5 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         )
         index = call.device_index
         return (*arguments, call.dtype, index), lambda: cls(
-            *arguments, output_final_state=True, dtype=call.dtype
+            *arguments, dtype=call.dtype, device_index=index
         )

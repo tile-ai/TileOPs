@@ -1,14 +1,5 @@
-"""``MoEPermuteAlignWorkload``'s verifier, held to the result ``MoEPermuteAlignFwdOp`` states.
-
-The op leaves one decision open, the order of each expert's routes within its first
-``count[e]`` slots, and one value free, that of a block past the padded length. A positive
-control makes a non-reference choice of both and must pass. A negative control starts from
-such a choice, breaks one constraint, keeps the rest consistent and must be rejected: either
-the choice lies outside what the op allows, or a step after it is not exact. An exhaustive and
-a differential test compare the verifier with an oracle written from the op's docstring.
-
-Tensors stay on the host: these tests run the verifier alone, on constructed outputs.
-"""
+"""``MoEPermuteAlignWorkload``'s verifier admits every output ``MoEPermuteAlignFwdOp``'s contract
+allows and rejects one that breaks a constraint; it runs alone, on host tensors."""
 
 import itertools
 import math

@@ -212,39 +212,6 @@ class Kernel(ABC):
         "npt_arg": "num_per_thread",
     }
 
-    @staticmethod
-    def _int_tensor_input_names(jit_kernel: Any, seeds: dict[str, Any]) -> list[str]:
-        """Integer tensor parameters *jit_kernel* takes as inputs, outputs excluded.
-
-        Raises:
-            ValueError: When the parameters cannot be read, which the caller treats
-                as unproven rather than safe.
-        """
-        get_tir = getattr(jit_kernel, "get_tir", None)
-        if not callable(get_tir):
-            raise ValueError(
-                f"{jit_kernel!r} does not expose get_tir, so its parameters cannot be read"
-            )
-        try:
-            prim_func = get_tir(**seeds)
-        except Exception as exc:
-            raise ValueError(f"the parameters of {jit_kernel!r} cannot be read: {exc}") from exc
-
-        out_idx = getattr(jit_kernel, "out_idx", None) or []
-        if isinstance(out_idx, int):
-            out_idx = [out_idx]
-        count = len(prim_func.params)
-        outputs = {i + count if i < 0 else i for i in out_idx}
-
-        names = []
-        for i, param in enumerate(prim_func.params):
-            if i in outputs:
-                continue
-            buffer = prim_func.buffer_map.get(param)
-            if buffer is not None and "int" in str(buffer.dtype):
-                names.append(str(param.name))
-        return names
-
     def __init__(self, *args: object, device_index: "int | None" = None, **kwargs: object) -> None:
         self.device_index = device_index
         # The op constructs a kernel with the call's device current and passes its index, if
@@ -434,14 +401,9 @@ class Kernel(ABC):
     def refusal(cls, call: Any) -> str | None:
         """Why this implementation does not serve *call*, or ``None`` when it does.
 
-        States the calls it serves, never what a sibling serves; every refusal names the
-        limit it hits, so a caller told that nothing served the call learns why each
-        implementation declined. Where two non-general implementations both serve a call,
-        ``preferred_over`` says which one wins. Where it is available is ``devices`` and
-        ``supported_archs``, not this.
-
-        The default serves every call. An override that narrows it ends with
-        ``super().refusal(call)``, so the limits a base class states still apply.
+        A refusal names the limit it hits and states only this implementation's calls; device
+        availability is ``devices`` and ``supported_archs``, not this. The default serves every
+        call; an override ends with ``super().refusal(call)`` so a base class's limits apply.
         """
         return None
 
@@ -467,32 +429,21 @@ class Kernel(ABC):
     def entry_for(cls, call: Any) -> Entry:
         """How to build this class for *call*, and what makes two builds one entry.
 
-        The identity is the construction arguments, so two calls that would compile the
-        same kernel share an entry and none reuses one compiled for different arguments.
-        The thunk runs only on a cache miss.
-
-        The default is the identity mapping: this class is constructed from the call
-        record itself. A class with a narrower constructor overrides it and states
-        which of the call's facts it is built from.
-
-        The device index is in the identity wherever this class holds state of one
-        device, such as a workspace or a device it takes as an argument. The build target
-        is not: the op keys every entry by it.
+        The identity is the construction arguments; the thunk runs only on a cache miss. The
+        default constructs the class from the call record itself; a class with a narrower
+        constructor overrides it. The device index belongs in the identity wherever the class
+        holds state of one device; the build target does not, as the op keys every entry by it.
         """
         return call, lambda: cls(call)
 
     def _check_arch(self) -> None:
         """Reject construction on a device this kernel is not built for.
 
-        Read from ``device_index``, the device the op handed over, not from the current
-        device. ``None`` reads the current device, which ``Op.kernel_for`` sets to the
-        call's device. The op layer performs no architecture check of its own.
+        Reads the device of ``device_index``, the current one when it is ``None``; the op layer
+        performs no architecture check of its own.
 
         Raises:
             OpNotAvailableError: The device's architecture is not among ``supported_archs``.
-                Selection raises the same class when no implementation for a dispatch key can
-                serve a call, so a caller catches one exception type whether the key has
-                one implementation or several.
         """
         cls = type(self)
         if cls.supported_archs is None:
@@ -589,12 +540,10 @@ class Kernel(ABC):
 
     @property
     def autotune_supply_prog(self) -> Callable | None:
-        """Return a supply_prog callback for autotuning input generation.
+        """The ``supply_prog`` autotuning builds candidate inputs with, or ``None`` for TileLang's.
 
-        Override in subclasses whose kernels have scalar (T.int32, etc.) parameters
-        that the default tensor-only auto-generation cannot handle.
-
-        The callback signature is: (params: list[KernelParam]) -> list[Tensor | int | ...]
+        A kernel whose parameters TileLang cannot generate, such as scalars, overrides it with
+        a callback ``(params: list[KernelParam]) -> list[Tensor | int | ...]``.
         """
         return None
 
@@ -603,12 +552,10 @@ class Kernel(ABC):
         kernel: Callable | None = None,
         config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Return initial JIT kwargs for TileLang autotuner binding.
+        """The JIT kwargs TileLang's autotuner binds before it applies each candidate.
 
-        TileLang validates and binds the JIT signature before candidate
-        configs are applied. Passing the kernel's default config keeps required
-        tunable parameters bindable while the autotuner still overrides them
-        with each candidate config during benchmarking.
+        *config* (``default_config`` when omitted), cut to *kernel*'s parameters, a key
+        reaching a parameter through ``_AUTOTUNE_PARAM_ALIASES`` included.
         """
         source = self.default_config if config is None else config
         if not source:
@@ -643,11 +590,32 @@ class Kernel(ABC):
 
         Raises:
             ValueError: When the kernel takes integer tensor inputs, supplies
-                none of them, and has not declared random values safe.
+                none of them, and has not declared random values safe; or when its
+                parameters cannot be read, which counts as unproven rather than safe.
         """
         if self.autotune_accepts_random_int_inputs:
             return
-        names = Kernel._int_tensor_input_names(jit_kernel, seeds)
+        get_tir = getattr(jit_kernel, "get_tir", None)
+        if not callable(get_tir):
+            raise ValueError(
+                f"{jit_kernel!r} does not expose get_tir, so its parameters cannot be read"
+            )
+        try:
+            prim_func = get_tir(**seeds)
+        except Exception as exc:
+            raise ValueError(f"the parameters of {jit_kernel!r} cannot be read: {exc}") from exc
+        out_idx = getattr(jit_kernel, "out_idx", None) or []
+        if isinstance(out_idx, int):
+            out_idx = [out_idx]
+        count = len(prim_func.params)
+        outputs = {i + count if i < 0 else i for i in out_idx}
+        names = []
+        for i, param in enumerate(prim_func.params):
+            if i in outputs:
+                continue
+            buffer = prim_func.buffer_map.get(param)
+            if buffer is not None and "int" in str(buffer.dtype):
+                names.append(str(param.name))
         if not names:
             return
         raise ValueError(
@@ -725,10 +693,6 @@ class Kernel(ABC):
     ) -> Any:
         """Benchmark *configs* against one JIT kernel and return the winner.
 
-        A kernel built from several sub-kernels tunes each one on its own
-        candidate list, so the JIT object and the candidates are arguments here
-        rather than being read from ``self.kernel`` / ``self.autotune_configs``.
-
         Args:
             jit_kernel: The ``@tilelang.jit``-decorated builder to tune.
             configs: Candidate configs handed to TileLang's autotuner. The seed
@@ -749,9 +713,8 @@ class Kernel(ABC):
             The tuned kernel, carrying the winning ``config`` and its measured
             ``latency``.
         """
-        # Pass do_not_specialize so TileLang excludes the seeded JIT parameters
-        # from the cache key; without this, the seed values read as "already
-        # tuned" and the benchmarking sweep is skipped (returning config=None).
+        # do_not_specialize keeps the seeded parameters out of TileLang's cache key; in it, the
+        # seeds read as already tuned and the sweep is skipped.
         seeds = self._autotune_initial_kwargs(jit_kernel, seed_config)
         configs = self.tuning_candidates(configs, seed_config)
         rename = self._param_name_aliases(jit_kernel)

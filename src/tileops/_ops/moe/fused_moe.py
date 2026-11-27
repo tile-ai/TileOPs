@@ -1,24 +1,11 @@
-"""Routed Mixture-of-Experts (MoE) FFN operators.
-
-``FusedMoEFwdOp`` is routing + expert FFN. Passing ``correction_bias`` adds the
-per-expert bias during top-k selection (Kimi K2 / DeepSeek-V3 style); withholding it
-selects straight from the gating scores (Qwen3 style). ``num_expert_group`` /
-``topk_group`` restrict the selection to the best expert groups (DeepSeek-V3).
-
-The shared core (`FusedMoE`) wires `FusedTopKFwdOp` (routing),
-`MoEPrepareAndFinalizeNoDPEP` (quantization / EP dispatch), and
-`FusedMoEExpertsFwdOp` (permute + GEMM + unpermute). Shared
-expert handling belongs to `FusedMoESharedExpertFwdOp`.
-"""
+"""Routed Mixture-of-Experts (MoE) FFN operators."""
 
 from collections.abc import Mapping
 from typing import ClassVar
 
 import torch
 
-from tileops._ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops._ops.moe.fused_topk import FusedTopKFwdOp
-from tileops._ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -28,11 +15,8 @@ __all__ = ["FusedMoE", "FusedMoEFwdOp"]
 
 
 class FusedMoE(Op):
-    """Shared composite implementation for routed MoE FFN ops.
-
-    The concrete manifest identity (`FusedMoEFwdOp`) subclasses this; the
-    routing-and-expert pipeline below is shared with `FusedMoESharedExpertFwdOp`.
-    """
+    """Routing (``FusedTopKFwdOp``) then experts (``FusedMoEExpertsFwdOp``), shared by
+    ``FusedMoEFwdOp`` and ``FusedMoESharedExpertFwdOp``."""
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
         "route_select": FusedTopKFwdOp,
@@ -40,32 +24,43 @@ class FusedMoE(Op):
     }
     injected_parameters: ClassVar[tuple[str, ...]] = ("experts",)
 
-    def _settle_activation(self, experts: FusedMoEExpertsFwdOp | None) -> None:
-        """Take ``activation`` from injected ``experts``, before ``Op.__init__`` checks it.
+    def __init__(
+        self,
+        top_k: int,
+        scoring_func: str,
+        renormalize: bool,
+        routed_scaling_factor: float,
+        num_expert_group: int,
+        topk_group: int,
+        *,
+        activation: str,
+        target: Target,
+        experts: FusedMoEExpertsFwdOp | None,
+    ):
+        """Set the routing parameters and build the routing sub-op and the experts.
 
         Raises:
             ValueError: The injected ``experts`` applies an activation that conflicts with a
                 non-default ``activation`` passed here.
         """
-        if experts is None:
-            return
+        self.top_k = top_k
+        self.scoring_func = scoring_func
+        self.renormalize = renormalize
+        self.routed_scaling_factor = routed_scaling_factor
+        self.num_expert_group = num_expert_group
+        self.topk_group = topk_group
         # The default cannot be told from an omitted argument, so only a conflicting
         # non-default value is refused.
-        if self.activation != "silu_and_mul" and self.activation != experts.activation:
-            raise ValueError(
-                f"activation conflicts with the injected experts instance: got "
-                f"activation={self.activation!r}, experts.activation={experts.activation!r}"
-            )
-        self.activation = experts.activation
-
-    def _build_pipeline(self, experts: FusedMoEExpertsFwdOp | None) -> None:
-        """Hold the routing sub-op, the prepare/finalize stage and the experts.
-
-        The routing keeps its own ``routed_scaling_factor`` at 1: the experts' epilogue
-        applies the op's factor, once.
-        """
+        if experts is not None:
+            if activation != "silu_and_mul" and activation != experts.activation:
+                raise ValueError(
+                    f"activation conflicts with the injected experts instance: got "
+                    f"activation={activation!r}, experts.activation={experts.activation!r}"
+                )
+            activation = experts.activation
+        self.activation = activation
+        super().__init__(target=target)
         self._fused_topk()
-        self._prepare: FusedMoEPrepareAndFinalize = MoEPrepareAndFinalizeNoDPEP()
         self._experts(experts)
 
     def _fused_topk(self) -> Op:
@@ -79,7 +74,7 @@ class FusedMoE(Op):
             topk_group=self.topk_group,
         )
 
-    def _experts(self, given: FusedMoEExpertsFwdOp | None = None) -> FusedMoEExpertsModular:
+    def _experts(self, given: FusedMoEExpertsFwdOp | None = None) -> FusedMoEExpertsFwdOp:
         """Return the experts stage; *given* is an implementation the caller injected."""
         return self.delegate_for(
             "routed_experts",
@@ -109,31 +104,11 @@ class FusedMoE(Op):
         b_gate_up: torch.Tensor | None = None,
         b_down: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Route, prepare, run the experts and finalize; the ``[T, H]`` routed output."""
+        """Route, then run the experts; the ``[T, H]`` routed output."""
         topk_weights, topk_ids = self._fused_topk()(gating_output, correction_bias)
-        experts = self._experts()
-        r = self._prepare.prepare(hidden_states, topk_weights, topk_ids, w_gate_up.shape[0])
-        output = hidden_states.new_empty(hidden_states.shape)
-        expert_out_shape = experts._output_shape(r.hidden_q.shape[0], hidden_states.shape[1])
-        expert_out = (
-            output
-            if expert_out_shape == tuple(hidden_states.shape)
-            else hidden_states.new_empty(expert_out_shape)
+        return self._experts()(
+            hidden_states, w_gate_up, w_down, topk_weights, topk_ids, b_gate_up, b_down
         )
-        experts(
-            r.hidden_q,
-            w_gate_up,
-            w_down,
-            r.topk_weights,
-            r.topk_ids,
-            b_gate_up,
-            b_down,
-            out=expert_out,
-        )
-        self._prepare.finalize(
-            output, expert_out, r.topk_weights, r.topk_ids, experts._make_weighted_reduce()
-        )
-        return output
 
 
 class FusedMoEFwdOp(FusedMoE):
@@ -151,7 +126,8 @@ class FusedMoEFwdOp(FusedMoE):
     otherwise, and top-k is selected inside the ``topk_group`` best groups. A group or
     an expert within 1e-5 relative plus 1e-6 absolute of the last one kept may be kept
     in its place, as in ``FusedTopKFwdOp``, and the output is then that of the routing
-    taken. The output is multiplied by ``routed_scaling_factor`` once.
+    taken. The output is multiplied by ``routed_scaling_factor`` once (the routing itself
+    is not scaled).
 
     gpt-oss is ``scoring_func="softmax"``, ``renormalize=True``, ``activation="swigluoai"``
     and both expert biases. ``activation``, and the row order of ``w_gate_up`` and
@@ -193,16 +169,17 @@ class FusedMoEFwdOp(FusedMoE):
             experts: A configured ``FusedMoEExpertsFwdOp`` to run the experts; ``None``
                 builds one from ``activation`` and ``routed_scaling_factor``.
         """
-        self.top_k = top_k
-        self.scoring_func = scoring_func
-        self.renormalize = renormalize
-        self.routed_scaling_factor = routed_scaling_factor
-        self.num_expert_group = num_expert_group
-        self.topk_group = topk_group
-        self.activation = activation
-        self._settle_activation(experts)
-        super().__init__(target=target)
-        self._build_pipeline(experts)
+        super().__init__(
+            top_k,
+            scoring_func,
+            renormalize,
+            routed_scaling_factor,
+            num_expert_group,
+            topk_group,
+            activation=activation,
+            target=target,
+            experts=experts,
+        )
 
     def forward(
         self,

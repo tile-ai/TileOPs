@@ -155,11 +155,9 @@ class ReduceKernelBase(Kernel):
 
 
 class RowReduceKernelBase(ReduceKernelBase):
-    """A shared-memory program over the ``(M, N)`` rows the reduced axes flatten to.
-
-    A row one block pass holds is staged whole, ``block_m`` rows a block, and tuned by
-    TileLang's autotuner; a longer row is reduced ``tile_n`` columns a step, and each tile
-    width is timed through a call.
+    """A shared-memory program over the ``(M, N)`` rows the reduced axes flatten to: a row one
+    block pass holds is staged whole, ``block_m`` rows a block; a longer row is reduced
+    ``tile_n`` columns a step.
 
     Args:
         call: The call this implementation serves.
@@ -382,12 +380,9 @@ class WelfordReduceKernel(RowReduceKernelBase, VarianceFwdInterface, VarMeanFwdI
 class ReduceLeadingKernel(ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface):
     """A reduction down the leading axes in the tensor's own ``(N, M)`` layout.
 
-    Where one launch over the columns would leave the grid short, `down_rows_splits` splits
-    the reduced axis. Such a call runs in one launch where `down_rows_cluster` admits it,
-    and that function picks the cluster: above 1, the reduced axis splits across the CTAs
-    of a thread-block cluster, which fold their partials in shared memory; at 1, each CTA
-    walks every row of its tile. Elsewhere it runs as row slices whose fp32 partials a
-    second launch finishes.
+    Where one launch over the columns leaves the grid short, `down_rows_splits` splits the
+    reduced axis: across a thread-block cluster in one launch where `down_rows_cluster` admits
+    it, else as row slices whose fp32 partials a second launch finishes.
     """
 
     preferred_over = frozenset({"reduce_fold"})
@@ -686,13 +681,9 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
 def _extrema_rows_kernel(M, N, op_kind, dtype, out_dtype, tile_n):
     """Build amax or amin of each row of an ``(M, N)`` buffer, ``tile_n`` columns a step.
 
-    ``T.reduce_max`` combines fp32 with ``fmaxf``, which drops NaN, so threads fold their
-    columns with `extrema_combine` and fold each other's partials the same way, once per
-    row after the last tile. Whole tiles stage through shared memory by ``T.copy``. The
-    block splits into one group of ``lanes`` threads per row, as many groups as it has
-    rows while each keeps at least a warp; a group folds one row at a time, each thread
-    reading ``width`` contiguous elements a step, a power of two up to a 16-byte vector
-    that spreads the tile over the group, into as many independent slots.
+    Threads fold with `extrema_combine`, which keeps NaN (``T.reduce_max``'s ``fmaxf`` drops it).
+    The block splits into one group of ``lanes`` threads a row, each group at least a warp, each
+    thread reading ``width`` contiguous elements a step.
     """
     whole = N // tile_n
     last_cols = N - whole * tile_n
@@ -1022,15 +1013,9 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
 
 @target_cache(maxsize=32)
 def _welford_merge_kernel(A, B, op_kind, correction, count_per, out_dtype, threads):
-    """Merge per-slice Welford partials down the lead axis with Chan's method.
-
-    ``mean_in`` / ``m2_in`` hold ``A`` slices of ``B`` columns, each statistic
-    over ``count_per`` elements. One thread owns a kept column and folds the
-    slices serially; adjacent threads read adjacent columns, so every step of
-    the walk is one coalesced pass over a buffer of ``A * B`` values.
-
-    Every kind writes the ``(statistic, mean)`` pair -- ``B`` extra values --
-    so one prim_func serves the three; the caller keeps what its op returns.
+    """Merge per-slice Welford partials down the lead axis with Chan's method: ``mean_in`` /
+    ``m2_in`` hold ``A`` slices of ``B`` columns over ``count_per`` elements each; one thread
+    folds a column's slices serially. Every kind writes the ``(statistic, mean)`` pair.
     """
     denom = float(A * count_per - correction)
     nb = float(count_per)

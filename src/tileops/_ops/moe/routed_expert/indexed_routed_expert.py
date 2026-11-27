@@ -28,18 +28,11 @@ __all__ = ["IndexedExpertMLPFwdOp"]
 
 
 class IndexedExpertMLPFwdOp(Op):
-    """Route-major expert MLP with device-side reuse dispatch.
+    """Route-major expert MLP: what ``FusedMoEExpertsFwdOp`` computes for ``silu_and_mul``
+    without biases, with each of the ``T * K`` routes a row of its expert's GEMM.
 
-    It computes what ``FusedMoEExpertsFwdOp`` computes for ``silu_and_mul`` without biases,
-    route by route, where ``MoEExpertMLPFwdOp`` takes rows already grouped by expert and
-    returns one unweighted result row per input row.
-
-    Each of the ``T * K`` routes is a row of its expert's GEMM, dispatched per route
-    rather than per expert segment. Routes that share an expert are grouped, and only the
-    leader copies that expert's weights, so the minimum DRAM traffic the roofline prices
-    is one read per distinct expert. That pays off while the routes
-    are few; :class:`FusedMoEExpertsFwdOp` picks this op over the staged pipeline on the
-    shapes where it does.
+    Routes that share an expert read its weights once, so the roofline prices one weight
+    read per distinct expert. Suited to calls with few routes per expert.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

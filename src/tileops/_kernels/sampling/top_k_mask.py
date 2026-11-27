@@ -140,17 +140,13 @@ class TopKMaskFwdKernel(Kernel, TopKMaskFwdInterface):
     _THREADS: ClassVar[int] = 1024
     # Most 16-byte vectors a thread holds before its registers cost the SM a resident block.
     _MAX_SLOTS: ClassVar[int] = 16
-    # Slots a thread holds where `cluster_limit` keeps a row in one CTA: the fewest that hold
-    # llama 3's float32 vocabulary, 128256 values, at `_THREADS`. Those past the registers
-    # spill to local memory, which every pass then reads back.
-    _MAX_SLOTS_ONE_CTA: ClassVar[int] = 32
 
     @classmethod
     def refusal(cls, call: SamplingCall) -> str | None:
         reason = super().refusal(call)
         if reason is not None:
             return reason
-        return row_refusal(call, cls._THREADS, cls._MAX_SLOTS, cls._MAX_SLOTS_ONE_CTA)
+        return row_refusal(call, cls._THREADS, cls._MAX_SLOTS)
 
     def __init__(self, call: SamplingCall, config: dict | None = None):
         super().__init__(device_index=call.device_index)

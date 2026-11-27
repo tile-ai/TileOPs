@@ -118,27 +118,14 @@ def softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, thread
 
 
 def make_block_split_fold(num_segs: int, threads: int, keep_inf: bool = False):
-    """Create the macro folding one row's segment statistics across a whole block.
+    """Create the macro folding one row's ``num_segs`` segment statistics, read from global at
+    *base*, across a whole block: each lane folds a strided share, then two block reductions.
 
-    Every lane folds a strided share of the ``num_segs`` pairs into a
-    ``(1, threads)`` fragment, and two block reductions close it. A serial
-    fold instead costs ``num_segs`` dependent loads and exponentials in one
-    lane, which is the whole fold's latency.
-
-    The statistics are read from global at *base*. A few hundred fp32 pairs
-    that every block of one row reads sit in L2, and staging them through
-    shared memory pays a barrier to restate that. The caller allocates
-    *part_max* and *part_sum* as ``(1, threads)`` fp32 fragments and *row_max*
-    and *row_sum* as ``(1,)`` fp32 fragments.
-
-    Each segment's sum is rescaled by ``exp(seg_max - row_max)``, so a NaN
-    anywhere in the row reaches the row sum, and a -inf segment below a
-    finite row max contributes ``0 * exp(-inf) = 0``. Where both maxima are
-    infinite, ``exp(inf - inf)`` leaves the row sum NaN: torch's softmax of
-    an all--inf row or of a row holding +inf. *keep_inf* scales the segment
-    holding the row max by one instead, which is torch's logsumexp: an
-    all--inf row sums to 0 and a row holding +inf to the +inf its segment
-    sums to, each still NaN when a NaN is present.
+    The caller allocates *part_max* and *part_sum* as ``(1, threads)`` fp32 fragments and
+    *row_max* and *row_sum* as ``(1,)``. Each segment's sum is rescaled by
+    ``exp(seg_max - row_max)``, so a NaN reaches the row sum and an all -inf row or a row holding
+    +inf sums to NaN, as torch's softmax. *keep_inf* scales the segment holding the row max by
+    one instead, as torch's logsumexp: an all -inf row sums to 0 and a +inf row to +inf.
     """
     rounds = ceil_div(num_segs, threads)
     last = num_segs - 1

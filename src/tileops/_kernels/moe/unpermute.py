@@ -18,7 +18,7 @@ from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
-from tileops._kernels.moe.layout import row_threads
+from tileops._kernels.moe.layout import permute_refusal, row_threads
 
 __all__ = ["MoEUnpermuteKernel"]
 
@@ -109,9 +109,6 @@ def _make_unpermute_kernel(
 class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
     """Weighted inverse-permute kernel for staged PostPermute.
 
-    Restores token order from staged inverse indices and applies weighted
-    top-k reduction.
-
     Args:
         num_tokens: Number of input tokens T.
         top_k: Number of experts selected per token K.
@@ -119,11 +116,10 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         materialized_rows: Number of materialized expert-output rows.
         scaling: Scalar multiplied into the reduced output before the cast/store
             (folds ``routed_scaling_factor``). Defaults to 1.0 (no scaling).
-        dtype: Data type of expert output and final output (bf16 or fp16).
-        config: Optional config dict with ``threads``.
-        sm_count: Device SM count used to choose the low-token launch width.
         has_residual: Whether each call passes a residual added to the scaled reduction
             before the cast.
+        dtype: Data type of expert output and final output (bf16 or fp16).
+        sm_count: Device SM count used to choose the low-token launch width.
 
     Example:
         ```python linenums="1"
@@ -133,14 +129,12 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    _LAYOUT_KEYS = frozenset(("tight_physical_psum", "aligned_per_row"))
 
     @classmethod
     def refusal(cls, call: PostPermuteCall) -> "str | None":
-        if call.layout_key not in cls._LAYOUT_KEYS:
-            return f"serves layouts {sorted(cls._LAYOUT_KEYS)}, not {call.layout_key}"
-        if call.input_dtype not in (torch.bfloat16, torch.float16):
-            return f"requires float16 or bfloat16, got {call.input_dtype}"
+        reason = permute_refusal(call.layout_key, call.input_dtype)
+        if reason is not None:
+            return reason
         if call.output_dtype != call.input_dtype:
             return f"writes {call.input_dtype}, not {call.output_dtype}"
         return super().refusal(call)
@@ -150,28 +144,16 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         """One build per route extents, hidden width, routing scale, residual presence, dtype
         and device."""
         index = call.device_index
-        scaling = call.epilogue.routed_scaling_factor
-        identity = (
+        args = (
             call.num_tokens,
             call.top_k,
             call.hidden_size,
             call.materialized_rows,
-            scaling,
+            call.epilogue.routed_scaling_factor,
             call.has_residual,
             call.input_dtype,
-            index,
         )
-        return identity, lambda: cls(
-            call.num_tokens,
-            call.top_k,
-            call.hidden_size,
-            call.materialized_rows,
-            scaling=scaling,
-            dtype=call.input_dtype,
-            sm_count=call.sm_count,
-            device_index=index,
-            has_residual=call.has_residual,
-        )
+        return (*args, index), lambda: cls(*args, sm_count=call.sm_count, device_index=index)
 
     def __init__(
         self,
@@ -180,12 +162,11 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         hidden_size: int,
         materialized_rows: int,
         scaling: float = 1.0,
-        dtype: torch.dtype = torch.bfloat16,
-        config: dict | None = None,
-        sm_count: int | None = None,
-        *,
-        device_index: int | None = None,
         has_residual: bool = False,
+        dtype: torch.dtype = torch.bfloat16,
+        *,
+        sm_count: int | None = None,
+        device_index: int | None = None,
     ):
         super().__init__(device_index=device_index)
         self.num_tokens = num_tokens
@@ -198,7 +179,7 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
             raise ValueError("sm_count must be positive")
         self.scaling = scaling
         self.has_residual = has_residual
-        self.init_config(config)
+        self.init_config()
 
     @property
     def default_config(self) -> dict:

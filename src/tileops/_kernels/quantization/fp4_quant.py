@@ -261,11 +261,8 @@ def _fp4_fake_quant_kernel(
 
 class FP4QuantKernel(Kernel, FP4QuantFwdInterface):
     """Per-block e2m1 quantization; one program per regime serves any number of blocks.
-
-    A CTA owns whole blocks and reduces each across the threads holding it, or inside one
-    thread where the block width leaves the reduction no power-of-two group of threads.
-    Rounding to e2m1 is integer arithmetic on the float32 bits and one float32 add, so it
-    needs no FP4 conversion instruction.
+    Rounding to e2m1 is integer arithmetic on the float32 bits, so it needs no FP4
+    conversion instruction.
 
     Args:
         n: Columns of the last axis.
@@ -277,8 +274,6 @@ class FP4QuantKernel(Kernel, FP4QuantFwdInterface):
     """
 
     supported_archs: list[int] = [89, 90]
-
-    autotune_configs = None
 
     @classmethod
     def refusal(cls, call: FP4QuantCall) -> str | None:

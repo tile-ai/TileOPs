@@ -37,13 +37,11 @@ class BMMFwdOp(Op):
     """Batched dense GEMM: $d_i = a_i \\mathbin{@} b_i \\quad \\text{for } i \\in [0, B)$.
 
     Shapes are strictly 3D: ``a`` is $[B \\times M \\times K]$, ``b`` is
-    $[B \\times K \\times N]$ as in ``torch.bmm``, and ``d`` is $[B \\times M \\times N]$.
-    The layout is fixed: the in-tree kernels read only $[B \\times K \\times N]$, so the op
-    takes no transpose flag. ``a`` and ``out`` may be strided: a batch-strided view, such as
-    the transpose of an $[M \\times B \\times K]$ tensor, is read or written where it lies.
-    Each ``(batch, m, n, k, dtype)``, and each strided layout of ``a`` and ``out`` read or
-    written in place, compiles a kernel on first use, which is cached. The in-tree kernels
-    need $K$ to be a multiple of 16 and refuse other calls when built.
+    $[B \\times K \\times N]$ as in ``torch.bmm`` (no transpose flag), and ``d`` is
+    $[B \\times M \\times N]$. ``a`` and ``out`` may be strided: a batch-strided view, such
+    as the transpose of an $[M \\times B \\times K]$ tensor, is read or written in place.
+    Each new ``(batch, m, n, k, dtype)`` and each new strided layout of ``a`` or ``out``
+    compiles a kernel on first use. The in-tree kernels need $K$ to be a multiple of 16.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -106,15 +104,11 @@ class BMMFP8FwdOp(Op):
     """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * a_scale * b_scale``.
 
     ``trans_b`` states which axis order ``b`` arrives in: ``False``, the default, is
-    flashinfer's and torch.bmm's $[B \\times K \\times N]$; ``True`` is
-    $[B \\times N \\times K]$.
+    ``torch.bmm``'s $[B \\times K \\times N]$; ``True`` is $[B \\times N \\times K]$.
 
-    FP8 WGMMA reads ``b`` K-innermost and has no transposed operand mode, so a
-    ``b`` that does not already lie that way is transposed into a new buffer,
-    costing one extra read and write of it. Which calls pay is decided by ``b``'s
-    strides, not by ``trans_b``: passing ``b`` K-innermost avoids the copy under
-    either value of the flag, and is the faster call. The in-tree kernel needs $K$
-    to be a multiple of 32 and refuses other calls when built.
+    A ``b`` that does not lie K-innermost in memory, under either value of ``trans_b``, is
+    first transposed into a new buffer (one extra read and write of ``b``), because FP8
+    WGMMA reads ``b`` only K-innermost. The in-tree kernel needs $K$ to be a multiple of 32.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -140,8 +134,7 @@ class BMMFP8FwdOp(Op):
         Args:
             out_dtype: Output tensor dtype (``torch.float16`` or ``torch.bfloat16``).
             trans_b: Whether ``b``'s axes are $[B \\times N \\times K]$ rather than
-                $[B \\times K \\times N]$. Default ``False``. Which of the two is faster is
-                decided by ``b``'s strides, not by this flag.
+                $[B \\times K \\times N]$. Default ``False``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
         """

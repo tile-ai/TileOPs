@@ -1,13 +1,5 @@
-"""Which wrong outputs the MoE verifications reject on the swigluoai and expert-bias rows.
-
-Each case takes a manifest row of an MoE op that fuses ``swigluoai`` or passes an expert bias,
-with its expert and token counts cut so it runs on the CPU; its hidden and ffn sizes, scales,
-activation, biases and routing are the row's, so each output element is drawn as the row
-draws it. A case constructs, from the workload's reference, an output that breaks one part of
-the op's contract and asserts the workload's verification rejects it; one positive case
-asserts an output the contract admits passes. Rows the cut makes equal are one case. No kernel
-runs.
-"""
+"""The MoE verifications reject outputs that break one part of the op's contract, on manifest
+swigluoai and expert-bias rows cut to CPU size, and admit one the contract allows."""
 
 import functools
 import json
@@ -249,11 +241,8 @@ def test_rejects_an_output_without_a_bias_the_call_passes(op, label, bias):
     ),
 )
 def test_rejects_an_output_off_the_swigluoai_definition(op, label, fault):
-    """Gate and up read stacked or swapped, a clamp left out, alpha 1, or no ``+ 1`` on up.
-
-    One case per clause for each op's distinct cut swigluoai row, 4 x 7: each op's verification
-    is its own code path and each clause a different wrong output, so more than 20.
-    """
+    """Gate and up read stacked or swapped, a clamp left out, alpha 1, or no ``+ 1`` on up,
+    on each op's cut swigluoai row."""
     _rejects(op, label, fault)
 
 

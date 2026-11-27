@@ -104,7 +104,7 @@ def _draft_verification(case) -> dict:
     return implementations
 
 
-@pytest.mark.parametrize("case", bench.cases(GDNFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GDNFwdOp))
 def test_gdn_fwd_bench(case) -> None:
     params = case.params
     inputs = case.inputs

@@ -1,24 +1,9 @@
 """SM90 grouped-query attention over a paged FP8 cache, for packings of few query rows a request.
 
-One CTA owns one KV head, a tile of one request's packed rows and one chunk of its key range, so
-a key tile is read once per request, KV head and chunk whatever the row count of a request whose
-rows fit the tile; the tile is sized from the rows a request averages, and a longer request's
-further row tiles read its keys again. Row ``r`` of a request is query position ``r // group`` of
-head ``kv_head * group + r % group``. A warp copies each FP8 key and value tile into shared memory
-with TMA, one copy a page.
-
-- A tile of 64 rows fills the M extent of a WGMMA, which holds the rows: ``S = Q K^T`` and
-  ``O += P V`` with the query and the probabilities in registers. A producer warpgroup's other
-  three warps widen each key tile into 16-bit shared memory, and each row's softmax stays in one
-  warp.
-- A narrower tile is the N extent of products that hold the keys on M: ``S^T = K Q^T`` with the
-  keys widened into registers, and ``O^T = V^T P^T`` with the probabilities staged in shared
-  memory. Their cost follows the rows the tile holds; one copying warp sits beside the consumer.
-
-In both, the consumer warpgroup widens each value tile into shared memory while its key product
-runs. Chunks of one row tile combine by their log-sum-exp in a second kernel. The launch bound
-asks for the CTAs a multiprocessor's shared memory and registers hold, and the chunk count is
-chosen against those waves.
+One CTA owns one KV head, a tile of one request's packed rows and one chunk of its key range.
+Row ``r`` of a request is query position ``r // group`` of head ``kv_head * group + r % group``.
+A 64-row tile holds the rows on the WGMMA M extent; a narrower tile holds the keys there.
+Chunks of one row tile combine by their log-sum-exp in a second kernel.
 """
 
 import functools
@@ -873,8 +858,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         waves times one CTA's key tiles plus the ring it fills before its first tile.
 
         A wave is the CTAs the multiprocessors hold at once; the key range is the table's, the
-        longest any request can read. A chunk moves the same bytes as the whole range; what it
-        buys is CTAs, and a partial last wave costs as much as a full one.
+        longest any request can read.
         """
         cfg = self.config
         slots = self.resident_ctas(cfg) * self._processors

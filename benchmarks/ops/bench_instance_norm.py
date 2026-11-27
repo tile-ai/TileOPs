@@ -19,15 +19,13 @@ from benchmarks.baselines import (
 from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(InstanceNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(InstanceNormFwdOp))
 def test_instance_norm_bench(case) -> None:
     inputs = case.inputs
     x = inputs[0]
     op = InstanceNormFwdOp(**case.arguments)
     op.request_tune()
-    use_input_stats, momentum, eps = (
-        case.params[k] for k in ("use_input_stats", "momentum", "eps")
-    )
+    use_input_stats, eps = case.params["use_input_stats"], case.params["eps"]
     baseline_fn = case.torch
     implementations = {}
     if use_input_stats and inputs[1] is None:

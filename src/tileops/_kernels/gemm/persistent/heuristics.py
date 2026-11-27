@@ -9,7 +9,11 @@ import enum
 import functools
 import math
 
-from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, SHARED_BUFFER_ALIGN_BYTES
+from tileops._kernels.constants import (
+    BLOCK_SHARED_BYTES_OPT_IN,
+    SHARED_BUFFER_ALIGN_BYTES,
+    WGMMA_ROWS,
+)
 
 __all__ = [
     "ACTIVATIONS",
@@ -44,29 +48,28 @@ ROW_STORE_VECTOR = 8
 
 @dataclasses.dataclass(frozen=True)
 class _HeuristicPolicy:
-    """The constants the selector reads, in three kinds a reader must tell apart.
-
-    Hardware facts describe an SM90 device. A fitted value is refitted by forcing every
-    legal config of a descriptor through ``spec_from_config`` and timing the candidate
-    set. The exclusion is neither: it patches a tile the cost function misprices.
-    """
+    """The constants the selector reads: SM90 hardware facts, fitted values, and an
+    exclusion that patches a tile the cost function misprices."""
 
     # Hardware, SM90.
     smem_capacity: int = BLOCK_SHARED_BYTES_OPT_IN[90]
-    wgmma_m: int = 64
     element_bytes: int = 2
     max_stages: int = 16
     smem_alignment_slack: int = 6 * 1024
     # A TMA store box of a 128-byte-swizzled staging buffer spans 128 bytes of a row.
     store_box_bytes: int = 128
+    # Bytes a cycle one SM reads from L2 and from its L1, and the L2's total: 8 TB/s at a
+    # 1.3 GHz clock.
+    l2_bytes_per_sm_cycle: float = 64.0
+    l1_bytes_per_sm_cycle: int = 128
+    l2_bytes_per_cycle: float = 8e6 / 1.3e3
 
     # The candidate set `layout_candidates` enumerates.
     block_k: int = 64
     block_n_step: int = 64
     block_n_max: int = 256
 
-    # Fitted: a shallow ring only costs where both hold -- few waves, and too
-    # few tiles to fill the SMs.
+    # Fitted: a shallow ring costs only with few waves and too few tiles to fill the SMs.
     shallow_wave_limit: int = 4
     shallow_tiles_per_sm: float = 2.5
     hiding_stages: int = 4
@@ -113,6 +116,8 @@ class _CalibratedBands:
     # Past the unfused band, the factor by which the ping-pong tile's slot share must beat
     # the 128-row tile's to pay for loading B once per 64 rows rather than 128.
     pingpong_slot_share_ratio: float = 1.125
+    # The activations the short-group and ping-pong bands were fitted on.
+    fitted_activations: tuple[str, ...] = ("none", "silu_and_mul", "swigluoai")
 
 
 class GEMMType(str, enum.Enum):
@@ -137,10 +142,8 @@ class GEMMType(str, enum.Enum):
     * ``BATCHED``: independent GEMMs on a leading batch dim of ``A``, ``B``, ``C``.
     * ``K_GROUPED_CONTIGUOUS``: the groups are
       packed along ``K``: ``A`` is ``[M, sum_k]``, ``B`` is ``[N, sum_k]``,
-      ``grouped_layout[g]`` is group ``g``'s ``K`` and ``C`` is ``[G, M, N]``. The
-      weight-gradient GEMM of an expert MLP: each group contracts over its own
-      tokens, its last K block is masked in shared memory where it runs into the
-      next group, and a group with no tokens stores zeros.
+      ``grouped_layout[g]`` is group ``g``'s ``K`` and ``C`` is ``[G, M, N]``. A group
+      with no rows of K stores zeros.
     """
 
     DENSE = "dense"
@@ -368,10 +371,8 @@ class GroupedGEMMSpec:
     def vector_row_store(self) -> bool:
         """Whether a ragged tile's row-masked store copies eight 16-bit outputs a step.
 
-        TileLang guards each element of a store into the dynamic-row output, so the masked
-        store otherwise issues one store per element. A ping-pong tile staged in chunks
-        stores each chunk before it stages the next through its one buffer, so its ragged
-        tiles pay that store once per chunk with no mainloop under it.
+        Otherwise TileLang guards and stores each element; a chunked ping-pong tile pays that
+        store once per chunk with no mainloop under it.
         """
         return (
             self.pingpong
@@ -382,11 +383,8 @@ class GroupedGEMMSpec:
 
     @property
     def native_wgmma(self) -> bool:
-        """Whether the template issues each K step through ``dense_wgmma_helper.h``.
-
-        The helper issues the widths it instantiates as one WGMMA per 16 of K, on a dense
-        tile's 64-row warp-group share of K-major operands staged 64 wide along K.
-        """
+        """Whether the template issues each K step through ``dense_wgmma_helper.h``: one
+        WGMMA per 16 of K on a dense tile's 64-row warp-group share of K-major operands."""
         return (
             self.major_a is Major.K
             and self.major_b is Major.K
@@ -440,13 +438,8 @@ class GEMMDesc:
 
     @property
     def policy(self) -> _HeuristicPolicy:
-        """The selector's constants. A class attribute, not per-descriptor state.
-
-        A field would join this frozen dataclass's equality, and so the key of
-        ``get_best_config``'s cache and of anything comparing two descriptors --
-        which silently makes descriptors from two builds of the selector
-        incomparable.
-        """
+        """The selector's constants; a class attribute so it stays out of the descriptor's
+        equality and ``get_best_config``'s cache key."""
         return self._POLICY
 
     @property
@@ -483,9 +476,7 @@ class _Layout:
 class _LayoutFeatures:
     """What one candidate tile does with one call, before any of it is priced.
 
-    Everything here follows from the descriptor and the tile; a cost model reads
-    these and adds the constants. The byte fields are whole-call totals over
-    ``num_blocks`` tiles, so a per-tile figure divides by that count.
+    The byte fields are whole-call totals over ``num_blocks`` tiles.
     """
 
     num_blocks: int
@@ -523,8 +514,7 @@ def _num_stages(
     smem_bias = 2 * layout.block_n * policy.element_bytes if desc.has_bias else 0
     per_stage = (layout.block_m + layout.block_n) * layout.block_k * policy.element_bytes
     if epilogue_buffers == 2:
-        # Only the group prefix's padding to the buffers' 1 KB alignment is held back:
-        # the 128x256 four-stage tile allocates 230400 of 232448 bytes this way.
+        # Only the group prefix's padding to the buffers' 1 KB alignment is held back.
         slack = SHARED_BUFFER_ALIGN_BYTES
     elif epilogue_stage_n and desc.gemm_type in (GEMMType.DENSE, GEMMType.BATCHED):
         slack = 0
@@ -541,11 +531,7 @@ def _deep_enough(desc: GEMMDesc, layout: _Layout) -> bool:
 
 
 def layout_candidates(desc: GEMMDesc) -> list[_Layout]:
-    """Every tile layout the template accepts for ``desc``.
-
-    Mirrors ``SM90ArchSpec::get_layout_candidates``, minus the 16/32-row tiles
-    and the 2-CTA clusters.
-    """
+    """Every tile layout the template accepts for ``desc`` whose ring is deep enough."""
     if desc.gemm_type in _FLAT_LIKE_TYPES:
         block_m_candidates = [64, 128]
         if desc.cd_dtype != "float32":
@@ -627,7 +613,7 @@ def _spec(
 def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
     """Return the selected kernel spec for ``desc``."""
 
-    def _num_m_blocks(desc: GEMMDesc, block_m: int) -> int:
+    def _num_m_blocks(block_m: int) -> int:
         """M tiles the schedule will run, counting each group's round-up separately.
 
         A per-group layout rounds every group independently because tiles cannot
@@ -641,9 +627,9 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             return desc.num_groups * math.ceil(rows_per_group / block_m)
         return math.ceil((desc.expected_m if desc.expected_m > 0 else desc.m) / block_m)
 
-    def _layout_features(desc: GEMMDesc, layout: _Layout) -> _LayoutFeatures:
+    def _layout_features(layout: _Layout) -> _LayoutFeatures:
         """What ``layout`` makes this call do. Counted, not priced: nothing here is fitted."""
-        num_m_blocks = _num_m_blocks(desc, layout.block_m)
+        num_m_blocks = _num_m_blocks(layout.block_m)
         num_n_blocks = math.ceil(desc.n / layout.block_n)
         num_blocks = (
             num_m_blocks
@@ -662,7 +648,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         c_width = layout.block_n // 2 if desc.fused else layout.block_n
         # The operands cross L2 and L1 once each.
         bytes_ab = effective_k * (layout.block_m + layout.block_n) * elem_ab
-        bytes_l1_tc = effective_k * (max(desc.policy.wgmma_m, layout.block_m) + layout.block_n)
+        bytes_l1_tc = effective_k * (max(WGMMA_ROWS, layout.block_m) + layout.block_n)
         bytes_l1_tc *= elem_ab
         bytes_l1_tc += layout.block_m * c_width * elem_cd
         bytes_cd = layout.block_m * c_width * elem_cd
@@ -677,23 +663,22 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             num_stages=_num_stages(desc, layout),
         )
 
-    def _tile_cycles(desc: GEMMDesc, features: _LayoutFeatures) -> int:
+    def _tile_cycles(features: _LayoutFeatures) -> int:
         """Estimated cycles: the bandwidth a wave moves, over how full that wave is."""
         if features.num_blocks == 0:  # a call with no rows or no columns runs nothing
             return 0
 
-        l2_bandwidth_per_cycle = int(min(64.0 * desc.num_sms, 8e6 / 1.3e3))
-        l1_bandwidth_per_cycle = 128 * desc.num_sms
+        policy = desc.policy
+        l2_bandwidth_per_cycle = int(
+            min(policy.l2_bytes_per_sm_cycle * desc.num_sms, policy.l2_bytes_per_cycle)
+        )
+        l1_bandwidth_per_cycle = policy.l1_bytes_per_sm_cycle * desc.num_sms
         l2_cycles = features.l2_bytes // l2_bandwidth_per_cycle
         l1_cycles = features.l1_bytes // l1_bandwidth_per_cycle
         cycles = max(l1_cycles, l2_cycles) / features.wave_efficiency
 
-        # Over many waves a tile's TMA latency hides under the next tile, and the
-        # bandwidth terms above decide. Over few waves *on a device the tiles do not
-        # fill* there is no next tile: an SM runs one or two, and what it can overlap
-        # is its own pipeline, so a shallow ring stalls however little it moves. The
-        # model prices no pipeline, so it would rank the widest tile, whose output buffer
-        # leaves room for only three stages, cheapest.
+        # With few waves on an unfilled device no next tile hides a tile's TMA latency, so
+        # charge a ring shallower than ``hiding_stages``.
         if (
             desc.gemm_type in _CALIBRATED_PSUM_TYPES
             and features.num_waves < desc.policy.shallow_wave_limit
@@ -703,11 +688,11 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             cycles *= 1.0 + deficit / desc.policy.hiding_stages
         return int(cycles)
 
-    def _best_layout(desc: GEMMDesc, candidates: list[_Layout]) -> _Layout:
+    def _best_layout(candidates: list[_Layout]) -> _Layout:
         """The tile the cycle model prefers."""
-        return min(candidates, key=lambda lay: _tile_cycles(desc, _layout_features(desc, lay)))
+        return min(candidates, key=lambda lay: _tile_cycles(_layout_features(lay)))
 
-    def _short_group_layout(desc: GEMMDesc) -> _Layout | None:
+    def _short_group_layout() -> _Layout | None:
         """The tile pinned for short tight groups, or ``None`` outside that band."""
         bands = desc.bands
         rows_per_group = math.ceil(desc.m / desc.num_groups)
@@ -715,40 +700,34 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             bands is not None
             and desc.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
             and desc.ab_dtype == desc.cd_dtype
-            and desc.activation in ("none", "silu_and_mul", "swigluoai")
+            and desc.activation in bands.fitted_activations
             and rows_per_group <= bands.short_group_tile[0]
             and desc.k >= bands.short_group_min_k
             and (desc.activation != "none" or desc.n <= bands.short_group_unfused_max_n)
         ):
             tile = _Layout(*bands.short_group_tile)
             if desc.activation == "none":
-                return _fuller_short_group_layout(desc, tile)
+                return _fuller_short_group_layout(tile)
             return tile
         return None
 
-    def _slot_share(desc: GEMMDesc, layout: _Layout) -> float:
+    def _slot_share(layout: _Layout) -> float:
         """The share of an unfused tight tile grid's slots that hold output: rows over the
         rows its row tiles cover, columns over the columns its column tiles cover, times the
         filled share of its waves."""
-        rows = desc.m / (_num_m_blocks(desc, layout.block_m) * layout.block_m)
+        rows = desc.m / (_num_m_blocks(layout.block_m) * layout.block_m)
         cols = desc.n / (math.ceil(desc.n / layout.block_n) * layout.block_n)
-        return rows * cols * _layout_features(desc, layout).wave_efficiency
+        return rows * cols * _layout_features(layout).wave_efficiency
 
-    def _pingpong_group_layout(desc: GEMMDesc, chosen: _Layout | None) -> _Layout | None:
+    def _pingpong_group_layout(chosen: _Layout | None) -> _Layout | None:
         """The ping-pong tile: the band's where a band decides, else ``chosen`` if 64 rows high.
 
-        The band's tile is taken for tight groups near one 128-row tile, and for unfused groups
-        past that band where its tile slots hold more rows. ``chosen`` is the selector's own
-        tile, ``None`` where the selector stages its epilogue through two buffers, which
-        ping-pong's one shared buffer does not hold, or where it halved the short-group tile.
-
-        A 64-row tile reduces padding in routed groups; two math warp-groups overlap
-        their epilogues. Unfused groups averaging exactly 128 rows are excluded because
-        evenly sized groups fill 128-row tiles without the extra B loads. Past the band,
-        a 64-row tile takes ``pingpong_narrow_n`` columns where that width's slot
-        share is the larger, and is taken where its slot share beats the 128-row tile's by
-        ``pingpong_slot_share_ratio``. Explicit ``expected_m`` keeps the cost model's
-        selection.
+        The band's tile is taken for tight groups whose mean rows fall in the band, and for
+        unfused groups past it where its slot share beats the 128-row tile's by
+        ``pingpong_slot_share_ratio`` (at ``pingpong_narrow_n`` columns where that width's
+        share is larger). ``chosen`` is the selector's own tile, or ``None`` where it staged
+        its epilogue or halved the short-group tile. An explicit ``expected_m`` keeps the
+        cost model's selection.
         """
         bands = desc.bands
         if bands is None:
@@ -763,7 +742,7 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             desc.gemm_type is not GEMMType.M_GROUPED_TIGHT_PSUM
             or desc.major_b is not Major.K
             or desc.ab_dtype != desc.cd_dtype
-            or desc.activation not in ("none", "silu_and_mul", "swigluoai")
+            or desc.activation not in bands.fitted_activations
             or desc.expected_m != 0
         ):
             return None
@@ -775,22 +754,18 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         if past_band:
             tall = _Layout(2 * tile.block_m, tile.block_n, tile.block_k)
             narrow = dataclasses.replace(tile, block_n=bands.pingpong_narrow_n)
-            if _deep_enough(desc, narrow) and _slot_share(desc, narrow) > _slot_share(desc, tile):
+            if _deep_enough(desc, narrow) and _slot_share(narrow) > _slot_share(tile):
                 tile = narrow
-            if _slot_share(desc, tile) <= bands.pingpong_slot_share_ratio * _slot_share(desc, tall):
+            if _slot_share(tile) <= bands.pingpong_slot_share_ratio * _slot_share(tall):
                 return None
         return tile
 
-    def _fuller_short_group_layout(desc: GEMMDesc, tile: _Layout) -> _Layout:
-        """``tile``, or its half-width where that fills the waves better.
+    def _fuller_short_group_layout(tile: _Layout) -> _Layout:
+        """``tile``, or its half-width where that fills the waves strictly better.
 
-        A short group is one row tile, and a group with no rows runs none, so the
-        busy tiles are the groups with rows times the column tiles; the groups with
-        rows are estimated as ``min(num_groups, m)``, rows spread one a group before
-        any group takes two. Where the wide tiles run under two waves, the
-        half-width tile is taken if its ring is deep enough and its tiles fill their
-        waves strictly better; doubling a grid that fills no better only adds
-        per-tile cost, and over more waves a partial last one is a small share.
+        Busy tiles are estimated as ``min(num_groups, m)`` groups times the column tiles.
+        The half-width tile is considered only under two waves of wide tiles and with a
+        ring deep enough.
         """
 
         def _busy_tiles(block_n: int) -> int:
@@ -810,55 +785,48 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             return narrow
         return tile
 
-    def _filled_layout(desc: GEMMDesc, layout: _Layout) -> _Layout:
+    def _filled_layout(layout: _Layout) -> _Layout:
         """``layout``, or the half-width tile where ``layout``'s grid leaves SMs idle.
 
-        The cycle model prices bytes and reads the wide tile as cheaper even where its
-        grid does not fill one wave; the narrow one doubles the grid. Tight, unfused
-        groups only: a fused tile's width is its activation's pair.
+        Tight, unfused groups only: a fused tile's width is its activation's pair.
         """
         if desc.gemm_type is not GEMMType.M_GROUPED_TIGHT_PSUM or desc.fused:
             return layout
-        if _layout_features(desc, layout).num_blocks >= desc.num_sms:
+        if _layout_features(layout).num_blocks >= desc.num_sms:
             return layout
         narrow = _Layout(layout.block_m, layout.block_n // 2, layout.block_k)
         return narrow if narrow in layout_candidates(desc) else layout
 
-    def _staged_epilogue(desc: GEMMDesc, layout: _Layout) -> GroupedGEMMSpec | None:
+    def _staged_epilogue(layout: _Layout) -> GroupedGEMMSpec | None:
         """A spec that trades a narrower output staging buffer for a deeper mainloop.
 
-        Returns ``None`` where the trade buys no stage, or where the mainloop is deep
-        enough in waves not to need one, and so only costs the extra staging rounds.
-        The widest chunk that reaches the policy's depth wins. Where the type
-        alternates two staging buffers, both count against the ring.
+        Returns ``None`` where the trade buys no stage or the bands rule it out. The widest
+        chunk that reaches ``staged_epilogue_stages`` wins; two staging buffers both count
+        against the ring.
         """
         bands = desc.bands
         if desc.activation != "none" or bands is None:
             return None
         buffers = 2 if desc.gemm_type in _BUFFERED_EPILOGUE_TYPES else 1
-        # Tight rows may leave a ragged final tile that needs a masked store.
         tight_types = (GEMMType.M_GROUPED_TIGHT_PER_ROW, GEMMType.M_GROUPED_TIGHT_PSUM)
+        num_waves = _layout_features(layout).num_waves
         if desc.gemm_type in tight_types and (
             buffers == 1
             or desc.m < desc.num_groups * layout.block_m
-            or _layout_features(desc, layout).num_waves >= bands.buffered_epilogue_wave_limit
+            or num_waves >= bands.buffered_epilogue_wave_limit
         ):
-            # A tight group's last tile is ragged, and those rows are stored under a
-            # row mask rather than in one wide store. Chunking makes them pay a
-            # staging round each, for a store that was never going to widen; how many
-            # tiles are ragged is a property of the routing, not of the shape. With
-            # two buffers a full tile's chunks no longer wait on each other's stores;
-            # the selector knows the routing only by its mean rows a group, and takes
-            # two buffers from a mean of block_m rows.
+            # A tight group's ragged last tile pays a staging round per chunk under its
+            # row-masked store; only two buffers at a mean of block_m rows a group or more,
+            # under the wave limit, make chunking pay.
             return None
-        if _num_stages(desc, layout) >= bands.staged_epilogue_depth_cap:
+        base = _num_stages(desc, layout)
+        if base >= bands.staged_epilogue_depth_cap:
             return None
         if (
             desc.gemm_type is GEMMType.M_GROUPED_ALIGNED_PSUM
-            and _layout_features(desc, layout).num_waves >= bands.staged_epilogue_wave_limit
+            and num_waves >= bands.staged_epilogue_wave_limit
         ):
             return None
-        base = _num_stages(desc, layout)
         for stage_n in (layout.block_n // 2, layout.block_n // 4):
             stages = _num_stages(desc, layout, stage_n, buffers)
             if stages > base and stages >= bands.staged_epilogue_stages:
@@ -867,13 +835,13 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
                 )
         return None
 
-    short = _short_group_layout(desc)
-    best = short or _filled_layout(desc, _best_layout(desc, layout_candidates(desc)))
-    staged = _staged_epilogue(desc, best)
-    # A short-group tile halved to fill the waves keeps one warp-group: its epilogue is too
-    # short to hide anything on a DRAM-bound call.
+    short = _short_group_layout()
+    best = short or _filled_layout(_best_layout(layout_candidates(desc)))
+    staged = _staged_epilogue(best)
+    # A short-group tile halved to fill the waves keeps one warp-group: its short epilogue
+    # is not worth hiding on a DRAM-bound call.
     halved = short is not None and short != _Layout(*desc.bands.short_group_tile)
-    pingpong_tile = _pingpong_group_layout(desc, None if staged or halved else best)
+    pingpong_tile = _pingpong_group_layout(None if staged or halved else best)
     if pingpong_tile is not None:
         # An unfused tile stages its output one TMA store box at a time where that, rather
         # than the whole tile, frees shared memory for another ring stage.
@@ -896,11 +864,10 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
 def spec_from_config(desc: GEMMDesc, config: dict) -> GroupedGEMMSpec:
     """A spec from an explicit ``config`` instead of the selector.
 
-    ``config`` names ``block_m``, ``block_n`` and optionally ``block_k``,
-    ``num_stages`` and ``a_box_rows``. A missing ``num_stages`` takes the shared-memory budget's
-    maximum for that tile, so a tuning sweep can pin the tile and leave the
-    pipeline depth alone; a pinned one past the budget is refused rather than
-    launched.
+    ``config`` names ``block_m``, ``block_n`` and optionally ``block_k``, ``num_stages``,
+    ``epilogue_stage_n``, ``epilogue_buffers``, ``swizzle_group_m``, ``a_box_rows``,
+    ``num_math_wgs`` and ``pingpong``. A missing ``num_stages`` takes the shared-memory
+    budget's maximum for that tile; one past the budget is refused.
     """
     unknown = set(config) - {
         "block_m",

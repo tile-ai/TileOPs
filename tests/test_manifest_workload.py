@@ -1,6 +1,7 @@
 """Workload rows (docs/design/manifest.md § Workloads)."""
 
 import copy
+import random
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
 from tileops.manifest._workload import (
+    Call,
     RowError,
     TensorSpec,
     bench_calls,
@@ -150,8 +152,6 @@ def test_arguments_are_constructor_values():
 
 
 def test_materialize_draws_every_dtype_category():
-    from tileops.manifest._workload import Call, TensorSpec
-
     specs = {d: TensorSpec((4,), d) for d in ("bool", "int8", "float16", "complex64")}
     tensors = Call("c", {}, specs).materialize(device="cpu")
     assert {n: str(t.dtype) for n, t in tensors.items()} == {d: f"torch.{d}" for d in specs}
@@ -201,8 +201,6 @@ def test_stacked_positions_repeat_the_packed_positions_over_the_leading_shape():
 
 
 def test_distinct_ids_fill_their_shape_with_distinct_values_in_range():
-    import random
-
     ids = GENERATORS["distinct_ids"](random.Random(0), (3, 4), 12)
     flat = [v for row in ids for v in row]
     assert len(ids) == 3 and all(len(row) == 4 for row in ids)
@@ -214,8 +212,6 @@ def test_distinct_ids_fill_their_shape_with_distinct_values_in_range():
 
 
 def test_causal_topk_indices_draw_distinct_visible_keys_and_pad():
-    import random
-
     rows = GENERATORS["causal_topk_indices"](random.Random(0), 1, 4, 1, 3, 5, 2, 1)
     for t, (keys,) in enumerate(rows[0]):
         visible = min(max(1, t + 2), 5)
@@ -404,62 +400,21 @@ def _varlen_spliced_requires():
     return entry
 
 
+def _gemm_row(label, **changes):
+    """A GEMM row of all-1 extents; a None in *changes* drops that key."""
+    row = {"M": 1, "N": 1, "K": 1, "trans_a": False, "trans_b": False}
+    row |= {"dtype_cases": [{"T": "float16"}], "label": label, **changes}
+    return {k: v for k, v in row.items() if v is not None}
+
+
 _ENTRY_ERRORS = [
+    ("GEMMFwdOp", _entry("GEMMFwdOp", workloads=[_gemm_row("a b")]), "`label`"),
     (
         "GEMMFwdOp",
-        _entry(
-            "GEMMFwdOp",
-            workloads=[
-                {
-                    "M": 1,
-                    "N": 1,
-                    "K": 1,
-                    "trans_a": False,
-                    "trans_b": False,
-                    "dtype_cases": [{"T": "float16"}],
-                    "label": "a b",
-                }
-            ],
-        ),
-        "`label`",
-    ),
-    (
-        "GEMMFwdOp",
-        _entry(
-            "GEMMFwdOp",
-            workloads=[
-                {
-                    "M": 1,
-                    "N": 1,
-                    "K": 1,
-                    "trans_a": False,
-                    "trans_b": False,
-                    "dtype_cases": [{"T": "float16"}],
-                    "label": "llama-8b-prefill-paged-b8-prefix4k-chunk512",
-                }
-            ],
-        ),
+        _entry("GEMMFwdOp", workloads=[_gemm_row("llama-8b-prefill-paged-b8-prefix4k-chunk512")]),
         "longer than 24 characters",
     ),
-    (
-        "GEMMFwdOp",
-        _entry(
-            "GEMMFwdOp",
-            workloads=[
-                {
-                    "M": 1,
-                    "N": 1,
-                    "K": 1,
-                    "trans_a": False,
-                    "trans_b": False,
-                    "dtype_cases": [{"T": "float16"}],
-                    "label": "x",
-                }
-            ]
-            * 2,
-        ),
-        "repeats",
-    ),
+    ("GEMMFwdOp", _entry("GEMMFwdOp", workloads=[_gemm_row("x")] * 2), "repeats"),
     (
         "ClampFwdOp",
         _entry(
@@ -504,23 +459,7 @@ _ENTRY_ERRORS = [
         ),
         "min is in `some`, which passes its tensor, and has a value",
     ),
-    (
-        "GEMMFwdOp",
-        _entry(
-            "GEMMFwdOp",
-            workloads=[
-                {
-                    "N": 8,
-                    "K": 8,
-                    "trans_a": False,
-                    "trans_b": True,
-                    "label": "x",
-                    "dtype_cases": [{"T": "float16"}],
-                }
-            ],
-        ),
-        "row misses ['M']",
-    ),
+    ("GEMMFwdOp", _entry("GEMMFwdOp", workloads=[_gemm_row("x", M=None)]), "row misses ['M']"),
     ("Pair", _two_dtypes([{"U": "bfloat16", "T": "float16"}]), "is not a row of dtype_combos"),
     ("GQAPrefillVarlenFwdOp", _requires_without_values(), "has `requires` but no `values`"),
     ("Varlen", _varlen(L=[2**31 - 1, 1]), "outside int32"),

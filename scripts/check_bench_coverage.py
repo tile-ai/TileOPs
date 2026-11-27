@@ -35,7 +35,7 @@ for _path in (REPO_ROOT, REPO_ROOT / "src", REPO_ROOT / "scripts"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from nightly_report import case_id  # noqa: E402
+from nightly_report import case_id, testcase_properties  # noqa: E402
 
 from benchmarks.outcomes import UNAVAILABLE_PROPERTY  # noqa: E402
 from tileops.manifest import load_adts, load_manifest  # noqa: E402
@@ -55,14 +55,6 @@ OK = "OK"
 _ORDER = {FAIL: 0, NOT_RUN: 1, UNAVAILABLE: 2, OK: 3}
 
 
-def _properties(testcase: ET.Element) -> dict[str, str]:
-    return {
-        p.attrib["name"]: p.attrib.get("value", "")
-        for props in testcase.iter("properties")
-        for p in props.iter("property")
-    }
-
-
 def parse_run(
     xml_path: Path,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
@@ -72,29 +64,28 @@ def parse_run(
     unavailable: dict[str, list[str]] = {}
     errors: list[str] = []
     for testcase in ET.parse(xml_path).iter("testcase"):
-        props = _properties(testcase)
-        failed = any(testcase.find(tag) is not None for tag in ("failure", "error"))
-        if not failed and testcase.find("skipped") is not None and UNAVAILABLE_PROPERTY in props:
-            case = case_id(testcase.attrib.get("name", ""))
-            for name in (n for n in (props.get("ops") or props.get("op") or "").split(",") if n):
-                unavailable.setdefault(name, []).append(case)
-            continue
+        props = testcase_properties(testcase)
+        name = testcase.get("name", "<unnamed>")
         unsuccessful = [
             tag for tag in ("skipped", "failure", "error") if testcase.find(tag) is not None
         ]
-        if unsuccessful:
-            errors.append(f"{testcase.get('name', '<unnamed>')}: {', '.join(unsuccessful)}")
+        if unsuccessful == ["skipped"] and UNAVAILABLE_PROPERTY in props:
+            into = unavailable
+        elif unsuccessful:
+            errors.append(f"{name}: {', '.join(unsuccessful)}")
             continue
+        # Partial verification records a reason but still checks outputs and permits ratios.
+        elif props.get("tileops_unverified") and props.get("tileops_no_ratio") == "True":
+            errors.append(f"{name}: {props['tileops_unverified']}")
+            continue
+        else:
+            into = recorded
         # Op names reach the report only from recorded tileops rows: a case timing a baseline
         # alone records none. ``ops`` lists every op the case benchmarked; ``op`` is the first.
-        # Partial verification records a reason but still checks outputs and permits ratios.
-        if props.get("tileops_unverified") and props.get("tileops_no_ratio") == "True":
-            errors.append(f"{testcase.get('name', '<unnamed>')}: {props['tileops_unverified']}")
-            continue
-        ops = props.get("ops") or props.get("op") or ""
-        case = case_id(testcase.attrib.get("name", ""))
-        for name in (n for n in ops.split(",") if n):
-            recorded.setdefault(name, []).append(case)
+        case = case_id(testcase.get("name", ""))
+        for op in (props.get("ops") or props.get("op") or "").split(","):
+            if op:
+                into.setdefault(op, []).append(case)
     return recorded, unavailable, errors
 
 
@@ -124,10 +115,9 @@ def verdicts(
         missing = sorted(declared - set(cases))
         if repeated:
             rows.append((op_name, FAIL, f"case ids recorded twice: {repeated}"))
-        elif missing or not declared:
-            if not declared:
-                rows.append((op_name, NOT_RUN, "no declared benchmark cases"))
-                continue
+        elif not declared:
+            rows.append((op_name, NOT_RUN, "no declared benchmark cases"))
+        elif missing:
             detail = f"{len(missing)} of {len(declared)} cases recorded nothing: {missing[0]!r}"
             rows.append((op_name, NOT_RUN, detail))
         elif not recorded.get(op_name):

@@ -126,7 +126,7 @@ def _compiled(op, inputs):
     return private_inputs(compiled_reference(run), inputs, 0)
 
 
-@pytest.mark.parametrize("case", bench.cases(FusedQKNormRoPEFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FusedQKNormRoPEFwdOp))
 def test_fused_qk_norm_rope_bench(case) -> None:
     op = FusedQKNormRoPEFwdOp(**case.arguments)
     bench.Runner(op, case).compare(

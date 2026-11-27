@@ -40,9 +40,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
     o_dtype,
     seqlen_dtype,
     use_initial_state,
-    store_final_state,
-    store_o,
-    is_varlen,
     is_cp,
     l2norm=False,
     beta_sigmoid=False,
@@ -67,24 +64,14 @@ def _build_fused_chunk_gdr_fwd_kernel(
     # it keeps in registers beside the warp group's own fragments.
     l2norm_reduce_width = 32
 
-    if is_varlen:
-        rnorm_shape = (1, rnorm_tokens, Hg)
-        q_shape = (1, num_tokens, Hg, DK)
-        k_shape = (1, num_tokens, Hg, DK)
-        v_shape = (1, num_tokens, H, DV)
-        o_shape = (1, num_tokens, H, DV)
-        a_shape = (1, num_tokens, H, chunk_size)
-        g_shape = (1, num_tokens, H)
-        b_shape = (1, num_tokens, H)
-    else:
-        rnorm_shape = (batch_size, rnorm_tokens, Hg)
-        q_shape = (batch_size, num_tokens, Hg, DK)
-        k_shape = (batch_size, num_tokens, Hg, DK)
-        v_shape = (batch_size, num_tokens, H, DV)
-        o_shape = (batch_size, num_tokens, H, DV)
-        a_shape = (batch_size, num_tokens, H, chunk_size)
-        g_shape = (batch_size, num_tokens, H)
-        b_shape = (batch_size, num_tokens, H)
+    rnorm_shape = (1, rnorm_tokens, Hg)
+    q_shape = (1, num_tokens, Hg, DK)
+    k_shape = (1, num_tokens, Hg, DK)
+    v_shape = (1, num_tokens, H, DV)
+    o_shape = (1, num_tokens, H, DV)
+    a_shape = (1, num_tokens, H, chunk_size)
+    g_shape = (1, num_tokens, H)
+    b_shape = (1, num_tokens, H)
     # Under a value-major state the accumulator holds S^T, so every contraction reading or
     # writing it swaps operand order and the value tile becomes its leading extent.
     state_rows, state_cols = (block_DV, DK) if state_v_first else (DK, block_DV)
@@ -109,16 +96,16 @@ def _build_fused_chunk_gdr_fwd_kernel(
             seq_end_idx = T.alloc_var("int32")
             seq_split_idx = T.alloc_var("int32")
 
-            batch_idx = 0 if is_varlen else bb
-            seq_start_idx = cu_seqlens[bb] if is_varlen else 0
-            seq_end_idx = cu_seqlens[bb + 1] if is_varlen else num_tokens
+            batch_idx = 0
+            seq_start_idx = cu_seqlens[bb]
+            seq_end_idx = cu_seqlens[bb + 1]
 
             raw_batch_idx = T.alloc_var("int32")
             raw_seq_end_idx = T.alloc_var("int32")
             need_store_final_state = T.alloc_var("bool")
             raw_batch_idx = cp_seq_map[bb] if is_cp else bb
             raw_seq_end_idx = raw_cu_seqlens[raw_batch_idx + 1] if is_cp else seq_end_idx
-            need_store_final_state = store_final_state & (raw_seq_end_idx == seq_end_idx)
+            need_store_final_state = raw_seq_end_idx == seq_end_idx
 
             num_iters = T.alloc_var("int32")
             num_unmasked_iters = T.alloc_var("int32")
@@ -163,7 +150,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
             bar_o = T.alloc_barrier(arrive_count=128)
             bar_0 = T.alloc_barrier(arrive_count=416)
             bar_1 = T.alloc_barrier(arrive_count=256)
-            _bar_2 = T.alloc_barrier(arrive_count=128)
             bar_3 = T.alloc_barrier(arrive_count=128)
             bar_4 = T.alloc_barrier(arrive_count=128)
             bar_5 = T.alloc_barrier(arrive_count=416)
@@ -418,11 +404,11 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     T.barrier_arrive(bar_3)
                     # O = s * g * O
                     if l2norm:
-                        for j_s, j_k in T.Parallel(block_S, DK):
-                            o_fragment[j_s, j_k] *= scale * g_exp_shared[j_s] * q_rnorm_shared[j_s]
+                        for j_s, j_v in T.Parallel(block_S, block_DV):
+                            o_fragment[j_s, j_v] *= scale * g_exp_shared[j_s] * q_rnorm_shared[j_s]
                     else:
-                        for j_s, j_k in T.Parallel(block_S, DK):
-                            o_fragment[j_s, j_k] *= scale * g_exp_shared[j_s]
+                        for j_s, j_v in T.Parallel(block_S, block_DV):
+                            o_fragment[j_s, j_v] *= scale * g_exp_shared[j_s]
 
                     T.barrier_wait(bar_4, i_s % 2)
                     # O += Pg @ Vd
@@ -528,7 +514,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_0)
 
                         T.barrier_wait(bar_0, i_s % 2)
-                        if i_s > 0 and store_o:
+                        if i_s > 0:
                             T.copy(
                                 o_shared,
                                 o[
@@ -548,7 +534,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         T.barrier_arrive(bar_0)
 
                         T.barrier_wait(bar_0, num_unmasked_iters % 2)
-                        if num_unmasked_iters > 0 and store_o:
+                        if num_unmasked_iters > 0:
                             T.copy(
                                 o_shared,
                                 o[
@@ -565,7 +551,7 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     seq_split_idx = seq_start_idx + (num_iters - 1) * block_S
 
                     T.barrier_wait(bar_o, 0)
-                    if store_o and num_iters > 0:
+                    if num_iters > 0:
                         for j_s, j_v in T.Parallel(block_S, block_DV):
                             with T.If(seq_split_idx + j_s < seq_end_idx):  # noqa: SIM117
                                 with T.Then():
@@ -681,9 +667,6 @@ def fused_gdr_fwd_program(
     seqlen_dtype,
     *,
     h0_dtype=None,
-    store_final_state=True,
-    store_o=True,
-    is_varlen,
     is_cp,
     state_v_first=False,
     l2norm=False,
@@ -699,8 +682,7 @@ def fused_gdr_fwd_program(
     """The program :func:`fused_gdr_fwd` launches, over 64-token chunks.
 
     The value tile is :func:`forward_value_tile` of ``rows * heads``. *h0_dtype* is the
-    initial state's dtype, ``None`` without one; *seqlen_dtype* is the offsets' dtype, int32
-    for an equal-length call that passes none. Under *pooled* each sequence's final state is
+    initial state's dtype, ``None`` without one; *seqlen_dtype* is the offsets' dtype. Under *pooled* each sequence's final state is
     written to its slot of a state pool, and a whole walk also starts from that slot.
     *q_stride*, *k_stride*, *v_stride* and *b_stride* are the elements between two tokens of
     ``q``, ``k``, ``v`` and ``b``, each ``None`` where that tensor is packed.
@@ -723,9 +705,6 @@ def fused_gdr_fwd_program(
         seqlen_dtype=seqlen_dtype,
         accum_dtype="float32",
         use_initial_state=h0_dtype is not None,
-        store_final_state=store_final_state,
-        store_o=store_o,
-        is_varlen=is_varlen,
         is_cp=is_cp,
         l2norm=l2norm,
         beta_sigmoid=beta_sigmoid,
@@ -748,10 +727,8 @@ def fused_gdr_fwd(
     a: torch.Tensor,
     g: torch.Tensor,
     b: torch.Tensor,
-    initial_state: torch.Tensor | None = None,
-    output_final_state: bool = True,
-    output_o: bool = True,
-    cu_seqlens: torch.LongTensor | None = None,
+    initial_state: torch.Tensor | None,
+    cu_seqlens: torch.LongTensor,
     cp_seq_map: torch.LongTensor | None = None,
     raw_cu_seqlens: torch.LongTensor | None = None,
     state_v_first: bool = False,
@@ -769,13 +746,8 @@ def fused_gdr_fwd(
     _, _, H, V = v.shape
     assert K == V and K in (64, 128)
 
-    if cu_seqlens is None:
-        real_batch_size = batch_size
-        cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
-        seqlen_dtype = torch.int32
-    else:
-        real_batch_size = len(cu_seqlens) - 1
-        seqlen_dtype = cu_seqlens.dtype
+    real_batch_size = len(cu_seqlens) - 1
+    seqlen_dtype = cu_seqlens.dtype
 
     partitioned = cp_seq_map is not None
     if cp_seq_map is None:
@@ -817,10 +789,4 @@ def fused_gdr_fwd(
         o,
         *written,
     )
-
-    if not output_final_state:
-        final_state = None
-    if not output_o:
-        o = None
-
     return o, final_state

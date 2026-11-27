@@ -12,7 +12,6 @@ from tileops._kernels.quantization import (
     SmoothQuantFwdKernel,
 )
 from tileops._ops.op_base import Op
-from tileops.backend import Target
 
 __all__ = ["SmoothQuantFwdOp"]
 
@@ -37,19 +36,6 @@ class SmoothQuantFwdOp(Op):
         "smooth_quant_fwd": SmoothQuantFwdInterface
     }
 
-    def __init__(
-        self,
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtypes are taken from each call.
-
-        Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
-        """
-        super().__init__(target=target)
-
     def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Smooth ``x`` by channel, then quantize each row against its absolute maximum.
 
@@ -64,11 +50,6 @@ class SmoothQuantFwdOp(Op):
         smooth = smooth.contiguous()
         kernel = self.kernel_for(
             "smooth_quant_fwd",
-            lambda: QuantizeCall(
-                device=x.device,
-                rows=x.shape[0],
-                cols=x.shape[1],
-                dtype=x.dtype,
-            ),
+            lambda: QuantizeCall(device=x.device, rows=x.shape[0], cols=x.shape[1], dtype=x.dtype),
         )
         return kernel(x, smooth)

@@ -78,10 +78,9 @@ class NegFwdOp(UnaryOp):
 class ReciprocalFwdOp(UnaryOp):
     """Element-wise 1/x.
 
-    Mirrors ``torch.reciprocal`` int-input promotion: an integral input gives a
-    float32 output, and ``ReciprocalFwdKernel.specialize`` names float32 as the
-    compute type for it. Floating inputs keep their dtype. A float16 or bfloat16 result
-    equals ``torch.reciprocal``'s bit for bit at every input.
+    An integral input gives a float32 output, as ``torch.reciprocal`` promotes it; a
+    floating input keeps its dtype. A float16 or bfloat16 result equals
+    ``torch.reciprocal``'s bit for bit at every input.
     """
 
     kernel_types = {"reciprocal": ReciprocalFwdKernel}
@@ -121,13 +120,7 @@ class CeilFwdOp(UnaryOp):
 
 
 class RoundFwdOp(UnaryOp):
-    """Element-wise round(x) to ``decimals`` decimal places.
-
-    The shipped kernel performs banker's round-to-nearest-integer, matching
-    ``torch.round`` for ``decimals=0``. ``decimals`` is a manifest param, so it is
-    fixed for the instance and handed to whichever kernel serves the op.
-
-    """
+    """Element-wise round(x) half to even, to ``decimals`` decimal places, as ``torch.round``."""
 
     kernel_types = {
         "round": RoundFwdKernel,

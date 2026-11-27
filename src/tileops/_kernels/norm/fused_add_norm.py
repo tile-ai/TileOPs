@@ -1,25 +1,15 @@
-"""Fused Add + Norm forward kernels using TileLang, and the register-held LayerNorm kernels.
+"""Fused Add + Norm forward kernels, and the register-held LayerNorm kernels.
 
 FusedAddLayerNorm: y = LayerNorm(x + residual), also outputs (x + residual)
 FusedAddRMSNorm:   y = RMSNorm(x + residual),   also outputs (x + residual); a zero-centered
                    call scales by 1 + weight, formed in f32
 
-The register-held kernel family also serves LayerNorm and AdaLayerNorm (with and without the
-Zero gate) unfused; ``layer_norm.py`` and ``ada_layer_norm.py`` dispatch to it.
-
-Fusing the residual add into the normalization kernel eliminates one global
-memory round-trip compared to separate add + norm.  Both kernels return dual
-outputs ``(y, x + residual)`` so downstream residual connections can reuse the
-pre-norm sum without recomputation.
-
-FusedAddLayerNorm has two kernels. One holds a row, or on SM90 a cluster CTA's share of one,
-in registers from the load through the store, through accesses of up to 16 bytes. The other
-holds a row block in a register fragment, rows padded to 256 elements, and serves the rows
-that queue on every SM while a thread of the first would hold more than its registers.
-FusedAddRMSNorm reads it through 16-byte accesses and writes nothing until the reduction
-has settled, so the two reads and the two writes reach memory as two runs rather than
-interleaved; the chunk a CTA writes waits in shared memory in between. Its rows are padded
-to 256 elements, so a 16-byte access always divides the row across a warp.
+The register-held family also serves LayerNorm and AdaLayerNorm (with and without the Zero
+gate) unfused. FusedAddLayerNorm has two kernels: one holds a row (on SM90 a cluster CTA's
+share of one) in registers from load to store; the other holds a row block in a register
+fragment for rows that queue on every SM past a thread's registers. FusedAddRMSNorm reads
+16-byte accesses of rows padded to 256 elements and writes nothing until the reduction
+settles, staging its output chunk in shared memory.
 """
 
 import operator
@@ -166,18 +156,11 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
 
 
 class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
-    """Fused Add + LayerNorm forward kernel.
+    """Fused Add + LayerNorm forward over a row block in a register fragment, rows padded to 256.
 
-    Computes ``y = LayerNorm(x + residual)`` and returns both ``y`` and
-    ``x + residual``.  The residual add is fused into the first load pass
-    to save one global memory round-trip.
-
-    Supports SM80+ architectures.  Uses 256-element alignment for the shared
-    buffer the register-relief path fills; every other path holds the row in a
-    register fragment from the load through the store.
-
-    Serves the calls :class:`FusedAddLayerNormHeldKernel` refuses: rows that queue on
-    every SM while a thread of that kernel would hold more than its registers.
+    Returns ``y = LayerNorm(x + residual)`` and ``x + residual``. Serves the calls
+    :class:`FusedAddLayerNormHeldKernel` refuses: rows that queue on every SM while a thread of
+    that kernel would hold more than its registers.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]

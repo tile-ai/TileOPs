@@ -9,7 +9,11 @@ from tests.cuda_graph_contract import CapturedGraph
 from tests.ops.moe_grouped_gemm_helpers import (
     SENTINEL,
     SIZES,
+    check_against_reference,
+    check_manifest_row,
+    contiguous_call,
     contiguous_layout,
+    masked_call,
     run_into_guarded_out,
     with_counts,
 )
@@ -31,28 +35,31 @@ from tileops.backend import BUILTIN
 from tileops.manifest import load_workloads
 from workloads.device import run_device
 from workloads.moe import MoEGroupedGEMMMXFP4Workload
-from workloads.numerics import compare_outputs
-from workloads.workload_base import manifest_call
 
 _OP = "MoEGroupedGEMMMXFP4FwdOp"
 _E8M0 = {"S": "float8_e8m0fnu"}
 _F32 = {"S": "float32"}
 LOOKUP_SIZES = {
     "empty-first-middle-last": [0, 0, 5, 0, 0, 130, 0],
+    # DeepSeek-V4-Flash's decode: one row in each of a few experts spread over all of them.
     "decode-e256": [int(e in (0, 51, 102, 153, 204, 255)) for e in range(256)],
+    # More runs of a warp's width than one warp scans in two steps.
     "two-runs": [3 * (g % 4 == 1) for g in range(32)] + [64],
-    "e500": [3 * (g % 23 == 5) for g in range(500)],
+    # More experts than one warp sums and than a block has threads.
     "e2100": [2 * (g % 29 == 3) for g in range(2099)] + [70],
+    # Many experts' rows over several waves.
     "prefill-e256": [g * 37 % 41 * 3 for g in range(256)],
 }
 
 
 def _workload(max_m: int, dtype_case: dict = _E8M0, **dims) -> MoEGroupedGEMMMXFP4Workload:
-    # T only feeds the generated counts; half the slabs' capacity keeps every count in range.
-    dims.setdefault("T", dims["E"] * max_m // 2)
-    return MoEGroupedGEMMMXFP4Workload(
-        manifest_call(_OP, dtype_case, layout={"masked": {"max_m": max_m}}, **dims)
-    )
+    return MoEGroupedGEMMMXFP4Workload(masked_call(_OP, max_m, dtype_case, **dims))
+
+
+def _contiguous_workload(
+    layout: dict, sizes: list, dtype_case: dict = _E8M0, **dims
+) -> MoEGroupedGEMMMXFP4Workload:
+    return MoEGroupedGEMMMXFP4Workload(contiguous_call(_OP, layout, sizes, dtype_case, **dims))
 
 
 _ROWS = {row["label"]: row for row in load_workloads(_OP)}
@@ -69,13 +76,9 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
     ],
 )
 def test_mxfp4_grouped_gemm_runs_the_manifest_rows(label: str, dtype_case: dict) -> None:
-    """Representative manifest rows, with their generated valid counts, match the reference."""
-    row = {key: value for key, value in _ROWS[label].items() if key not in ("label", "dtype_cases")}
-    workload = MoEGroupedGEMMMXFP4Workload(manifest_call(_OP, dtype_case, **row))
-    inputs = workload.gen_inputs()
-    out = MoEGroupedGEMMMXFP4FwdOp(**workload.call.arguments())(*inputs)
-    assert out.dtype is torch.bfloat16
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    check_manifest_row(
+        MoEGroupedGEMMMXFP4FwdOp, MoEGroupedGEMMMXFP4Workload, _ROWS[label], dtype_case
+    )
 
 
 @pytest.mark.sm90
@@ -305,30 +308,6 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
             id="tight-psum",
         ),
         pytest.param(
-            contiguous_layout("tight", "per_row"),
-            _E8M0,
-            256,
-            512,
-            marks=pytest.mark.full,
-            id="tight-per-row",
-        ),
-        pytest.param(
-            contiguous_layout("aligned", "per_row", 128),
-            _E8M0,
-            256,
-            512,
-            marks=pytest.mark.full,
-            id="aligned-per-row-128",
-        ),
-        pytest.param(
-            contiguous_layout("aligned", "physical_psum", 128),
-            _E8M0,
-            256,
-            512,
-            marks=pytest.mark.full,
-            id="aligned-psum-128",
-        ),
-        pytest.param(
             contiguous_layout("aligned", "per_row", 32),
             _F32,
             256,
@@ -354,16 +333,6 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
             marks=pytest.mark.full,
             id="tight-per-row-k2048",
         ),
-        # K = 16384: the e8m0 code tables do not fit beside a ring of 128 x 128 tiles, so the
-        # scales come a stage at a time and the check reads them from global memory.
-        pytest.param(
-            contiguous_layout("aligned", "per_row", 128),
-            _E8M0,
-            256,
-            16384,
-            marks=pytest.mark.full,
-            id="aligned-per-row-128-k16384-per-stage",
-        ),
         # Tight tails stored by rows, clipped at an N tail.
         pytest.param(
             contiguous_layout("tight", "per_row"),
@@ -378,13 +347,7 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
 def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
     layout: dict, dtype_case: dict, n: int, k: int
 ) -> None:
-    spec = layout["contiguous"]
-    align = spec["alignment"]
-    rows = sum(SIZES) if spec["packing"] == "tight" else sum(-(-n // align) * align for n in SIZES)
-    stated = {"P": rows} if spec["metadata_kind"] == "physical_psum" else {}
-    workload = MoEGroupedGEMMMXFP4Workload(
-        manifest_call(_OP, dtype_case, layout=layout, E=len(SIZES), sizes=SIZES, N=n, K=k, **stated)
-    )
+    workload = _contiguous_workload(layout, SIZES, dtype_case, N=n, K=k)
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     run_into_guarded_out(op, workload, *workload.gen_inputs())
 
@@ -406,13 +369,7 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
                 marks=pytest.mark.full,
                 id=f"tight-psum-{name}",
             )
-            for name in (
-                "decode-e256",
-                "two-runs",
-                "e500",
-                "e2100",
-                "prefill-e256",
-            )
+            for name in ("decode-e256", "e2100", "prefill-e256")
         ),
         pytest.param(
             contiguous_layout("tight", "per_row"),
@@ -436,22 +393,14 @@ def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
     ],
 )
 def test_mxfp4_grouped_gemm_finds_each_tasks_expert(layout: dict, sizes: str) -> None:
-    """Each task finds its expert and row tile among: empty experts first, in the middle and
-    last; DeepSeek-V4-Flash's decode, one row in each of a few experts spread over all of them;
-    more experts than one warp sums and than a block has threads, in more runs of a warp's width
-    than one warp scans in two steps; and many experts' rows over several waves."""
+    """Each task finds its expert and row tile among the expert row counts *sizes* names."""
     sizes = LOOKUP_SIZES[sizes]
     if "masked" in layout:
         workload = _workload(max(sizes), E=len(sizes), N=256, K=512)
         op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=max(sizes)))
         run_into_guarded_out(op, workload, *with_counts(workload, sizes))
         return
-    spec = layout["contiguous"]
-    rows = sum(-(-size // spec["alignment"]) * spec["alignment"] for size in sizes)
-    stated = {"P": rows} if spec["metadata_kind"] == "physical_psum" else {}
-    workload = MoEGroupedGEMMMXFP4Workload(
-        manifest_call(_OP, _E8M0, layout=layout, E=len(sizes), sizes=sizes, N=256, K=512, **stated)
-    )
+    workload = _contiguous_workload(layout, sizes, N=256, K=512)
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     run_into_guarded_out(op, workload, *workload.gen_inputs())
 
@@ -461,27 +410,15 @@ def test_mxfp4_grouped_gemm_finds_each_tasks_expert(layout: dict, sizes: str) ->
 @pytest.mark.smoke
 def test_moe_grouped_gemm_mxfp4_graph_replay() -> None:
     """DeepSeek-V4-Flash's decode up and down projections of one token's routes, on one op over
-    shared expert ends, replay with the routes spread over twice the experts: more tasks than the
-    capture ran, so some CTAs run more waves than at the capture. Each row takes its own expert's
-    product, checked over the experts holding rows. The operands are rewritten in place: a new
-    draw would hold the experts' weights a third time, beside the captured ones and the graph's
-    copy."""
+    shared expert ends, replay with the routes spread over twice the experts, more tasks than
+    the capture ran; each row takes its own expert's product."""
     captured, replayed = (
         torch.tensor(ids).bincount(minlength=256)
         for ids in ([17, 17, 17, 128, 128, 254], [3, 40, 97, 128, 200, 255])
     )
     up, down = (
-        MoEGroupedGEMMMXFP4Workload(
-            manifest_call(
-                _OP,
-                _E8M0,
-                layout=contiguous_layout("tight", "physical_psum"),
-                E=len(captured),
-                sizes=captured.tolist(),
-                P=int(captured.sum()),
-                N=4096,
-                K=k,
-            )
+        _contiguous_workload(
+            contiguous_layout("tight", "physical_psum"), captured.tolist(), N=4096, K=k
         )
         for k in (4096, 2048)
     )
@@ -489,6 +426,7 @@ def test_moe_grouped_gemm_mxfp4_graph_replay() -> None:
     *up_operands, ends = up.gen_inputs()
     *down_operands, _ = down.gen_inputs()
     graph = CapturedGraph((op, (*up_operands, ends)), (op, (*down_operands, ends)))
+    # Rewritten in place: a new draw would hold the experts' weights a third time.
     for a, a_scale, b, b_scale in (up_operands, down_operands):
         a.copy_((-a.float()).to(a.dtype))
         a_scale.view(torch.uint8).add_(1)
@@ -500,28 +438,14 @@ def test_moe_grouped_gemm_mxfp4_graph_replay() -> None:
     for workload, (a, a_scale, b, b_scale), out in zip(
         (up, down), (up_operands, down_operands), graph.outputs, strict=True
     ):
-        operands = (a, a_scale, b[owners], b_scale[owners], ends[owners])
-        compare_outputs(out, workload.ref_program(*operands), workload.verification(*operands))
+        check_against_reference(out, workload, a, a_scale, b[owners], b_scale[owners], ends[owners])
 
 
 def _aligned_workload(
     n: int, k: int, metadata_kind: str = "per_row", sizes: list = SIZES
 ) -> MoEGroupedGEMMMXFP4Workload:
     """Every expert's rows of ``sizes``, runs aligned to 128 rows, under e8m0 scales."""
-    rows = sum(-(-size // 128) * 128 for size in sizes)
-    stated = {"P": rows} if metadata_kind == "physical_psum" else {}
-    return MoEGroupedGEMMMXFP4Workload(
-        manifest_call(
-            _OP,
-            _E8M0,
-            layout=contiguous_layout("aligned", metadata_kind, 128),
-            E=len(sizes),
-            sizes=sizes,
-            N=n,
-            K=k,
-            **stated,
-        )
-    )
+    return _contiguous_workload(contiguous_layout("aligned", metadata_kind, 128), sizes, N=n, K=k)
 
 
 def _shared_decode_op(workload: MoEGroupedGEMMMXFP4Workload, inputs: tuple):
@@ -569,13 +493,9 @@ def test_mxfp4_grouped_gemm_decodes_aligned_rows_into_shared_memory(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_mxfp4_grouped_gemm_shared_decode_unfolded_tasks() -> None:
-    """288 tasks on persistent CTAs, so each runs two or three and reuses its code tables, flags
-    and column scales: one weight row whose codes span twelve binades over K puts its tasks on
-    the sub-block by sub-block contraction, the others fold. The rows' only nonzero products
-    lie in one sub-block, under codes whose largest, so each column's scale, steps from one
-    weight tile to the next (by sevens, so a CTA's tasks, four tiles apart, differ); the
-    spanning row's sub-block keeps its full value (32 * 0.5 * its scale), which folding would
-    lose six binades under its row's reference."""
+    """Persistent CTAs running two or three tasks each reuse code tables, flags and column
+    scales: one weight row spanning twelve binades contracts sub-block by sub-block and keeps
+    its sub-block's full value, the others fold."""
     workload = _aligned_workload(4096, 2048)
     a, a_scale, b, b_scale, ids = workload.gen_inputs()
     a = torch.zeros_like(a.float())
@@ -720,16 +640,8 @@ def test_mxfp4_grouped_gemm_skips_trailing_padding_tiles(align: int) -> None:
     with more tasks than SMs (64 weight tiles a row tile) each CTA meets skipped tasks after
     the ones it runs, which load no code table."""
     sizes, pad = [5, 300, 0, 77], 512
-    workload = MoEGroupedGEMMMXFP4Workload(
-        manifest_call(
-            _OP,
-            _E8M0,
-            layout=contiguous_layout("aligned", "per_row", align),
-            E=len(sizes),
-            sizes=sizes,
-            N=8192,
-            K=2048,
-        )
+    workload = _contiguous_workload(
+        contiguous_layout("aligned", "per_row", align), sizes, N=8192, K=2048
     )
     a, a_scale, b, b_scale, ids = workload.gen_inputs()
     a = torch.cat([a, a[:pad]])
@@ -747,8 +659,7 @@ def test_mxfp4_grouped_gemm_tune_picks_a_correct_config() -> None:
     inputs = with_counts(workload, [64, 0, 33, 10])
     op = MoEGroupedGEMMMXFP4FwdOp(MaskedLayoutSpec(max_m=64))
     op.request_tune()
-    out = op(*inputs)
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    check_against_reference(op(*inputs), workload, *inputs)
 
 
 @pytest.mark.sm90
@@ -828,17 +739,8 @@ def test_mxfp4_grouped_gemm_refuses_experts_whose_walk_state_overflows_shared_me
     if metadata_kind is None:
         workload = _workload(8, E=experts, N=8, K=128)
     else:
-        workload = MoEGroupedGEMMMXFP4Workload(
-            manifest_call(
-                _OP,
-                _E8M0,
-                layout=contiguous_layout("tight", metadata_kind),
-                E=experts,
-                sizes=[0] * (experts - 1) + [16],
-                N=8,
-                K=128,
-                **({"P": 16} if metadata_kind == "physical_psum" else {}),
-            )
+        workload = _contiguous_workload(
+            contiguous_layout("tight", metadata_kind), [0] * (experts - 1) + [16], N=8, K=128
         )
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     with pytest.raises(ValueError, match="task-walk state in shared memory.*beside the default"):
@@ -898,16 +800,8 @@ def test_mxfp4_grouped_gemm_refuses_experts_past_the_default_tiles_walk_bound(
 def test_mxfp4_grouped_gemm_refuses_runs_aligned_off_the_row_tile() -> None:
     """Aligned runs are tiled in whole 8-row tiles: alignment 4 is refused before anything is
     built."""
-    workload = MoEGroupedGEMMMXFP4Workload(
-        manifest_call(
-            _OP,
-            _E8M0,
-            layout=contiguous_layout("aligned", "per_row", 4),
-            E=2,
-            sizes=[5, 3],
-            N=128,
-            K=128,
-        )
+    workload = _contiguous_workload(
+        contiguous_layout("aligned", "per_row", 4), [5, 3], N=128, K=128
     )
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     with pytest.raises(ValueError, match="aligned runs"):

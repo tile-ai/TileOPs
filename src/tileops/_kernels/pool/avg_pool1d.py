@@ -10,10 +10,10 @@ from tileops._kernels.constants import (
     MAX_GRID_YZ_BLOCKS,
     STATIC_SHARED_BYTES,
 )
-from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
 from tileops._kernels.pool.common import (
     ACCUM_DTYPE,
+    AvgPoolKernelBase,
     AvgPoolWindow,
     WindowSpan,
     window_span,
@@ -23,11 +23,7 @@ __all__ = ["AvgPool1dKernel"]
 
 
 class _WindowStaging:
-    """What one block stages, and the launch shapes worth offering for it.
-
-    These figures describe this kernel's access pattern, not the device, and are held
-    here so that a later kernel does not read them as general truths.
-    """
+    """What one block stages, and the launch shapes worth offering for it."""
 
     # Tile widths a launch may take, widest first. The tail below 128 is for a window
     # too wide to stage at 128 outputs.
@@ -256,7 +252,7 @@ def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     return _avg_pool1d_func
 
 
-class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
+class AvgPool1dKernel(AvgPoolKernelBase, AvgPool1dFwdInterface):
     """Average pooling over an NCL row, with every PyTorch flag combination.
 
     Raises:
@@ -264,7 +260,7 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
             stages it in, which takes a ``kernel_size`` in the tens of thousands.
     """
 
-    supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
+    _build = staticmethod(_avg_pool1d_kernel)
 
     @classmethod
     def refusal(cls, call: AvgPoolCall) -> str | None:
@@ -277,66 +273,10 @@ class AvgPool1dKernel(Kernel, AvgPool1dFwdInterface):
                 return "serves no output row of 2**31 elements or more from a shorter input row"
         return super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: AvgPoolCall) -> Entry:
-        return call, lambda: cls(
-            call.n,
-            call.c_in,
-            call.size[0],
-            call.window[0],
-            call.stride[0],
-            call.pad[0],
-            call.ceil_mode,
-            call.count_include_pad,
-            call.dtype,
-        )
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        l_in: int,
-        kernel_l: int,
-        stride_l: int,
-        pad_l: int,
-        ceil_mode: bool,
-        count_include_pad: bool,
-        dtype: torch.dtype,
-        config: dict | None = None,
-    ) -> None:
-        super().__init__()
-        self.n = n
-        self.c_in = c_in
-        self.dtype = dtype
-        self.window = AvgPoolWindow(
-            rows=n * c_in,
-            size=(l_in,),
-            kernel=(kernel_l,),
-            stride=(stride_l,),
-            pad=(pad_l,),
-            ceil_mode=ceil_mode,
-            count_include_pad=count_include_pad,
-            divisor_override=None,
-        )
-        self.kernel = _avg_pool1d_kernel(self.window, self.dtype_str)
-        self.init_config(config)
-
-    def _staging(self) -> _WindowStaging:
-        return _WindowStaging(self.window, self.dtype_str)
-
     @property
     def default_config(self) -> dict:
-        return self._staging().default()
+        return _WindowStaging(self.window, self.dtype_str).default()
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return self._staging().tuned()
-
-    def _compile(self, cfg: dict):
-        """The program ``forward`` launches, compiled from *cfg*."""
-        return self.kernel(cfg["block_ol"], cfg["threads"])
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_devices(x=x)
-        rows = self.program(self._compile)(x.contiguous().view(self.window.rows, *self.window.size))
-        return rows.view(self.n, self.c_in, *self.window.out)
+        return _WindowStaging(self.window, self.dtype_str).tuned()

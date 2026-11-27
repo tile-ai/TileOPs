@@ -1,8 +1,4 @@
-"""Benchmark for the SmoothQuant activation quantization op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the SmoothQuant activation quantization op."""
 
 import pytest
 import torch
@@ -12,7 +8,7 @@ from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference
 from tileops.quantization import SmoothQuantFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(SmoothQuantFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SmoothQuantFwdOp))
 def test_smooth_quant_bench(case) -> None:
     # Autotuning is a bench-run policy, not a workload property.
     op = SmoothQuantFwdOp(**case.arguments)

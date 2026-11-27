@@ -62,13 +62,8 @@ def _build_fused_prefill_kernel(
         O^T = scale (S^T Q^T) diag(e^gc) + Vn^T P^T
         S^T = e^gl S^T + Vn^T diag(e^(gl - gc)) K
 
-    Four warp groups share each chunk:
-
-    - two state groups hold S^T, 64 value rows each, so every product that reads the state
-      takes it from registers, and each writes its 64 output columns;
-    - the auxiliary group forms T and P a chunk ahead (gdn_inverse_helper.h);
-    - the producer group copies the tiles in, prepares the gate vectors and copies the output
-      out.
+    Two state warp groups hold 64 value rows of S^T each; an auxiliary group forms T and P a
+    chunk ahead, and a producer group copies tiles in and the output out.
     """
     num_tokens = T.dynamic("num_tokens")
     batch_size = T.dynamic("batch_size")

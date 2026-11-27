@@ -1,4 +1,4 @@
-"""Shared Expert MLP Kernel — TileLang implementation."""
+"""The shared expert MLP kernel: two dense GEMMs and the SiLU-and-multiply between them."""
 
 import math
 
@@ -61,12 +61,9 @@ def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
 
 
 def _template_block_n(rows: int, cols: int, fused: bool, sm_count: int) -> int:
-    """The dense template's tile width for a GEMM of ``rows`` x ``cols`` output.
-
-    A shared expert's GEMMs are a few waves of 128-row tiles, so the tail wave's idle SMs
-    are a large share of the run. Of the widths the template issues as one WGMMA per 16
-    of K, this is the one whose tiles fill the largest share of the waves they take; a
-    tie goes to the wider tile. A fused gate/up tile is half output columns.
+    """The dense template's tile width for a GEMM of ``rows`` x ``cols`` output: of 192, 224
+    and 256, the one whose 128-row tiles fill the largest share of the waves they take, a tie
+    to the wider. A fused gate/up tile is half output columns.
     """
 
     def fill(width: int) -> float:
@@ -80,9 +77,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
     """Shared expert MLP producing ``[T, H]``.
 
     Inputs are ``hidden[T, H]``, concatenated ``w_gate_up[2F, H]``, and
-    ``w_down[H, F]``. On SM90, past ``template_min_m`` tokens, the gate/up GEMM runs on
-    the dense template, and so does the down GEMM of an expert at least as wide as the
-    model; other calls use the existing dense implementations.
+    ``w_down[H, F]``.
     """
 
     @staticmethod
@@ -130,7 +125,6 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         hidden_size: int,
         ffn_size: int,
         dtype: torch.dtype = torch.bfloat16,
-        config=None,
         *,
         device_index: "int | None" = None,
     ):
@@ -139,11 +133,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         self.hidden_size = hidden_size
         self.ffn_size = ffn_size
         self.dtype = dtype
-        self.init_config(config)
-
-        # A config the caller states pins every child GEMM's tiles; the default leaves each
-        # child its own.
-        self._configured = config is not None
+        self.init_config()
         self.program(self._decompose)
 
     def _decompose(self, cfg: dict) -> tuple:
@@ -152,7 +142,8 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         is already activated."""
         num_tokens, hidden_size, ffn_size = self.num_tokens, self.hidden_size, self.ffn_size
         dtype, device_index = self.dtype, self.device_index
-        pinned = self._configured or dict(cfg) != self.default_config
+        # A tuned config pins every child GEMM's tiles; the default leaves each child its own.
+        pinned = dict(cfg) != self.default_config
         target = self.build_target
         sm_version, sm_count = target.arch, target.sm_count
         device = torch.device("cuda", device_index) if device_index is not None else None

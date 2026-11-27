@@ -60,11 +60,7 @@ _logger = logging.getLogger(__name__)
 
 
 class _Trace:
-    """The ``trace`` namespace (use the singleton ``trace``, do not instantiate).
-
-    Stateless except for the process-local run switch (``enabled`` /
-    ``output``); all annotation state lives in the per-build registry.
-    """
+    """The ``trace`` namespace; use the singleton ``trace``."""
 
     def __init__(self) -> None:
         self._enabled = False
@@ -97,8 +93,7 @@ class _Trace:
     def enable(self, output: str = "debug") -> None:
         """Turn tracing on for this process and set the output directory.
 
-        Call once at startup, before any traced kernel is built — a builder reads
-        ``enabled`` at build time and is typically cached.
+        Call before any traced kernel is built: a builder reads ``enabled`` at build time.
 
         Args:
             output: Directory for dumped artifacts (created on first ``dump``).
@@ -153,11 +148,8 @@ class _Trace:
         Args:
             name: Range name, interned to a stable event id.
             lane: Render sub-lane, interned dynamically (default ``"main"``).
-            payload: Optional 32-bit i32 payload — a Python ``int`` or a runtime
-                PrimExpr (e.g. a loop index). Records in both BEGIN and END events.
-                Useful for explicitly tagging iterations in a loop. ``None`` defaults
-                to 0, representing "no label". The payload is a user-provided tag,
-                NOT an implicit value derived from thread/block indices.
+            payload: Optional i32 tag recorded in both BEGIN and END — a Python ``int``
+                or a runtime PrimExpr (e.g. a loop index). ``None`` records 0.
 
         Returns:
             A ``with`` context manager.
@@ -180,10 +172,7 @@ class _Trace:
         Args:
             name: Range name, interned to a stable event id.
             lane: Render sub-lane, interned dynamically (default ``"main"``).
-            payload: Optional 32-bit i32 payload — a Python ``int`` or a runtime
-                PrimExpr (e.g. a loop index). ``None`` defaults to 0, representing
-                "no label". The payload is a user-provided tag, NOT an implicit
-                value derived from thread/block indices.
+            payload: Optional i32 tag, as for ``range``.
 
         Returns:
             A token to pass to ``range_end``.
@@ -219,8 +208,7 @@ class _Trace:
 
         Args:
             name: Event name, interned to a stable event id.
-            payload: Optional 32-bit i32 payload — a Python ``int`` or a runtime
-                PrimExpr (e.g. a loop index). ``None`` records 0.
+            payload: Optional i32 tag, as for ``range``.
             lane: Render sub-lane, interned dynamically (default ``"main"``).
 
         Example:
@@ -251,17 +239,12 @@ class _Trace:
     # == Build (inside a @tilelang.jit builder) =============================
 
     def out_idx(self, n_outputs: int, traced: bool | None = None) -> list[int]:
-        """Return the ``out_idx`` for a kernel with ``n_outputs`` real outputs.
-
-        Grows by one (for the trailing ``slots`` output that ``finalize``
-        appends) when traced, so the same builder works either way.
+        """The ``out_idx`` for ``n_outputs`` real outputs, plus the trailing ``slots`` when traced.
 
         Args:
             n_outputs: Number of real (non-``slots``) outputs.
-            traced: Whether this build is traced. ``None`` (default) reads the
-                process switch ``enabled``. **A cached builder must pass an
-                explicit value** and include it in its cache key — otherwise the
-                ``out_idx`` baked into the cached kernel ignores later switch flips.
+            traced: Whether this build is traced; ``None`` reads ``enabled``. A cached
+                builder must pass it and include it in its cache key.
 
         Returns:
             Negative output indices for ``@tilelang.jit``.
@@ -279,16 +262,12 @@ class _Trace:
         return list(range(-n, 0))
 
     def finalize(self, primfunc, traced: bool | None = None, max_events: int = MAX_EVENTS_DEFAULT):
-        """Lower the markers when traced, else strip them — return either.
-
-        The one line a builder returns instead of branching. Pairs with
-        ``out_idx``; pass the same ``traced`` to both.
+        """Lower the markers when traced, else strip them. Pass the same ``traced`` as to
+        ``out_idx``.
 
         Args:
             primfunc: The built kernel; its body carries ``trace.*`` markers.
-            traced: Whether this build is traced. ``None`` (default) reads the
-                process switch ``enabled``. A cached builder must pass an
-                explicit value (see ``out_idx``).
+            traced: As for ``out_idx``.
             max_events: Per-slot event capacity when lowering.
 
         Returns:
@@ -307,9 +286,7 @@ class _Trace:
         return self.lower(primfunc, max_events) if enabled else self.strip(primfunc)
 
     def lower(self, primfunc, max_events: int = MAX_EVENTS_DEFAULT):
-        """Primitive: materialize the markers and append the ``slots`` output.
-
-        Prefer ``finalize`` unless you need to lower unconditionally.
+        """Materialize the markers and append the ``slots`` output, whatever the switch says.
 
         Args:
             primfunc: The built kernel; its body carries ``trace.*`` markers.
@@ -326,10 +303,8 @@ class _Trace:
         return passes.lower(primfunc, max_events=max_events)
 
     def strip(self, primfunc):
-        """Primitive: no-op every marker so the kernel compiles without tracing.
-
-        Prefer ``finalize`` unless you need to strip unconditionally. The
-        generated CUDA is identical to an un-instrumented build.
+        """No-op every marker, whatever the switch says; the generated CUDA is identical to
+        an un-instrumented build.
 
         Args:
             primfunc: The built kernel; its body may carry ``trace.*`` markers.
@@ -349,10 +324,8 @@ class _Trace:
     def run(self, compiled, inputs: tuple, *, stem: str, traced: bool | None = None):
         """Run a kernel and, when tracing is on, dump its timeline.
 
-        The one call a ``forward`` needs. A traced build returns
-        ``(*real_outputs, slots)``: the trailing ``slots`` is split off whatever the
-        switch says, and with tracing **on** it is decoded and written via ``dump``
-        (a fresh file each call). An untraced build's outputs come back unchanged.
+        A traced build's trailing ``slots`` output is always split off; with tracing on it
+        is decoded and written through ``dump``, a fresh file each call.
 
         Args:
             compiled: A compiled kernel, traced or not; how it was built decides
@@ -384,8 +357,6 @@ class _Trace:
     def decode(self, compiled, slots) -> list:
         """Decode a returned ``slots`` tensor into render-ready events.
 
-        Resolves the host decode maps from the compiled kernel.
-
         Args:
             compiled: The compiled traced kernel (carries the host maps).
             slots: The trailing ``slots`` int64 tensor the kernel returned.
@@ -410,10 +381,8 @@ class _Trace:
         )
 
     def dump(self, events: list, compiled, *, stem: str) -> str:
-        """Write events as an HTML timeline under ``output``, never overwriting.
-
-        Picks a collision-free base name: ``{output}/{stem}`` when free, else
-        ``{output}/{stem}_1``, ``_2``, ... so repeated dumps accumulate.
+        """Write events as an HTML timeline at ``{output}/{stem}``, or ``{stem}_1``, ``_2``,
+        ... when taken.
 
         Args:
             events: Event list from ``decode``.

@@ -42,8 +42,7 @@ from tileops._kernels.elementwise._op_body import (
 )
 from tileops._kernels.elementwise._policy import (
     TARGET_BLOCKS,
-    choose_binary_strategy,
-    choose_unary_strategy,
+    choose_strategy,
     default_launch_config,
     elementwise_autotune_configs,
     elementwise_output_plan,
@@ -75,6 +74,7 @@ __all__ = [
 class _ElementwiseKernel(Kernel):
     """What every elementwise family shares: which dtypes it takes, and what it returns."""
 
+    supported_archs: list[int] = [80, 86, 89, 90]
     # Bytes each thread carries, which sets the default ``num_per_thread``. 16
     # is one vector load. A body the memory pipe waits on sets 32, keeping a
     # second load in flight while the first element's arithmetic runs.
@@ -90,18 +90,9 @@ class _ElementwiseKernel(Kernel):
     # Whether bool results are stored through an int8 buffer.
     _bool_via_int8: bool = False
 
-    # Extent of the row a broadcast block walks, or ``None`` where blocks are not
-    # cut from rows. Only the binary families lay a grid out that way.
-    row_broadcast_inner: int | None = None
-
     @classmethod
     def refusal(cls, call) -> "str | None":
-        """Refuse an element type this family's programs do not serve.
-
-        A caller told that nothing served the call learns which element types each class
-        does serve. A class that computes a semantic dtype in another storage type states
-        its own.
-        """
+        """Refuse an element type this family's programs do not serve."""
         if cls.SUPPORTED_DTYPES is None:
             return super().refusal(call)
         return dtype_refusal(cls.SUPPORTED_DTYPES, call.dtype) or super().refusal(call)
@@ -114,17 +105,32 @@ class _ElementwiseKernel(Kernel):
         target = self.build_target
         return target.sm_count * target.threads_per_sm
 
-    _one_wave_in_l2 = False
-
 
 class _StrategyKernel(_ElementwiseKernel):
-    """An elementwise family whose kernel body is picked by a named strategy."""
+    """An elementwise family whose kernel body is picked by a named strategy.
 
-    # Integer tensors are data; uint8 cond/mask tensors only select results.
+    A subclass overrides ``op_func`` with a static method implementing the pointwise
+    operation.
+    """
+
     autotune_accepts_random_int_inputs: bool = True
+    # The result's dtype where it differs from the operands', such as ``torch.bool``.
+    OUTPUT_DTYPE = None
+    # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
+    CSRC_HEADERS: tuple[str, ...] = ()
+    # A cheaper form of ``op_func``, or ``None``: see ``GuardedOpFunc``.
+    fast_func = None
     # A bool body's form over two 16-bit lanes, by dtype (``lane_compare``): see
     # ``LaneMaskedOpFunc``.
     lane_mask_func = None
+    # Extent of the row a broadcast block walks, or ``None`` where blocks are not
+    # cut from rows.
+    row_broadcast_inner: int | None = None
+    _one_wave_in_l2 = False
+
+    @staticmethod
+    def op_func(*operands):
+        raise NotImplementedError
 
     def _int8_body(self):
         """``op_func`` with its bool result stored as int8, with its two-lane form if any."""
@@ -173,38 +179,39 @@ class _StrategyKernel(_ElementwiseKernel):
             return self.kernel(cfg["threads"])
         return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
+    def _get_effective_op_func(self):
+        """The op body this kernel builds with, and the name that identifies it."""
+        name = self._op_func_name()
+        if self._bool_via_int8:
+            return name, self._int8_body()
+        if self.fast_func is not None:
+            return name, GuardedOpFunc(self.op_func, self.fast_func)
+        return name, self.op_func
+
+    def _op_func_name(self) -> str:
+        """Name every input that changes the op body: see ``register_op_func``.
+
+        Module included: two classes sharing a qualname would otherwise overwrite each
+        other's body.
+        """
+        cls = type(self)
+        out = self.output_plan.kernel_output_dtype
+        return f"{cls.__module__}.{cls.__qualname__}|{self.dtype_str}|{out}|{self.strategy}"
+
 
 class UnaryKernel(_StrategyKernel):
     """Template base class for unary elementwise kernels.
-
-    Subclass must override ``op_func`` with a static method implementing
-    the pointwise operation (e.g., relu, sigmoid).
 
     Args:
         N_total: Total number of elements (flattened).
         dtype: Torch dtype for input.
         config: Optional dict with "threads" and "num_per_thread".
-            "strategy" is chosen from the dtype: "direct" for bool, else
-            "register_copy".
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    OUTPUT_DTYPE = None
-    # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
-    CSRC_HEADERS: tuple[str, ...] = ()
     # Whether the fragment-copy program holds nvcc to 32 registers a thread, so an SM keeps
-    # every thread its register file allows resident. A kernel sets it for a body nvcc
-    # otherwise compiles past that budget, where fewer resident threads keep fewer loads in
-    # flight.
+    # every thread its register file allows resident; set for a body nvcc otherwise compiles
+    # past that budget.
     FULL_OCCUPANCY: bool = False
-
-    @staticmethod
-    def op_func(x):
-        """Pointwise operation. Must be overridden by subclass."""
-        raise NotImplementedError
-
-    # A cheaper form of ``op_func``, or ``None``: see ``GuardedOpFunc``.
-    fast_func = None
 
     @classmethod
     def entry_for(cls, call: ElementwiseCall) -> Entry:
@@ -214,23 +221,12 @@ class UnaryKernel(_StrategyKernel):
         super().__init__()
         self.N_total = N_total
         self.dtype = dtype
-        self.strategy = choose_unary_strategy(
-            input_dtype=dtype, declared_output_dtype=self.OUTPUT_DTYPE
-        )
+        self.strategy = choose_strategy(dtype, self.OUTPUT_DTYPE)
         self.output_plan = elementwise_output_plan(dtype, self.OUTPUT_DTYPE, strategy=self.strategy)
         self.output_dtype = self.output_plan.logical_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
         self.kernel = self._build_kernel()
         self.init_config(config)
-
-    def _get_effective_op_func(self):
-        """The op body this kernel builds with, and the name that identifies it."""
-        name = self._op_func_name()
-        if self._bool_via_int8:
-            return name, self._int8_body()
-        if self.fast_func is not None:
-            return name, GuardedOpFunc(self.op_func, self.fast_func)
-        return name, self.op_func
 
     @functools.cached_property
     def _one_wave_in_l2(self) -> bool:
@@ -253,11 +249,8 @@ class UnaryKernel(_StrategyKernel):
     @property
     def default_config(self) -> dict:
         cfg = super().default_config
-        # A run built from a two-lane form (``LaneMaskedOpFunc``) spends a few instructions
-        # on its elements, so a 128-thread block ends soon after its loads land and block
-        # dispatch, not DRAM, paces a long grid of them. CUDA's largest block takes an eighth
-        # of the dispatches. It is used where every block stays a whole run and the grid
-        # keeps ``TARGET_BLOCKS`` blocks.
+        # Block dispatch, not DRAM, paces a long grid of two-lane-form runs
+        # (``LaneMaskedOpFunc``); CUDA's largest block cuts the dispatches eightfold.
         widest_threads = 1024
         npt = cfg.get("num_per_thread", 0)
         wide_block = widest_threads * npt
@@ -269,40 +262,14 @@ class UnaryKernel(_StrategyKernel):
             cfg["threads"] = widest_threads
         return cfg
 
-    def _op_func_name(self) -> str:
-        """Name every input that changes the op body: see ``register_op_func``.
-
-        Module included: ``_OP_FUNCS`` is one dict for the whole package, and two
-        classes sharing a qualname would otherwise overwrite each other's body.
-        """
-        cls = type(self)
-        return (
-            f"{cls.__module__}.{cls.__qualname__}"
-            f"|{self.dtype_str}|{self.output_dtype_str}|{self.strategy}"
-        )
-
     def _build_kernel(self):
-        strategy = self.strategy
         effective_op = register_op_func(*self._get_effective_op_func())
-        if strategy == "direct":
-            return make_unary_direct(
-                self.N_total, self.dtype_str, effective_op, self.output_dtype_str
-            )
-        elif strategy == "register_copy":
-            return make_unary_regcopy(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                self.output_dtype_str,
-                self.CSRC_HEADERS,
-                self.FULL_OCCUPANCY,
-            )
-        else:
-            raise ValueError(f"Unknown strategy: {strategy}")
-
-    @property
-    def output_dtype_str(self) -> str:
-        return self.output_plan.kernel_output_dtype
+        out = self.output_plan.kernel_output_dtype
+        if self.strategy == "direct":
+            return make_unary_direct(self.N_total, self.dtype_str, effective_op, out)
+        return make_unary_regcopy(
+            self.N_total, self.dtype_str, effective_op, out, self.CSRC_HEADERS, self.FULL_OCCUPANCY
+        )
 
     def forward(self, x):
         self._require_devices(x=x)
@@ -313,42 +280,19 @@ class UnaryKernel(_StrategyKernel):
 class BinaryKernel(_StrategyKernel):
     """Template base class for binary elementwise kernels with N-dim broadcast.
 
-    Subclass must override ``op_func`` with a static method implementing
-    the pointwise operation (e.g., add, mul).
-
     Args:
         a_shape: Shape of input a.
-        b_shape: Shape of input b. Broadcasts against *a_shape* under the
-            PyTorch broadcasting rules.
+        b_shape: Shape of input b, broadcasting against *a_shape* under the PyTorch rules.
         dtype: Torch dtype for input.
         config: Optional dict with "threads" and "num_per_thread".
-            "strategy" is chosen from the operands: "direct" for bool,
-            "register_copy" for same-shape operands, else "explicit_parallel".
-
-    Attributes:
-        result_shape: Broadcast output shape.
-        N_total: Total output elements.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    # The result's dtype where it differs from the operands', such as ``torch.bool``.
-    OUTPUT_DTYPE = None
     # Sixteen elements a thread, capped at two 16-byte vectors, keep two loads of a 2-,
     # 4- or 8-byte operand in flight; a single load streams slower, except for an 8-byte
     # operand on a long launch (see ``default_launch_config``). A 1-byte operand's
     # sixteen are one vector. A body whose arithmetic outlasts that second 2-byte load
     # sets 8; one whose arithmetic outlasts any load sets 4.
     REGISTER_COPY_NUM_PER_THREAD = 16
-
-    @staticmethod
-    def op_func(a, b):
-        """Pointwise operation. Must be overridden by subclass."""
-        raise NotImplementedError
-
-    # A cheaper form of ``op_func``, as a static method: see ``GuardedOpFunc``.
-    fast_func = None
-    # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
-    CSRC_HEADERS: tuple[str, ...] = ()
 
     @classmethod
     def entry_for(cls, call: BroadcastCall) -> Entry:
@@ -370,16 +314,10 @@ class BinaryKernel(_StrategyKernel):
         self.coalesced_shape = coalesced_shape
         self.a_strides = a_strides
         self.b_strides = b_strides
-        self._same_shape = is_contiguous_same_shape(
-            coalesced_shape,
-            a_strides,
-            b_strides,
-        )
+        same_shape = is_contiguous_same_shape(coalesced_shape, a_strides, b_strides)
         split = row_broadcast_split(coalesced_shape, a_strides, b_strides)
-        self.row_broadcast_inner = None if self._same_shape or split is None else split[1]
-        self.strategy = choose_binary_strategy(
-            input_dtype=dtype, declared_output_dtype=self.OUTPUT_DTYPE, same_shape=self._same_shape
-        )
+        self.row_broadcast_inner = None if same_shape or split is None else split[1]
+        self.strategy = choose_strategy(dtype, self.OUTPUT_DTYPE, same_shape=same_shape)
         self.output_plan = elementwise_output_plan(dtype, self.OUTPUT_DTYPE, strategy=self.strategy)
         self.output_dtype = self.output_plan.logical_dtype
         self._bool_via_int8 = self.output_plan.bool_via_int8
@@ -390,78 +328,37 @@ class BinaryKernel(_StrategyKernel):
     def stage_broadcast(self) -> bool:
         """Whether a broadcast block reads and writes through fragments.
 
-        A body TileLang cannot vectorise -- a predicate, whose ``boolx<N>`` has no
-        CUDA type -- drags the loads and stores to its own width when they share
-        its loop. Staging keeps the copies wide, at the cost of a round trip
-        through registers. A body that scalarises for another reason overrides
-        this.
+        A predicate body cannot vectorise (``boolx<N>`` has no CUDA type) and drags the
+        loads and stores sharing its loop to its own width; staging keeps them wide. A body
+        that scalarises for another reason overrides this.
         """
         return self.output_dtype == torch.bool
 
     @property
     def bias_rows(self) -> "int | None":
-        """Rows sharing a thread's bias vector, or ``None`` to disable reuse.
-
-        Register-heavy bodies can opt out to preserve occupancy.
-        """
+        """Rows sharing a thread's bias vector, or ``None`` for a register-heavy body."""
         return 4
 
-    def _get_effective_op_func(self):
-        """The op body this kernel builds with, and the name that identifies it."""
-        name = self._op_func_name()
-        if self._bool_via_int8:
-            return name, self._int8_body()
-        if self.fast_func is not None:
-            return name, GuardedOpFunc(self.op_func, self.fast_func)
-        return name, self.op_func
-
-    def _op_func_name(self) -> str:
-        cls = type(self)
-        out = self.output_plan.kernel_output_dtype
-        return f"{cls.__module__}.{cls.__qualname__}|{self.dtype_str}|{out}|{self.strategy}"
-
     def _build_kernel(self):
-        strategy = self.strategy
         effective_op = register_op_func(*self._get_effective_op_func())
+        out = self.output_plan.kernel_output_dtype
+        if self.strategy == "register_copy":
+            return make_binary_register_copy(
+                self.N_total, self.dtype_str, effective_op, out, self.CSRC_HEADERS
+            )
         plan = register_broadcast_plan(
             BroadcastPlan(self.coalesced_shape, self.a_strides, self.b_strides)
         )
-        kernel_output_dtype = self.output_plan.kernel_output_dtype
-        if strategy == "direct":
-            return make_binary_direct(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                plan,
-                self.a_numel,
-                self.b_numel,
-                kernel_output_dtype,
-                self.CSRC_HEADERS,
-            )
-        elif strategy == "explicit_parallel":
-            return make_binary_explicit(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                plan,
-                self.a_numel,
-                self.b_numel,
-                kernel_output_dtype,
-                self.CSRC_HEADERS,
-                self.stage_broadcast,
-                self.bias_rows,
-                self._resident_threads(),
-            )
-        elif strategy == "register_copy":
-            return make_binary_register_copy(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                kernel_output_dtype,
-                self.CSRC_HEADERS,
-            )
-        else:
-            raise ValueError(f"Unknown strategy: {strategy}")
+        args = (self.N_total, self.dtype_str, effective_op, plan, self.a_numel, self.b_numel, out)
+        if self.strategy == "direct":
+            return make_binary_direct(*args, self.CSRC_HEADERS)
+        return make_binary_explicit(
+            *args,
+            self.CSRC_HEADERS,
+            self.stage_broadcast,
+            self.bias_rows,
+            self._resident_threads(),
+        )
 
     def forward(self, a, b):
         self._require_devices(a=a, b=b)
@@ -470,22 +367,17 @@ class BinaryKernel(_StrategyKernel):
 
 
 class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
-    """Template base class for fused gated elementwise kernels.
+    """Template base class for ``y = activation(x[:, :N]) * x[:, N:]`` over an ``(M, 2N)`` x.
 
-    Input layout: x has shape (M, 2*N) where x[:, :N] is the gate
-    and x[:, N:] is the value. Output: y = activation(gate) * value.
-
-    Subclass must override ``activation_func`` with a static method.
+    A subclass overrides ``activation_func`` with a static method.
 
     Args:
         M: Number of rows.
         N: Half the column dimension (output width).
         dtype: Torch dtype.
         config: Optional dict with "threads" and "num_per_thread".
-            "strategy" is "explicit_parallel", the one body these kernels build.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
     row_scaled = False
 
     @staticmethod
@@ -531,10 +423,9 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
             resident_threads=self._resident_threads(),
         )
-        # A grid under TARGET_BLOCKS waits on latency, and each block it launches adds to
-        # that wait, so it doubles its threads per block where that cuts the blocks a row
-        # takes. 16: below it, each block's share of the row, not the block count, sets
-        # the latency, and doubling that share costs more than the blocks it saves.
+        # A grid under TARGET_BLOCKS waits on latency per block launched, so it doubles its
+        # threads per block where that cuts the blocks a row takes. Below 16 blocks each
+        # block's share of the row sets the latency instead.
         min_blocks = 16
         width = cfg["threads"] * cfg["num_per_thread"]
         row_blocks = math.ceil(self.N / width)
@@ -574,11 +465,8 @@ def _bool_operand_refusal(call) -> "str | None":
 
 
 class Uint8StorageUnaryKernel(UnaryKernel):
-    """Unary kernel that computes on uint8 but accepts and returns bool.
-
-    It serves the bool calls of the key it is preferred over, which is where bool storage
-    being one byte is this backend's fact rather than the op's.
-    """
+    """Unary kernel that computes on uint8 but accepts and returns bool; it serves the bool
+    calls of the key it is preferred over."""
 
     SUPPORTED_DTYPES = (torch.uint8,)
 
@@ -599,11 +487,8 @@ class Uint8StorageUnaryKernel(UnaryKernel):
 
 
 class Uint8StorageBinaryKernel(BinaryKernel):
-    """Binary kernel that computes on uint8 but accepts and returns bool.
-
-    It serves the bool calls of the key it is preferred over, which is where bool storage
-    being one byte is this backend's fact rather than the op's.
-    """
+    """Binary kernel that computes on uint8 but accepts and returns bool; it serves the bool
+    calls of the key it is preferred over."""
 
     SUPPORTED_DTYPES = (torch.uint8,)
 
@@ -626,61 +511,42 @@ class Uint8StorageBinaryKernel(BinaryKernel):
 
 
 class AlphaScaledBinaryKernel(BinaryKernel, AlphaScaledBinaryFwdInterface):
-    """Shared base for ``y = a (op) alpha * b`` kernels.
+    """Shared base for ``y = a (op) alpha * b`` kernels; subclasses set ``_combine``.
 
-    Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
-    is baked in at kernel construction time (one specialization per distinct
-    ``alpha`` value, matching the target_cache key shape used by the binary
-    builders) so the kernel surface stays scalar-free. It is keyword-only so
-    the positional ``(dtype, config)`` tail stays uniform.
+    ``alpha`` is baked into the body, one specialization per value.
     """
 
     @staticmethod
-    def _combine(a_scaled, b_scaled):
+    def _combine(a, scaled_b):
         raise NotImplementedError
-
-    @staticmethod
-    def op_func(a, b):
-        raise NotImplementedError(
-            "AlphaScaledBinaryKernel uses a per-instance op_func built from "
-            "alpha; use the kernel via __init__ instead of calling op_func."
-        )
 
     @classmethod
     def entry_for(cls, call: AlphaScaledCall) -> Entry:
         return call, lambda: cls(call.a_shape, call.b_shape, call.dtype, alpha=call.alpha)
 
     def __init__(self, a_shape, b_shape, dtype, config=None, *, alpha=1):
-        # The op's signature admits an integral input only an integral alpha the dtype
-        # represents; for uint8 that includes the negative values PyTorch wraps
-        # (alpha=-1 -> 255), which the integer path below reproduces.
         self._alpha = alpha
         super().__init__(a_shape, b_shape, dtype, config=config)
 
     def _alpha_op_func(self):
-        """Build a binary op_func with ``alpha`` baked in.
+        """The binary body with ``alpha`` baked in.
 
-        Floating inputs route the scalar multiply through fp32 to dodge
-        narrow-type literal issues for fp16 / bf16; integer/bool inputs
-        keep native integer arithmetic. Following PyTorch, the integral
-        alpha is coerced via the input dtype (uint8 alpha=-1 -> 255; bool
+        A float input scales in fp32; an integer or bool input scales natively, with alpha
+        coerced through the input dtype as PyTorch does (uint8 alpha=-1 -> 255; bool
         alpha=2 -> True).
         """
         alpha = self._alpha
         combine = type(self)._combine
 
         if alpha == 1:
-            # The identity multiplier skips the scalar multiply.
+
             def op_func(a, b):
                 return combine(a, b)
 
             return op_func
 
         if self.dtype in BITWISE_DTYPES:
-            # Native integer arithmetic. Coerce alpha into the input dtype's
-            # representable range in Python before T.cast: TVM rejects a
-            # negative literal cast to an unsigned dtype, so reproduce
-            # PyTorch's "scalar wraps via the input dtype" semantics here.
+            # Wrapped in Python: TVM rejects a negative literal cast to an unsigned dtype.
             if self.dtype is torch.bool:
                 int_alpha = int(bool(alpha))
             else:
@@ -703,49 +569,38 @@ class AlphaScaledBinaryKernel(BinaryKernel, AlphaScaledBinaryFwdInterface):
         return op_func
 
     def _get_effective_op_func(self):
-        """Inject the alpha-baked op_func into the parent build pipeline."""
         return f"{self._op_func_name()}|alpha={self._alpha!r}", self._alpha_op_func()
 
 
 class ScalarParamUnaryKernel(UnaryKernel):
-    """A unary kernel whose op body is built from construction-time scalars.
+    """A unary kernel whose op body bakes in construction-time scalars.
 
-    The scalars are bound into the body rather than passed to the PrimFunc, so
-    every distinct value is its own specialization. Subclasses implement
-    ``_make_op_func`` and ``_param_key``; ``op_func`` is never called.
-
-    The body is always ``register_copy``.
+    Every distinct value is its own specialization. The keyword arguments after
+    ``config`` are the scalars; a subclass implements ``_make_op_func`` taking them.
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
-    def _make_op_func(self):
+    def __init__(self, N_total, dtype, config=None, **params):
+        self.params = params
+        super().__init__(N_total, dtype, config=config)
+
+    def _make_op_func(self, **params):
         """Return the op body for this specialization's scalars."""
         raise NotImplementedError
 
-    def _param_key(self) -> str:
-        """Return the scalar values, spelled out for the op body's name."""
-        raise NotImplementedError
-
-    @staticmethod
-    def op_func(x):
-        raise NotImplementedError(
-            "ScalarParamUnaryKernel builds its body from construction parameters; "
-            "use the kernel through __init__ instead of calling op_func."
-        )
-
     def _get_effective_op_func(self):
-        return f"{self._op_func_name()}|{self._param_key()}", self._make_op_func()
+        key = "|".join(f"{name}={value!r}" for name, value in self.params.items())
+        return f"{self._op_func_name()}|{key}", self._make_op_func(**self.params)
 
 
 class MultiInputElementwiseKernel(_ElementwiseKernel):
     """Several inputs broadcast to one shape, one output.
 
-    Subclasses define ``_builder_fn`` (the ``@target_cache`` builder of the flat
-    program), ``_builder_args`` (its positional arguments after ``N_total`` and the
-    dtype string) and ``_element`` (the per-element body of the in-place program), and
-    describe their forward arguments in ``INPUTS`` as ``(name, kind)`` pairs in
-    PrimFunc parameter order:
+    Subclasses define ``_builder`` (the ``@target_cache`` builder of the flat program),
+    ``_builder_args`` (its positional arguments after ``N_total`` and the dtype string)
+    and ``_element`` (the per-element body of the in-place program), and describe their
+    forward arguments in ``INPUTS`` as ``(name, kind)`` pairs in PrimFunc parameter order:
 
     =========== =============================================================
     ``tile``    flattened; holds the output's element count on the flat
@@ -758,11 +613,11 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     An argument the call leaves as ``None`` names no PrimFunc parameter.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = FLOAT_DTYPES
     INPUTS: tuple = ()
     # The only integer inputs are uint8 cond/mask tensors, which select results.
     autotune_accepts_random_int_inputs: bool = True
+    _builder = None
 
     @classmethod
     def entry_for(cls, call: ElementwiseCall) -> Entry:
@@ -773,13 +628,8 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
         self.N_total = N_total
         self.dtype = dtype
         self.output_dtype = dtype
-        self.kernel = self._builder_fn()(self.N_total, self.dtype_str, *self._builder_args())
+        self.kernel = self._builder(self.N_total, self.dtype_str, *self._builder_args())
         self.init_config(config)
-
-    @staticmethod
-    def _builder_fn():
-        """Return the ``@target_cache`` builder function for this kernel."""
-        raise NotImplementedError
 
     def _builder_args(self) -> tuple:
         """Return the builder's positional args after ``N_total`` and the dtype."""
@@ -787,8 +637,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     @property
     def default_config(self):
-        # The body stages its per-element inputs into fragments and writes the result
-        # back out of one, which is what `register_copy` names elsewhere in the family.
+        # The flat program stages through fragments, as `register_copy` does.
         cfg = default_launch_config(
             strategy="register_copy",
             input_dtype=self.dtype,
@@ -827,11 +676,9 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     def _run(self, **tensors):
         """Run on the named inputs and restore the call's shape.
 
-        The first ``tile`` input carries the semantic dtype: a bool one is
-        computed in uint8 storage, and the result is viewed back to bool. When every
-        operand holds the output's element count, the flat program runs on them; otherwise
-        each operand is read in place at its own strides, 0 along a broadcast dimension,
-        rather than expanded first.
+        The first ``tile`` input carries the semantic dtype; a bool one computes in uint8
+        storage. Operands that all hold the output's element count take the flat program;
+        otherwise each operand is read in place at its own strides.
         """
         self._require_devices(**tensors)
         present = [(name, kind) for name, kind in self.INPUTS if tensors.get(name) is not None]
@@ -879,10 +726,8 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
 
 class GeneratorKernel(Kernel):
-    """A program that takes no input and writes one float tensor on the kernel's device.
-
-    A subclass sets ``self.kernel`` and defines ``_compile``.
-    """
+    """A program that takes no input and writes one float tensor; a subclass sets
+    ``self.kernel`` and defines ``_compile``."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = FLOAT_DTYPES
@@ -906,10 +751,9 @@ class GeneratorKernel(Kernel):
 
 
 class TorchFallbackKernel(Kernel):
-    """The answer for element types this backend compiles no program for.
+    """Torch's answer for element types this backend compiles no program for.
 
-    Torch computes it. The class takes no construction argument, so every call shares one
-    entry, and it exposes no program, so tuning walks past it.
+    Every call shares one entry, and it exposes no program to tune.
     """
 
     # The element types this class answers for; a subclass states its own.

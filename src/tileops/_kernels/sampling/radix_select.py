@@ -78,14 +78,16 @@ def cluster_limit(arch: int) -> int:
     return MAX_PORTABLE_CLUSTER_BLOCKS if arch >= 90 else 1
 
 
-def row_refusal(call, threads: int, max_slots: int, max_slots_one_cta: int) -> str | None:
+def row_refusal(call, threads: int, max_slots: int) -> str | None:
     """Why a launch of ``threads`` a CTA cannot hold the call's rows, or ``None``.
 
-    ``max_slots_one_cta`` bounds a thread's slots where ``cluster_limit`` keeps a row in one
-    CTA, and ``max_slots`` bounds them where a cluster spreads it.
+    ``max_slots`` bounds a thread's slots where a cluster spreads a row.
     """
     if call.batch * call.vocab > 2**31 - 1:
         return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
+    # Where a row stays in one CTA: the fewest slots holding a 128256-value float32 vocabulary
+    # at 1024 threads; those past the registers spill to local memory.
+    max_slots_one_cta = 32
     slots = max_slots if cluster_limit(call.arch) > 1 else max_slots_one_cta
     widest = (
         cluster_limit(call.arch) * threads * (VECTOR_ACCESS_BYTES // call.dtype.itemsize) * slots
@@ -348,9 +350,8 @@ def key_select(vocab: int, dtype: str, threads: int, cluster: int, slots: int) -
                 settled[0] = pre[0]
                 counted[0] = st[6]
                 counted[1] = st[7]
-                # ``hist`` alternates, so a peer still reading the counts of the phase
-                # before never sees this pass zero them. The samples hold slab 0, so the
-                # first pass takes slab 1.
+                # ``hist`` alternates slabs, so a peer still reading the last pass's counts never
+                # sees them zeroed; the samples hold slab 0.
                 slab = (q + 1) % 2
                 for i in T.serial(-(-slabs // threads)):
                     if i * threads + tx < slabs:

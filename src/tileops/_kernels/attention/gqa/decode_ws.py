@@ -1,9 +1,8 @@
 """Warp-specialized SM90 dense GQA decode for batched calls.
 
-``GQADecodeWSKernel`` runs one CTA per (KV head, batch entry, KV split): a TMA producer
-warp streams K and V tiles through a slot ring while one WGMMA consumer warpgroup
-keeps the head group's online softmax. One split normalizes in the CTA and writes the
-output; more splits write FP32 partials that a combine kernel merges.
+``GQADecodeWSKernel`` runs one CTA per (KV head, batch entry, KV split). One split
+normalizes in the CTA and writes the output; more splits write FP32 partials that a
+combine kernel merges.
 """
 
 import math

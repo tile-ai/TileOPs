@@ -275,11 +275,8 @@ def _gqa_varlen_fp8_ws_kernel(
 ) -> Callable:
     """Build the warp-specialized FP8 packed-varlen program.
 
-    A persistent CTA per SM runs the items its TMA warpgroup claims off a shared counter
-    and publishes to its two compute warpgroups through ``item_ring``. The compute
-    warpgroups issue the FA3 WGMMAs through the CUTE helpers of ``fp8_gqa_helper.h``:
-    ``T.wgmma_gemm`` has no FP8 lowering, and the value contraction takes the previous
-    key tile's probabilities from registers.
+    The compute warpgroups issue the FA3 WGMMAs through the CUTE helpers of
+    ``fp8_gqa_helper.h``: ``T.wgmma_gemm`` has no FP8 lowering.
     """
     groups = heads // heads_kv
     accum_dtype = "float"
@@ -1148,12 +1145,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
 
 
 class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
-    """SM90 warp-specialized FP8 packed prefill: a persistent CTA per SM.
-
-    The transfer warpgroup claims each item off a shared counter, publishes it to the
-    two compute warpgroups, stages their query tiles and streams the item's keys and
-    values through mbarriers; the compute warpgroups take 64 rows each.
-    """
+    """SM90 warp-specialized FP8 packed prefill: a persistent CTA per SM."""
 
     supported_archs: list[int] = [90]
 

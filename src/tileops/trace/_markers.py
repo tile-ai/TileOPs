@@ -17,21 +17,27 @@ DEFAULT_LANE = "main"
 def _emit(event_id: int, kind: int, lane: int, payload) -> None:
     """Emit one ``tl_trace_marker`` placeholder for the active group.
 
-    ``event_id`` / ``kind`` / ``lane`` / ``gid`` are compile-time-constant ints;
-    ``payload`` is the lone runtime arg, carried through as a PrimExpr so a loop
-    index survives into the lowered ``pack_w1_tir`` call.
+    ``payload`` is the one runtime arg: ``None``, an int, or a PrimExpr such as a loop
+    index, which survives into the lowered ``pack_w1_tir`` call.
     """
     state = build_state()
     if payload is None:
-        payload_expr = T.int32(0)
+        payload = T.int32(0)
     elif isinstance(payload, int):
-        payload_expr = T.int32(payload)
-    else:
-        payload_expr = payload
+        payload = T.int32(payload)
     marker = T.call_extern(  # lint: extern-target allow: MARKER names tl_trace_marker
-        "handle", MARKER, event_id, int(kind), lane, state.active_gid, payload_expr
+        "handle", MARKER, event_id, int(kind), lane, state.active_gid, payload
     )
     T.evaluate(marker)
+
+
+def _emit_named(name: str, kind: EventKind, lane: str, payload) -> tuple[int, int]:
+    """Intern ``name`` / ``lane``, emit one marker, and return their ids."""
+    state = build_state()
+    event_id = state.intern_event(name)
+    lane_id = state.intern_lane(lane)
+    _emit(event_id, kind, lane_id, payload)
+    return event_id, lane_id
 
 
 class AnnoToken:
@@ -51,11 +57,8 @@ class AnnoToken:
 
 
 def open_range(name: str, lane: str, payload=None) -> AnnoToken:
-    """Intern ``name`` / ``lane``, emit a RANGE_BEGIN, and return its token."""
-    state = build_state()
-    event_id = state.intern_event(name)
-    lane_id = state.intern_lane(lane)
-    _emit(event_id, EventKind.RANGE_BEGIN, lane_id, payload)
+    """Emit a RANGE_BEGIN and return its token."""
+    event_id, lane_id = _emit_named(name, EventKind.RANGE_BEGIN, lane, payload)
     return AnnoToken(name, event_id, lane_id, payload)
 
 
@@ -67,11 +70,8 @@ def close_range(tok: AnnoToken | None) -> None:
 
 
 def emit_instant(name: str, payload, lane: str) -> None:
-    """Intern ``name`` / ``lane`` and emit a single INSTANT marker."""
-    state = build_state()
-    event_id = state.intern_event(name)
-    lane_id = state.intern_lane(lane)
-    _emit(event_id, EventKind.INSTANT, lane_id, payload)
+    """Emit a single INSTANT marker."""
+    _emit_named(name, EventKind.INSTANT, lane, payload)
 
 
 def declare_flow(src_name: str, dst_name: str) -> None:

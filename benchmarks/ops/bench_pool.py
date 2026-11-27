@@ -1,10 +1,4 @@
-"""Pooling benchmarks.
-
-Every case is a manifest call of ``src/tileops/manifest/spec/pool.yaml``. The 2D cases model
-vision-backbone downsampling patterns such as ResNet/ConvNeXt feature stages.
-The 3D cases model video CNN spatiotemporal pooling patterns such as
-I3D/SlowFast-style feature stages.
-"""
+"""Pooling benchmarks."""
 
 from collections.abc import Callable
 
@@ -240,64 +234,62 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(AvgPool1dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AvgPool1dFwdOp))
 def test_avg_pool1d_bench(case) -> None:
     _bench(AvgPool1dFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(AvgPool2dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AvgPool2dFwdOp))
 def test_avg_pool2d_bench(case) -> None:
     _bench(AvgPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(AvgPool3dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AvgPool3dFwdOp))
 def test_avg_pool3d_bench(case) -> None:
     _bench(AvgPool3dFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(MaxPool1dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaxPool1dFwdOp))
 def test_max_pool1d_bench(case) -> None:
     _bench(MaxPool1dFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(MaxPool1dIndicesFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaxPool1dIndicesFwdOp))
 def test_max_pool1d_indices_bench(case) -> None:
     _bench(MaxPool1dIndicesFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(MaxPool2dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaxPool2dFwdOp))
 def test_max_pool2d_bench(case) -> None:
     _bench(MaxPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(MaxPool2dIndicesFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaxPool2dIndicesFwdOp))
 def test_max_pool2d_indices_bench(case) -> None:
     _bench(MaxPool2dIndicesFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(MaxPool3dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaxPool3dFwdOp))
 def test_max_pool3d_bench(case) -> None:
     _bench(MaxPool3dFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(MaxPool3dIndicesFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaxPool3dIndicesFwdOp))
 def test_max_pool3d_indices_bench(case) -> None:
     _bench(MaxPool3dIndicesFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(AdaptiveAvgPool2dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AdaptiveAvgPool2dFwdOp))
 def test_adaptive_avg_pool2d_bench(case) -> None:
     _bench(AdaptiveAvgPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(AdaptiveMaxPool2dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AdaptiveMaxPool2dFwdOp))
 def test_adaptive_max_pool2d_bench(case) -> None:
     _bench(AdaptiveMaxPool2dFwdOp, case)
 
 
-@pytest.mark.parametrize(
-    "case", bench.cases(AdaptiveMaxPool2dIndicesFwdOp), ids=lambda case: case.id
-)
+@pytest.mark.parametrize("case", bench.cases(AdaptiveMaxPool2dIndicesFwdOp))
 def test_adaptive_max_pool2d_indices_bench(case) -> None:
     _bench(AdaptiveMaxPool2dIndicesFwdOp, case)
 
@@ -323,7 +315,7 @@ def _torch_view_mean(workload: MeanPoolingWorkload):
     return fn
 
 
-@pytest.mark.parametrize("case", bench.cases(MeanPoolingFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MeanPoolingFwdOp))
 def test_mean_pooling_bench(case) -> None:
     workload = case.workload
     op = MeanPoolingFwdOp(**case.arguments)

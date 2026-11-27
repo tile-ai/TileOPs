@@ -1,12 +1,5 @@
 """Benchmarks for the convolution op family (1d/2d/3d).
 
-Workload shapes, channel counts, kernel sizes, strides, paddings, and dtypes
-are loaded from the ops manifest (``src/tileops/manifest/spec/convolution.yaml``);
-FLOP/byte counts come from each op's ``eval_roofline()``.
-
-One ``test_*_bench`` per op, over the op's manifest calls; a row passes bias when its
-``some`` names it.
-
 Every row is timed against flag_gems' Triton convolutions, ``F.convNd`` eager
 (which is cuDNN, so cuDNN takes no tag of its own), and that reference through
 inductor.
@@ -18,7 +11,7 @@ import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks._cases.convolution import static_weight as bind_static_weight
+from benchmarks._cases import static_weight as bind_static_weight
 from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
 from tileops._ops._spatial import per_axis_values
 from tileops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
@@ -60,21 +53,21 @@ def _run_conv(op, case: bench.Case, *, rank: int, static_weight: bool = False) -
     bench.Runner(op, case).compare(baselines)
 
 
-@pytest.mark.parametrize("case", bench.cases(Conv1dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(Conv1dFwdOp))
 def test_conv1d_bench(case) -> None:
     op = Conv1dFwdOp(**case.arguments)
     op.request_tune()
     _run_conv(op, case, rank=1, static_weight=True)
 
 
-@pytest.mark.parametrize("case", bench.cases(Conv2dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(Conv2dFwdOp))
 def test_conv2d_bench(case) -> None:
     op = Conv2dFwdOp(**case.arguments)
     op.request_tune()
     _run_conv(op, case, rank=2)
 
 
-@pytest.mark.parametrize("case", bench.cases(Conv3dFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(Conv3dFwdOp))
 def test_conv3d_bench(case) -> None:
     op = Conv3dFwdOp(**case.arguments)
     op.request_tune()

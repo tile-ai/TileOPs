@@ -411,8 +411,7 @@ CausalConv1dUpdateFwdOp:
 
 SelectiveScanFwdOp:
   # Mamba-1 S6 selective scan: a first-order recurrence whose decay and input gates are
-  # functions of the input, discretized per channel. The SSD entries above carry one
-  # scalar decay per head; this one does not reduce to their chunked matmul.
+  # functions of the input, discretized per channel.
   #
   # Index names, which differ from the SSD stages above:
   #   Di d_inner   N d_state   G n_groups   Bsz batch

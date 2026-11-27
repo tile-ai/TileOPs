@@ -48,19 +48,13 @@ def _dsa_paged_kernel(
 ):  # fmt: skip
     """One thread block (CTA) per (query row, 64-head block, key split).
 
-    Two 64-slot key buffers alternate. Warpgroup 0 scores and accumulates value dims [0, 256); warpgroup 1 gathers the next
-    block and accumulates [256, 512); the producer warpgroup dequantizes in place. With
-    ``cluster == 2``, each CTA of a pair dequantizes half of every block for both.
+    With ``bf16`` the rows are bfloat16, 512 latent values and ``tail`` more key values.
+    Slots past ``topk`` in its last block are dead. With ``sink`` and no key split, ``Sink``
+    joins each head's softmax denominator.
 
-    With ``bf16`` the rows are bfloat16, 512 latent values and ``tail`` more key values: the
-    gather lands them where the consumers read them, and the producer only publishes each
-    landed block. Slots past ``topk`` in its last block are dead. With ``sink`` and no key
-    split, ``Sink`` joins each head's softmax denominator.
-
-    Two key splits of bfloat16 rows run as a CTA pair: each CTA streams its half of the
-    blocks, the pair trades each row's max and sum, and each CTA adds the peer's half of the
-    value dims it stores to its own, then stores them; ``Sink`` joins the merged
-    denominator. More key splits store float32 partials for the combine.
+    Two key splits of bfloat16 rows run as a CTA pair that trades each row's max and sum;
+    ``Sink`` joins the merged denominator. More key splits store float32 partials for the
+    combine.
     """
     if bf16 and (cluster != 1 or tail not in (0, 64)):
         # A cluster shares dequantized rows, which bfloat16 rows never are; the rope tile
@@ -726,13 +720,8 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
     def split_blocks_for(ctas: int, topk: int, sms: int) -> int:
         """The most key splits whose CTAs still fit one wave.
 
-        Two splits run as a CTA pair: each CTA streams ceil(n / 2) of the row's n 64-slot
-        blocks, then trades 64 KiB of float32 output, the bytes of one block, taking time t.
-        The pair beats one CTA when ceil(n / 2) + t < n: at n = 4 that needs t under two
-        blocks' time, and at n = 3 under one, a tie at best. The pair starts at four blocks,
-        a margin of one block over the trade's bytes. More splits each read at least four
-        blocks: a shorter split spends more on its own start and the combine than its CTA
-        saves. Splits divide the row's live blocks at run time, so trailing ones may be empty.
+        Two splits run as a CTA pair, from four blocks a row. More splits each read at least four
+        blocks. Splits divide the row's live blocks at run time, so trailing ones may be empty.
         """
         blocks = -(-topk // 64)
         if ctas * 2 > sms or blocks < 4:

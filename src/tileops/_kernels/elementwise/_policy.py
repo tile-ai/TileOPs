@@ -8,13 +8,11 @@ from tileops._kernels.elementwise._broadcast import row_tile_leaves_tail, takes_
 from tileops._kernels.elementwise._dtype import BOOL_STORAGE_DTYPE
 from tileops._kernels.kernel_base import Kernel
 
-# The default config and the autotune sweep derive elements per thread from these two,
-# so a tuned kernel can land back on its default.
+# One 16-byte vector, and the fewest elements a thread carries; the default config and the
+# autotune sweep both derive elements per thread from them.
 _BYTES_PER_THREAD = 16
 _MIN_NUM_PER_THREAD = 4
-# Fewest blocks a launch should spread its elements over. The shrink in
-# ``default_launch_config`` aims for it, and a family that cuts blocks from rows
-# compares its own grid against it.
+# Fewest blocks a launch should spread its elements over.
 TARGET_BLOCKS = 256
 
 
@@ -23,39 +21,28 @@ def default_launch_config(
     strategy: str,
     input_dtype: torch.dtype,
     output_dtype: torch.dtype,
-    n_total: int | None,
+    n_total: int,
+    bytes_per_thread: int,
+    min_num_per_thread: int,
+    resident_threads: int,
     stores_bool: bool = True,
-    bytes_per_thread: int = _BYTES_PER_THREAD,
-    min_num_per_thread: int = _MIN_NUM_PER_THREAD,
     row_broadcast_inner: int | None = None,
     register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
-    resident_threads: int | None = None,
     one_wave_in_l2: bool = False,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
-    *bytes_per_thread* is how much each thread carries and *min_num_per_thread*
-    how few elements the shrink below leaves it; see
-    ``_ElementwiseKernel.BYTES_PER_THREAD`` and ``MIN_NUM_PER_THREAD``.
-    *row_broadcast_inner* is the row extent a broadcast block walks, or
-    ``None``; see ``_tail_dominated``. *register_copy_num_per_thread* is how
-    many elements a ``register_copy`` thread carries at least before the shrink;
-    see ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``. *resident_threads* is how
-    many threads the device holds at once, or ``None`` where it is not known; an 8-byte
-    operand's elements per thread depend on how many waves of it the launch runs.
-    *one_wave_in_l2* enables wider blocks for inexpensive unary bodies held in L2.
+    *bytes_per_thread*, *min_num_per_thread* and *register_copy_num_per_thread* are the
+    kernel's ``_ElementwiseKernel`` attributes of those names. *row_broadcast_inner* is
+    the row extent a broadcast block walks, or ``None``. *resident_threads* is how many
+    threads the device holds at once. *one_wave_in_l2* enables wider blocks for
+    inexpensive unary bodies held in L2.
     """
 
-    def _tail_dominated(
-        inner: int | None, n_total: int | None, threads: int, npt: int, staged: bool
-    ) -> bool:
-        """Whether doubling the block width pushes more columns onto the guarded tail path.
-
-        A row-broadcast block covers columns of one row, and the remainder the width
-        does not cover runs the slower per-lane path. A width that leaves no
-        remainder there has nothing to push onto it.
-        """
-        if inner is None or n_total is None:
+    def _tail_dominated(inner: int | None, threads: int, npt: int, staged: bool) -> bool:
+        """Whether doubling the block width pushes more row-broadcast columns onto the
+        per-lane tail path."""
+        if inner is None:
             return False
         if not row_tile_leaves_tail(inner, n_total // inner, threads, npt * 2, staged):
             return False
@@ -82,7 +69,7 @@ def default_launch_config(
         npt = capped
     else:
         if output_dtype.itemsize < elem_bytes and not _tail_dominated(
-            row_broadcast_inner, n_total, threads, npt, staged
+            row_broadcast_inner, threads, npt, staged
         ):
             # A narrower result leaves the store short of a vector, so widen to cover it.
             npt *= 2
@@ -97,15 +84,12 @@ def default_launch_config(
         elem_bytes == 8
         and output_dtype.itemsize == elem_bytes
         and strategy != "direct"
-        and n_total is not None
-        and resident_threads is not None
         and -(-n_total // (threads * npt)) >= one_vector_min_waves * (resident_threads // threads)
     ):
         npt //= 2
 
     while (
-        n_total is not None
-        and strategy != "direct"
+        strategy != "direct"
         and npt > min_num_per_thread
         and n_total < threads * npt * TARGET_BLOCKS
     ):
@@ -117,7 +101,6 @@ def default_launch_config(
     if (
         strategy != "direct"
         and row_broadcast_inner is not None
-        and n_total is not None
         and output_dtype.itemsize < elem_bytes
         and n_total >= flat_threads * npt * TARGET_BLOCKS
         and all(
@@ -130,7 +113,7 @@ def default_launch_config(
     # A launch held in L2 keeps its stores there, so loads in flight set its time, not DRAM
     # bandwidth: it runs one wave, each thread holding its share of the resident threads.
     # Whole blocks preserve vectorized loads; ragged sizes retain the default.
-    if one_wave_in_l2 and strategy == "register_copy" and n_total is not None and resident_threads:
+    if one_wave_in_l2 and strategy == "register_copy":
         # 256-thread blocks, not 512: a partial last wave of wide blocks leaves more SMs idle.
         # A small grid keeps them only while it spans four blocks; below that, 128-thread
         # blocks are faster.
@@ -157,10 +140,10 @@ def _register_copy_floor(requested: int, elem_bytes: int) -> int:
 
 def elementwise_autotune_configs(
     dtype: torch.dtype,
-    strategy: str | None = None,
-    bytes_per_thread: int = _BYTES_PER_THREAD,
-    min_num_per_thread: int = _MIN_NUM_PER_THREAD,
-    register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
+    strategy: str,
+    bytes_per_thread: int,
+    min_num_per_thread: int,
+    register_copy_num_per_thread: int,
 ) -> list[dict]:
     """Return the launch configs to time for one elementwise specialization.
 
@@ -207,36 +190,13 @@ def elementwise_output_plan(
     return _ElementwiseOutputPlan(logical_dtype, kernel_output_dtype, bool_via_int8)
 
 
-def _bool_output_needs_scalar(
-    input_dtype: torch.dtype,
-    declared_output_dtype: torch.dtype | None,
-) -> bool:
-    return declared_output_dtype == torch.bool and input_dtype in (
-        torch.uint8,
-        torch.int8,
-        torch.int16,
-    )
-
-
-def choose_unary_strategy(
-    *,
-    input_dtype: torch.dtype,
-    declared_output_dtype: torch.dtype | None,
+def choose_strategy(
+    input_dtype: torch.dtype, declared_output_dtype: torch.dtype | None, same_shape: bool = True
 ) -> str:
-    """``direct`` where a bool operand or output cannot be vectorized, else ``register_copy``."""
-    if input_dtype == torch.bool or _bool_output_needs_scalar(input_dtype, declared_output_dtype):
-        return "direct"
-    return "register_copy"
-
-
-def choose_binary_strategy(
-    *,
-    input_dtype: torch.dtype,
-    declared_output_dtype: torch.dtype | None,
-    same_shape: bool,
-) -> str:
-    """``direct`` for bool, ``register_copy`` for same-shape operands, else
-    ``explicit_parallel``."""
-    if input_dtype == torch.bool or _bool_output_needs_scalar(input_dtype, declared_output_dtype):
+    """``direct`` where a bool operand, or a bool result of a narrow integer, cannot be
+    vectorized; else ``register_copy`` for same-shape operands and ``explicit_parallel``
+    for broadcast ones."""
+    narrow_int = input_dtype in (torch.uint8, torch.int8, torch.int16)
+    if input_dtype == torch.bool or (declared_output_dtype == torch.bool and narrow_int):
         return "direct"
     return "register_copy" if same_shape else "explicit_parallel"

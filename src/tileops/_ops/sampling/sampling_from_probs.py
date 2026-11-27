@@ -12,7 +12,6 @@ from tileops._kernels.sampling import (
     SamplingFromProbsFwdKernel,
 )
 from tileops._ops.op_base import Op
-from tileops.backend import Target
 
 __all__ = ["SamplingFromProbsFwdOp"]
 
@@ -38,19 +37,6 @@ class SamplingFromProbsFwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "sampling_from_probs": SamplingFromProbsFwdInterface
     }
-
-    def __init__(
-        self,
-        *,
-        target: Target = None,
-    ):
-        """Build the op. Shapes and dtypes are taken from each call.
-
-        Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
-        """
-        super().__init__(target=target)
 
     def forward(
         self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor

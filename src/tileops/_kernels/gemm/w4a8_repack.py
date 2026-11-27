@@ -12,7 +12,7 @@ from tileops._kernels.constants import WARP_MMA_ROWS, WGMMA_ROWS
 from tileops._kernels.gemm.call_spec import W4A8RepackCall, W4A8RepackFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
 
-__all__ = ["GROUP_SIZE", "W4A8_LAYOUT", "W4A8Layout", "W4A8RepackKernel"]
+__all__ = ["GROUP_SIZE", "W4A8_LAYOUT", "W4A8RepackKernel"]
 
 
 @dataclass(frozen=True)

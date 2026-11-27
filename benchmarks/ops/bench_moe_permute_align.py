@@ -126,7 +126,7 @@ def _triton_permute_align(
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEPermuteAlignFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEPermuteAlignFwdOp))
 def test_permute_align_bench(case) -> None:
     inputs = case.inputs
     op = MoEPermuteAlignFwdOp(**case.arguments)

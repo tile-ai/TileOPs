@@ -1,8 +1,4 @@
-"""Benchmark for the per-tensor INT8 quantization op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the per-tensor INT8 quantization op."""
 
 import pytest
 import torch
@@ -29,7 +25,7 @@ def _vllm_quant(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return q, scale
 
 
-@pytest.mark.parametrize("case", bench.cases(INT8QuantPerTensorFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(INT8QuantPerTensorFwdOp))
 def test_int8_quant_per_tensor_bench(case) -> None:
     op = INT8QuantPerTensorFwdOp(**case.arguments)
     op.request_tune()

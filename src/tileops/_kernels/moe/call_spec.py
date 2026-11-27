@@ -101,9 +101,8 @@ class IndexedExpertCall(CallSpec):
     def grouped_dispatch(self) -> bool:
         """Whether routes that share an expert are computed as one group.
 
-        Several tokens make groups worth describing: the route-statistics pass runs and both
-        GEMMs are built to read its metadata. One token has one route per expert at most, so
-        each GEMM computes its own route and no metadata is produced.
+        True for several tokens: the route-statistics pass runs and both GEMMs read its
+        metadata. One token has at most one route per expert, so no metadata is produced.
         """
         return self.num_tokens > 1
 
@@ -135,12 +134,9 @@ class _MGroupedLayoutCall(CallSpec):
 class MGroupedGEMMCall(_MGroupedLayoutCall):
     """Complete selection facts for one M-grouped GEMM invocation.
 
-    The layout arrives structured — ``kind`` first, then the contiguous
-    sub-axes — so a candidate can claim a region such as "every contiguous
-    layout with psum metadata" without enumerating keys. ``m`` is the
-    materialized row count (``num_groups * max_m`` for masked layouts). It is a
-    fact of the call and not of the built kernel, so it is excluded from this
-    record's equality: a candidate selected on it is still cached without it.
+    ``m`` is the materialized row count (``num_groups * max_m`` for masked layouts). It is a
+    fact of the call and not of the built kernel, so it is excluded from this record's
+    equality.
     """
 
     # Gated activation fused into the epilogue ("silu_and_mul", ...); None for a
@@ -160,11 +156,10 @@ class MGroupedGEMMCall(_MGroupedLayoutCall):
 class MGroupedGEMMFP8Call(_MGroupedLayoutCall):
     """Complete selection facts for one block-scaled FP8 M-grouped GEMM invocation.
 
-    The layout arrives as ``MGroupedGEMMCall``'s does. The scale shapes are carried whole so
-    an implementation can refuse a scale grid other than the 1x128 (``a``) and 128x128
-    (``b``) blocks it reads. ``m``, the materialized row count, and ``a_scale_shape``, which
-    follows it, are facts of the call and not of the built kernel, so they are excluded from
-    this record's equality.
+    The scale shapes are carried whole so an implementation can refuse a scale grid other than
+    the 1x128 (``a``) and 128x128 (``b``) blocks it reads. ``m``, the materialized row count,
+    and ``a_scale_shape``, which follows it, are facts of the call and not of the built kernel,
+    so they are excluded from this record's equality.
     """
 
     ab_dtype: torch.dtype | None = None
@@ -180,7 +175,7 @@ class MGroupedGEMMFP8Call(_MGroupedLayoutCall):
 class MGroupedGEMMMXFP4Call(_MGroupedLayoutCall):
     """Complete selection facts for one MXFP4 M-grouped GEMM invocation.
 
-    The layout arrives as ``MGroupedGEMMCall``'s does. ``scale_dtype`` is the dtype of both
+    ``scale_dtype`` is the dtype of both
     scale tensors, ``float8_e8m0fnu`` or ``float32``. ``m``, the materialized row count, is a
     fact of the call and not of the built kernel, so it is excluded from this record's
     equality.

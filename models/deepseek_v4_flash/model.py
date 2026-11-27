@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import Any
 
 import torch
 
-from models.causal_lm import CausalLM, indexed_device
+from models.causal_lm import CausalLM
 from models.deepseek_v4_flash.config import DeepseekV4FlashConfig
 from models.deepseek_v4_flash.layers import Block, Step
+from models.deepseek_v4_flash.loader import load_weights
 from models.deepseek_v4_flash.ops import ModelOps, RoPETable
 
 __all__ = ["DeepseekV4FlashForCausalLM"]
@@ -17,28 +18,17 @@ __all__ = ["DeepseekV4FlashForCausalLM"]
 class DeepseekV4FlashForCausalLM(CausalLM):
     """DeepSeek-V4-Flash text decoder: embedding, mHC blocks, ``hc_head`` collapse and LM head.
 
-    Every weight and every layer's decoding state is on ``device``; a device without an index is
-    the current one at construction. A forward call runs with ``device`` current and leaves the
-    current device as it found it. A forward call advances one request:
-    ``start_pos`` 0 is a prefill that starts a new request; any later ``start_pos`` is a decode
-    step of one token and must be the number of tokens already passed. With ``cuda_graph`` on
-    a CUDA device, the decode steps of one phase, which compressors close a window and whether
-    the indexers hold an entry, share a CUDA graph: the first runs eagerly and captures it, the
-    later ones replay it. The MTP layer is not built.
+    A call at ``start_pos`` 0 is a prefill; a later call is a decode step of one token. A
+    decode phase is which compressors close a window and whether the indexers hold an entry.
+    The MTP layer is not built.
     """
 
-    def __init__(
-        self,
-        config: DeepseekV4FlashConfig,
-        *,
-        device: torch.device | str = "cuda",
-        max_seq_len: int = 4096,
-        cuda_graph: bool = True,
-    ) -> None:
-        self.config = config
-        self.max_seq_len = max_seq_len
-        self.device = indexed_device(device)
-        self.cuda_graph = cuda_graph
+    config_type = DeepseekV4FlashConfig
+    load_weights = staticmethod(load_weights)
+
+    def __init__(self, config: DeepseekV4FlashConfig, **options: Any) -> None:
+        super().__init__(config, **options)
+        max_seq_len = self.max_seq_len
         self.ops = ModelOps(config)
         self.layers = [Block(config, i, max_seq_len, self.device) for i in range(config.n_layers)]
         self._ratios = tuple(sorted({layer.attn.ratio for layer in self.layers} - {0}))
@@ -57,27 +47,6 @@ class DeepseekV4FlashForCausalLM(CausalLM):
         self.norm: torch.Tensor
         self.head: torch.Tensor
         self.hc_head: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-
-    @classmethod
-    def from_pretrained(
-        cls,
-        path: str | Path,
-        *,
-        device: torch.device | str = "cuda",
-        max_seq_len: int = 4096,
-        cuda_graph: bool = True,
-    ) -> DeepseekV4FlashForCausalLM:
-        """Load a Hugging Face DeepSeek-V4-Flash checkpoint directory (``safetensors`` shards)."""
-        from models.deepseek_v4_flash.loader import load_weights
-
-        model = cls(
-            DeepseekV4FlashConfig.from_pretrained(path),
-            device=device,
-            max_seq_len=max_seq_len,
-            cuda_graph=cuda_graph,
-        )
-        load_weights(model, Path(path))
-        return model
 
     def _continue(self, input_ids: torch.Tensor, start_pos: int) -> int:
         seqlen = super()._continue(input_ids, start_pos)

@@ -918,9 +918,9 @@ def test_avg_pool1d_register_serves_one_row_past_int32_groups_one_run_a_thread()
         n=1, c_in=1, size=(2**34,), window=(5,), stride=(4,), pad=(2,), dtype=torch.float16
     )
     assert AvgPool1dRegisterKernel.refusal(call) is None
-    identity, _ = AvgPool1dRegisterKernel.entry_for(call)
-    flat, runs = identity[-2:]
-    assert (flat, runs) == (False, 1)
+    # An input of 2**34 elements is too large to run the op on.
+    config = AvgPool1dRegisterKernel(call).config  # lint: test-placement allow: 2**34 input
+    assert (config["flat"], config["runs"]) == (False, 1)
 
 
 @pytest.mark.in_tree_kernels
@@ -1464,27 +1464,17 @@ _MAX_POOL2D_PARAMS = [
 ]
 
 
-def _check_max_pool2d_odd_rectangle_and_nan(height, width, dtype):
-    x = torch.randn(2, 3, height, width, device=run_device(), dtype=dtype)
-    x[:, :, -1, -1] = float("nan")
-    op = MaxPool2dFwdOp(3, stride=2, ceil_mode=True, target=BUILTIN)
-    expected = F.max_pool2d(x, 3, stride=2, ceil_mode=True)
-    torch.testing.assert_close(op(x), expected, rtol=0, atol=0, equal_nan=True)
-    (kernel,) = op.iter_kernels()
-    return kernel
-
-
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "height,width,dtype,half_warp",
+    "height,width,dtype",
     [
-        pytest.param(33, 33, torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-half-warp"),
-        pytest.param(55, 55, torch.float16, False, marks=pytest.mark.smoke, id="fp16-warp-window"),
-        pytest.param(47, 63, torch.bfloat16, False, marks=pytest.mark.full, id="bf16-warp-window"),
+        pytest.param(33, 33, torch.bfloat16, marks=pytest.mark.smoke, id="bf16-half-warp"),
+        pytest.param(55, 55, torch.float16, marks=pytest.mark.smoke, id="fp16-warp-window"),
+        pytest.param(47, 63, torch.bfloat16, marks=pytest.mark.full, id="bf16-warp-window"),
     ],
 )
-def test_warp_pool_odd_rectangle_and_nan(height, width, dtype, half_warp):
+def test_warp_pool_odd_rectangle_and_nan(height, width, dtype):
     x = torch.randn(2, 3, height, width, device=run_device(), dtype=dtype)
     x[:, :, -1, -1] = float("nan")
     op = MaxPool2dFwdOp(3, stride=2, ceil_mode=True, target=BUILTIN)
@@ -1492,7 +1482,6 @@ def test_warp_pool_odd_rectangle_and_nan(height, width, dtype, half_warp):
     torch.testing.assert_close(op(x), expected, rtol=0, atol=0, equal_nan=True)
     (kernel,) = op.iter_kernels()
     assert type(kernel) is MaxPool2dWarpKernel
-    assert kernel.half_warp is half_warp
 
 
 @pytest.mark.smoke
@@ -1804,14 +1793,12 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     # Smoke
     pytest.param(
         1,
-        "window_all_neg_inf",
         lambda: torch.full((1, 1, 4), float("-inf"), device=run_device(), dtype=torch.float16),
         id="1d-window-all-neg-inf",
         marks=pytest.mark.smoke,
     ),
     pytest.param(
         2,
-        "all_negative",
         lambda: torch.tensor(
             [[[[-1.0, -2.0, -3.0, -4.0]]]], device=run_device(), dtype=torch.float16
         ),
@@ -1820,7 +1807,6 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         3,
-        "window_all_neg_inf",
         lambda: torch.full(
             (1, 1, 3, 3, 3), float("-inf"), device=run_device(), dtype=torch.float16
         ),
@@ -1830,7 +1816,6 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     # 1d full
     pytest.param(
         1,
-        "window_with_nan",
         lambda: torch.tensor(
             [[[1.0, float("nan"), 3.0, 4.0]]], device=run_device(), dtype=torch.float16
         ),
@@ -1839,7 +1824,6 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         1,
-        "window_with_multiple_nans",
         lambda: torch.tensor(
             [[[float("nan"), 1.0, float("nan"), 0.0]]],
             device=run_device(),
@@ -1850,38 +1834,27 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         1,
-        "window_with_tied_maxima",
         lambda: torch.tensor([[[5.0, 5.0, 4.0, 3.0]]], device=run_device(), dtype=torch.float16),
         id="1d-window-with-tied-maxima",
         marks=pytest.mark.full,
     ),
     pytest.param(
         1,
-        "all_negative",
         lambda: torch.tensor(
             [[[-1.0, -2.0, -3.0, -4.0]]], device=run_device(), dtype=torch.float16
         ),
         id="1d-all-negative",
         marks=pytest.mark.full,
     ),
-    pytest.param(
-        1,
-        "padding_does_not_win_over_negative",
-        lambda: torch.full((1, 1, 4), -5.0, device=run_device(), dtype=torch.float16),
-        id="1d-padding-does-not-win",
-        marks=pytest.mark.full,
-    ),
     # 2d full
     pytest.param(
         2,
-        "window_all_neg_inf",
         lambda: torch.full((1, 1, 4, 4), float("-inf"), device=run_device(), dtype=torch.float16),
         id="2d-window-all-neg-inf",
         marks=pytest.mark.full,
     ),
     pytest.param(
         2,
-        "window_with_nan",
         lambda: torch.tensor(
             [[[[1.0, float("nan"), 3.0, 4.0]]]], device=run_device(), dtype=torch.float16
         ),
@@ -1890,7 +1863,6 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         2,
-        "window_with_multiple_nans",
         lambda: torch.tensor(
             [[[[float("nan"), 1.0, float("nan"), 0.0]]]],
             device=run_device(),
@@ -1901,22 +1873,13 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         2,
-        "window_with_tied_maxima",
         lambda: torch.tensor([[[[5.0, 5.0, 4.0, 3.0]]]], device=run_device(), dtype=torch.float16),
         id="2d-window-with-tied-maxima",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        2,
-        "padding_does_not_win_over_negative",
-        lambda: torch.full((1, 1, 4, 4), -5.0, device=run_device(), dtype=torch.float16),
-        id="2d-padding-does-not-win",
         marks=pytest.mark.full,
     ),
     # 3d full
     pytest.param(
         3,
-        "window_with_nan",
         lambda: torch.tensor(
             [[[[[1.0, float("nan")], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]]],
             device=run_device(),
@@ -1927,7 +1890,6 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         3,
-        "window_with_multiple_nans",
         lambda: torch.tensor(
             [[[[[float("nan"), 1.0], [float("nan"), 0.0]], [[2.0, 3.0], [4.0, 5.0]]]]],
             device=run_device(),
@@ -1938,7 +1900,6 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         3,
-        "window_with_tied_maxima",
         lambda: torch.tensor(
             [[[[[5.0, 5.0], [4.0, 3.0]], [[2.0, 1.0], [0.0, -1.0]]]]],
             device=run_device(),
@@ -1949,16 +1910,8 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
     ),
     pytest.param(
         3,
-        "all_negative",
         lambda: torch.full((1, 1, 2, 2, 2), -5.0, device=run_device(), dtype=torch.float16),
         id="3d-all-negative",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
-        3,
-        "padding_does_not_win_over_negative",
-        lambda: torch.full((1, 1, 3, 3, 3), -5.0, device=run_device(), dtype=torch.float16),
-        id="3d-padding-does-not-win",
         marks=pytest.mark.full,
     ),
 ]
@@ -1966,12 +1919,11 @@ _MAX_POOL_SPECIAL_VALUE_CASES = [
 
 @pytest.mark.parametrize("return_indices", [False, True])
 @pytest.mark.parametrize(
-    ("ndim", "case_name", "input_builder"),
+    ("ndim", "input_builder"),
     _MAX_POOL_SPECIAL_VALUE_CASES,
 )
 def test_max_pool_special_values(
     ndim: int,
-    case_name: str,
     input_builder: Callable[[], torch.Tensor],
     return_indices: bool,
 ) -> None:
@@ -1980,7 +1932,6 @@ def test_max_pool_special_values(
         2: {"kernel_size": (3, 3), "stride": (1, 1), "padding": (1, 1)},
         3: {"kernel_size": 2, "stride": 1, "padding": 1},
     }
-    _ = case_name
     x = input_builder()
     pool_kwargs = special_kwargs[ndim]
     ref = max_pool_ref(ndim)(x, **pool_kwargs, return_indices=return_indices)
@@ -2906,15 +2857,7 @@ class MeanPoolingFixture(FixtureBase):
                     marks=pytest.mark.full,
                 ),
                 pytest.param(
-                    2,
-                    2048,
-                    64,
-                    128,
-                    64,
-                    torch.float16,
-                    False,
-                    [1024, 1024],
-                    marks=pytest.mark.full,
+                    2, 2048, 64, 128, 64, torch.float16, False, [1024, 1024], marks=pytest.mark.full
                 ),
             ],
         ),

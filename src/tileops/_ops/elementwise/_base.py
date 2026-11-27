@@ -28,6 +28,7 @@ from tileops._kernels.elementwise.call_spec import (
     UnaryElementwiseFwdInterface,
 )
 from tileops._kernels.kernel_base import KernelInterface
+from tileops._ops._signature_codegen import tensorless_device
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -41,7 +42,7 @@ def generated_on(op: Op) -> "torch.device | None":
     The call spec names it rather than leaving it unset, because a build reads the device it
     compiles for and the entry is keyed by the call.
     """
-    return op._device_without_call_tensors()
+    return tensorless_device(op)
 
 
 class UnaryOp(Op):

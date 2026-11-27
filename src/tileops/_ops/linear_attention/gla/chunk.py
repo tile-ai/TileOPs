@@ -18,6 +18,23 @@ from tileops.backend import Target
 __all__ = ["GLAChunkBwdOp", "GLAChunkFwdOp"]
 
 
+def _chunk_call(op, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
+    """The facts of one call: the shapes read off the tensors and *op*'s own params."""
+    batch, seq_len, heads, dim_k = q.shape
+    return GLAChunkCall(
+        batch=batch,
+        seq_len=seq_len,
+        heads=heads,
+        dim_k=dim_k,
+        dim_v=v.shape[3],
+        chunk_size=op.chunk_size,
+        scale=op.scale if op.scale is not None else dim_k**-0.5,
+        dtype=q.dtype,
+        has_initial_state=has_initial_state,
+        device=q.device,
+    )
+
+
 class GLAChunkFwdOp(Op):
     """Gated Linear Attention (GLA) forward operator.
 
@@ -79,25 +96,9 @@ class GLAChunkFwdOp(Op):
             GLAChunkBwdOp takes as ``h``.
         """
         kernel = self.kernel_for(
-            "gla_chunk_fwd", lambda: self._call(q, v, initial_state is not None)
+            "gla_chunk_fwd", lambda: _chunk_call(self, q, v, initial_state is not None)
         )
         return kernel(q, k, v, g, initial_state)
-
-    def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
-        """The facts of one call: the shapes read off the tensors and the op's own params."""
-        batch, seq_len, heads, dim_k = q.shape
-        return GLAChunkCall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=v.shape[3],
-            chunk_size=self.chunk_size,
-            scale=self.scale if self.scale is not None else dim_k**-0.5,
-            dtype=q.dtype,
-            has_initial_state=has_initial_state,
-            device=q.device,
-        )
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -172,24 +173,10 @@ class GLAChunkBwdOp(Op):
             of the forward's ``initial_state`` with ``has_initial_state``, else ``None``.
         """
         inputs = (q, k, v, g, h, do, dfinal_state)
-        kernel = self.kernel_for("gla_chunk_bwd", lambda: self._call(q, v, self.has_initial_state))
-        return kernel(*inputs, self.has_initial_state)
-
-    def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
-        """The facts of one call: the shapes read off the tensors and the op's own params."""
-        batch, seq_len, heads, dim_k = q.shape
-        return GLAChunkCall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=v.shape[3],
-            chunk_size=self.chunk_size,
-            scale=self.scale if self.scale is not None else dim_k**-0.5,
-            dtype=q.dtype,
-            has_initial_state=has_initial_state,
-            device=q.device,
+        kernel = self.kernel_for(
+            "gla_chunk_bwd", lambda: _chunk_call(self, q, v, self.has_initial_state)
         )
+        return kernel(*inputs, self.has_initial_state)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

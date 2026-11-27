@@ -49,9 +49,6 @@ _FLOAT_MAX = {
     "float8_e5m2fnuz": 57344.0,
     "float8_e8m0fnu": 1.7014118346046923e38,
 }
-_COMPLEX_PART = {"complex64": "float32", "complex128": "float64"}
-# Floating formats without an infinity.
-_NO_INF = frozenset({"float8_e4m3fn", "float8_e4m3fnuz", "float8_e5m2fnuz", "float8_e8m0fnu"})
 
 
 def normalize_axis(axis: int, rank: int) -> int:
@@ -270,7 +267,13 @@ def category(x: str | complex) -> str:
 
 def _fits_float(v, dtype):
     if math.isinf(v):
-        return dtype not in _NO_INF
+        # Floating formats without an infinity.
+        return dtype not in (
+            "float8_e4m3fn",
+            "float8_e4m3fnuz",
+            "float8_e5m2fnuz",
+            "float8_e8m0fnu",
+        )
     return math.isnan(v) or -_FLOAT_MAX[dtype] <= v <= _FLOAT_MAX[dtype]
 
 
@@ -278,8 +281,8 @@ def representable(v: complex, dtype: str) -> bool:
     """Whether `v` converts to `dtype` without overflow, by PyTorch's scalar conversion rule."""
     if dtype == "bool":
         return True
-    if dtype in _COMPLEX_PART:
-        part = _COMPLEX_PART[dtype]
+    part = {"complex64": "float32", "complex128": "float64"}.get(dtype)
+    if part is not None:
         return _fits_float(complex(v).real, part) and _fits_float(complex(v).imag, part)
     if isinstance(v, numbers.Complex) and not isinstance(v, numbers.Real):
         return False
@@ -479,12 +482,11 @@ def nsa_block_indices(
     rows = []
     for n, k in zip(lengths, keys, strict=True):
         for j in range(k - n, k):
+            # The sentinel exceeds every visible block, so sorting leaves the padding last.
             visible = max(ceil_div(j, block_size), 1)
-            per_head = []
-            for _ in range(heads_kv):
-                picked = sorted(rng.sample(range(visible), min(selected, visible)))
-                per_head.append(picked + [sentinel] * (selected - len(picked)))
-            rows.append(per_head)
+            rows.append(
+                [sorted(_padded_sample(rng, visible, selected, sentinel)) for _ in range(heads_kv)]
+            )
     return rows
 
 
@@ -575,13 +577,9 @@ def sparse_topk_positions(
             f"attn.sparse_topk_positions needs S_q > 0, K > 0 and every length >= S_q, "
             f"got lengths={lengths}, S_q={queries}, K={k}"
         )
-    rows = []
-    for n in lengths:
-        per_query = []
-        for s in range(queries):
-            per_query.append(_padded_sample(rng, n - queries + s + 1, k, -1))
-        rows.append(per_query)
-    return rows
+    return [
+        [_padded_sample(rng, n - queries + s + 1, k, -1) for s in range(queries)] for n in lengths
+    ]
 
 
 def key_windows(lengths: Sequence[int], first: int, count: int, side: str) -> list[int]:
@@ -909,9 +907,9 @@ def paged_fits(x: Sequence[int], cu: Sequence[int], cap: int) -> bool:
 
 def moe_layout_valid(x: Sequence[int], layout: Any, rows: int, experts: int) -> bool:
     """`x` is valid metadata of `layout` for `rows` rows and `experts` experts."""
-    ordered = all(a <= b for a, b in zip(x, x[1:], strict=False))
     if layout.kind == "masked":
         return len(x) == experts and all(0 <= v <= layout.max_m for v in x)
+    ordered = all(a <= b for a, b in zip(x, x[1:], strict=False))
     a = layout.alignment
     if layout.metadata_kind == "per_row":
         top = experts + (layout.packing == "aligned")

@@ -1,8 +1,5 @@
 """Benchmarks for argreduce ops (argmax, argmin).
 
-Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines. Each case is one
-manifest call (``src/tileops/manifest/``), parameters included.
-
 Each row is timed against flag_gems' Triton argreduce and against torch eager and
 inductor.
 """
@@ -35,7 +32,7 @@ def _implementations(baseline_fn, flaggems_name: str, dim: int, keepdim: bool, i
     return implementations
 
 
-@pytest.mark.parametrize("case", bench.cases(ArgmaxFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(ArgmaxFwdOp))
 def test_argmax_bench(case) -> None:
     op = ArgmaxFwdOp(**case.arguments)
     dim, keepdim = case.params["dim"], case.params["keepdim"]
@@ -47,7 +44,7 @@ def test_argmax_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(ArgminFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(ArgminFwdOp))
 def test_argmin_bench(case) -> None:
     op = ArgminFwdOp(**case.arguments)
     dim, keepdim = case.params["dim"], case.params["keepdim"]

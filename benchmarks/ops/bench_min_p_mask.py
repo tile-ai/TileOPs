@@ -1,8 +1,4 @@
-"""Benchmark for the min-p logit mask op.
-
-Workload shapes and dtypes come from the ops manifest; roofline FLOP and
-byte counts come from the op's ``eval_roofline()``.
-"""
+"""Benchmark for the min-p logit mask op."""
 
 import pytest
 import torch
@@ -18,7 +14,7 @@ from benchmarks.baselines import (
 from tileops.sampling import MinPMaskFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(MinPMaskFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MinPMaskFwdOp))
 def test_min_p_mask_bench(case) -> None:
     logits, min_p = case.inputs
     op = MinPMaskFwdOp(**case.arguments)

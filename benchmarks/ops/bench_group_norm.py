@@ -35,11 +35,11 @@ def _bench(case: bench.Case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", [c for c in _CASES if _affine(c)], ids=lambda case: case.id)
+@pytest.mark.parametrize("case", [c for c in _CASES if _affine(c)])
 def test_group_norm_bench(case) -> None:
     _bench(case)
 
 
-@pytest.mark.parametrize("case", [c for c in _CASES if not _affine(c)], ids=lambda case: case.id)
+@pytest.mark.parametrize("case", [c for c in _CASES if not _affine(c)])
 def test_group_norm_no_affine_bench(case) -> None:
     _bench(case)

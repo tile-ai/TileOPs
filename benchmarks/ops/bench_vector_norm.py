@@ -1,8 +1,5 @@
 """Benchmarks for vector norm ops (l1_norm, l2_norm, inf_norm).
 
-Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
-Workload shapes and roofline formulas are loaded from the ops manifest (src/tileops/manifest/).
-
 Each order is timed against flag_gems' Triton ``vector_norm`` and against torch
 eager and inductor.
 """
@@ -45,6 +42,6 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(VectorNormFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(VectorNormFwdOp))
 def test_vector_norm_bench(case) -> None:
     _bench(VectorNormFwdOp, case)

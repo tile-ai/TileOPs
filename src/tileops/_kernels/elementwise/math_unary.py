@@ -101,13 +101,7 @@ class NegFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
 
 class ReciprocalFwdKernel(FloatUnaryKernel, ReciprocalFwdInterface):
-    """Element-wise 1/x.
-
-    Integral inputs are this backend's business: it has no integer kernel, so it
-    declares float32 as the type it computes them in and converts at the
-    boundary. A backend with a native integer-input reciprocal declares nothing
-    and receives the integers.
-    """
+    """Element-wise 1/x; an integral input computes in float32."""
 
     REGISTER_COPY_NUM_PER_THREAD = QUOTIENT_NUM_PER_THREAD
 
@@ -231,12 +225,8 @@ class CeilFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
 
 class RoundFwdKernel(FloatUnaryKernel, RoundFwdInterface):
-    """Element-wise round(x) with banker's rounding (round-to-nearest-even).
-
-    Uses ``T.nearbyint`` (maps to ``nearbyintf`` in CUDA) to match
-    PyTorch's ``torch.round`` semantics. Casts to fp32 because
-    ``hnearbyint`` is not available for ``cutlass::half_t``.
-    """
+    """Element-wise round(x) half to even; in fp32, since ``cutlass::half_t`` has no
+    ``hnearbyint``."""
 
     @classmethod
     def refusal(cls, call: RoundCall) -> "str | None":
@@ -339,12 +329,7 @@ class IntIdentityFwdKernel(TorchFallbackKernel, UnaryElementwiseFwdInterface, Ro
 
 
 class RoundDecimalsFwdKernel(Kernel, RoundFwdInterface):
-    """Rounding to a non-zero number of decimal places.
-
-    ``round(x, decimals=k)`` is ``round(x * 10 ** k) / 10 ** k``, which the
-    round-to-nearest-integer program does not do; torch computes it. The class compiles
-    nothing, so there is nothing to tune.
-    """
+    """Rounding to a non-zero number of decimal places, computed by torch."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES + INT_DTYPES
 

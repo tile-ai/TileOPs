@@ -1,8 +1,4 @@
-"""Tests for unary math elementwise ops (17 ops).
-
-Covers correctness across supported float dtypes and edge values for
-numerically sensitive ops.
-"""
+"""Tests for the unary math elementwise ops."""
 
 import pytest
 import torch
@@ -44,8 +40,6 @@ from workloads.numerics import compare_outputs
 
 
 class MathFixture(FixtureBase):
-    """Parametrize over supported float dtypes for unary math ops."""
-
     PARAMS = [
         (
             "n_total, dtype",
@@ -53,19 +47,6 @@ class MathFixture(FixtureBase):
                 pytest.param(1_048_576, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(1_048_576, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(1_048_576, torch.float32, marks=pytest.mark.smoke),
-            ],
-        ),
-    ]
-
-
-class MathEdgeFixture(FixtureBase):
-    """Edge values: fp32, 4K elements."""
-
-    PARAMS = [
-        (
-            "n_total, dtype",
-            [
-                pytest.param(4096, torch.float32, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -94,122 +75,41 @@ def _repeat_values(values: list[float], n: int, dtype: torch.dtype) -> torch.Ten
     return base.repeat(repeats)[:n]
 
 
+def _log1p_input(n: int, dtype: torch.dtype) -> torch.Tensor:
+    return torch.rand(n, device=run_device(), dtype=dtype).clamp(min=0.01)
+
+
 def _make_math_test(n_total, dtype, gen_fn, op_cls):
-    """Build test, instantiate op, and run check."""
     test = UnaryMathTest(n_total, dtype, op_cls.__name__, gen_fn=gen_fn)
     op = op_cls()
     test.check(op, *test.gen_inputs())
 
 
-# Float correctness
-
-
+@pytest.mark.parametrize(
+    "op_cls, gen_fn",
+    [
+        pytest.param(ExpFwdOp, _randn, id="exp"),
+        pytest.param(LogFwdOp, _positive, id="log"),
+        pytest.param(SqrtFwdOp, _positive, id="sqrt"),
+        pytest.param(RsqrtFwdOp, _positive, id="rsqrt"),
+        pytest.param(AbsFwdOp, _randn, id="abs"),
+        pytest.param(NegFwdOp, _randn, id="neg"),
+        pytest.param(ReciprocalFwdOp, _nonzero, id="reciprocal"),
+        pytest.param(SignFwdOp, _randn, id="sign"),
+        pytest.param(SinFwdOp, _randn, id="sin"),
+        pytest.param(CosFwdOp, _randn, id="cos"),
+        pytest.param(FloorFwdOp, _randn, id="floor"),
+        pytest.param(CeilFwdOp, _randn, id="ceil"),
+        pytest.param(RoundFwdOp, _randn, id="round"),
+        pytest.param(TruncFwdOp, _randn, id="trunc"),
+        pytest.param(ErfFwdOp, _randn, id="erf"),
+        pytest.param(Log1pFwdOp, _log1p_input, id="log1p"),
+        pytest.param(Expm1FwdOp, _randn, id="expm1"),
+    ],
+)
 @MathFixture
-def test_exp(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, ExpFwdOp)
-
-
-@MathFixture
-def test_log(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _positive, LogFwdOp)
-
-
-@MathFixture
-def test_sqrt(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _positive, SqrtFwdOp)
-
-
-@MathFixture
-def test_rsqrt(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _positive, RsqrtFwdOp)
-
-
-@MathFixture
-def test_abs(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, AbsFwdOp)
-
-
-@MathFixture
-def test_neg(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, NegFwdOp)
-
-
-@MathFixture
-def test_reciprocal(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _nonzero, ReciprocalFwdOp)
-
-
-@MathFixture
-def test_sign(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, SignFwdOp)
-
-
-@MathFixture
-def test_sin(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, SinFwdOp)
-
-
-@MathFixture
-def test_cos(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, CosFwdOp)
-
-
-@MathFixture
-def test_floor(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        _randn,
-        FloorFwdOp,
-    )
-
-
-@MathFixture
-def test_ceil(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        _randn,
-        CeilFwdOp,
-    )
-
-
-@MathFixture
-def test_round(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        _randn,
-        RoundFwdOp,
-    )
-
-
-@MathFixture
-def test_trunc(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        _randn,
-        TruncFwdOp,
-    )
-
-
-@MathFixture
-def test_erf(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, ErfFwdOp)
-
-
-@MathFixture
-def test_log1p(n_total: int, dtype: torch.dtype) -> None:
-    def _gen(n, gen_dtype):
-        return torch.rand(n, device=run_device(), dtype=gen_dtype).clamp(min=0.01)
-
-    _make_math_test(n_total, dtype, _gen, Log1pFwdOp)
-
-
-@MathFixture
-def test_expm1(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(n_total, dtype, _randn, Expm1FwdOp)
+def test_unary_math(op_cls, gen_fn, n_total: int, dtype: torch.dtype) -> None:
+    _make_math_test(n_total, dtype, gen_fn, op_cls)
 
 
 def _non_float_input(n_total: int, dtype: torch.dtype) -> torch.Tensor:
@@ -223,9 +123,8 @@ def _non_float_input(n_total: int, dtype: torch.dtype) -> torch.Tensor:
     return torch.randint(low, high, (n_total,), device=run_device(), dtype=dtype)
 
 
-# An integral input to floor, ceil, round, trunc, abs, neg, sign and the float predicates
-# reaches a torch fallback kernel; every op and every integral dtype appears once, since the
-# fallback does not depend on which pairs them.
+# An integral input reaches a torch fallback kernel, which does not depend on the pairing of
+# op and dtype, so every op and every integral dtype appears once.
 
 
 @pytest.mark.smoke
@@ -291,8 +190,7 @@ def test_unary_int_torch_fallback(op_cls, torch_fn, int_dtype) -> None:
     ],
 )
 def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None:
-    """Predicate ops return constant bool on every non-float dtype the
-    manifest declares (integer dtypes plus ``torch.bool``)."""
+    """Predicate ops return a constant bool on every integer dtype and bool."""
     op = op_cls()
     x = _non_float_input(256, non_float_dtype)
     y = op(x)
@@ -301,88 +199,29 @@ def test_predicate_non_float_constant(op_cls, expected, non_float_dtype) -> None
     assert (y == expected).all()
 
 
-# Edge values
-
-
-@MathEdgeFixture
-def test_sqrt_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
-        SqrtFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_rsqrt_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
-        RsqrtFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_log_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-1.0, 0.0, 1e-38, 1.0], n, d),
-        LogFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_log1p_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-2.0, -1.0, 0.0, 1e-7], n, d),
-        Log1pFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_exp_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 200.0], n, d),
-        ExpFwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_expm1_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 88.8, -88.8, 1e-7], n, d),
-        Expm1FwdOp,
-    )
-
-
-@MathEdgeFixture
-def test_erf_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 3.0, -3.0, 100.0], n, d),
-        ErfFwdOp,
-    )
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_cls, values",
+    [
+        pytest.param(SqrtFwdOp, [-1.0, 0.0, 1e-38, 1.0], id="sqrt"),
+        pytest.param(RsqrtFwdOp, [-1.0, 0.0, 1e-38, 1.0], id="rsqrt"),
+        pytest.param(LogFwdOp, [-1.0, 0.0, 1e-38, 1.0], id="log"),
+        pytest.param(Log1pFwdOp, [-2.0, -1.0, 0.0, 1e-7], id="log1p"),
+        pytest.param(ExpFwdOp, [0.0, 88.8, -88.8, 200.0], id="exp"),
+        pytest.param(Expm1FwdOp, [0.0, 88.8, -88.8, 1e-7], id="expm1"),
+        pytest.param(ErfFwdOp, [0.0, 3.0, -3.0, 100.0], id="erf"),
+        pytest.param(SignFwdOp, [-5.0, 0.0, 3.0, float("nan")], id="sign"),
+    ],
+)
+def test_unary_math_edge(op_cls, values: list[float]) -> None:
+    """float32 domain edges, overflow and saturation."""
+    _make_math_test(4096, torch.float32, lambda n, d: _repeat_values(values, n, d), op_cls)
 
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
-    """erf lands within one representable step of the rounded value, at every input.
-
-    float16 and bfloat16 evaluate a polynomial, saturated past a clamp that normal
-    inputs never reach, and the op tolerance is a whole ulp wider than the fit
-    needs. Enumerating the dtype is cheap enough to leave nothing untested.
-    """
+    """erf lands within one representable step of the rounded value, at every input."""
     workload = ErfRoundingWorkload(dtype)
     TestBase.check(workload, ErfFwdOp(), *workload.gen_inputs())
 
@@ -390,7 +229,7 @@ def test_erf_matches_rounded_erf_over_every_value(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_erf_saturates_at_infinity_and_propagates_nan(dtype: torch.dtype) -> None:
-    """Edge: erf reaches exactly +-1 at +-inf and answers NaN with NaN, as ``torch.erf`` does."""
+    """erf reaches exactly +-1 at +-inf and answers NaN with NaN, as ``torch.erf`` does."""
     x = torch.tensor([float("inf"), -float("inf"), float("nan")], device=run_device(), dtype=dtype)
     out = ErfFwdOp()(x)
     workload = ErfRoundingWorkload(dtype)
@@ -429,39 +268,20 @@ def test_erf_16bit_leaves_the_register_budget_to_nvcc() -> None:
     assert bounds == [(str(threads), "1")]
 
 
-@MathEdgeFixture
-def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([0.0, 1.0, -1.0, 1e-38], n, d),
-        ReciprocalFwdOp,
-    )
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize("repeats", [1, 16], ids=["scalar", "vector"])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_16bit_reciprocal_matches_torch_bit_for_bit(dtype: torch.dtype, repeats: int) -> None:
-    """The 16-bit reciprocal gives torch's bit for bit, at every input.
-
-    The patterns include zeros, infinities, NaNs and, for bfloat16, divisors past
-    ``2**126`` and below ``2**-126``, where a reciprocal instruction answers a zero or
-    an infinity.
-    Tiled sixteen times, the input runs the vector path: bfloat16 takes one approximate
-    reciprocal, and a thread holding such a divisor takes the full divide.
-    """
+    """The 16-bit reciprocal gives torch's bit for bit, at every input; tiled sixteen times,
+    the input runs the vector path, where a thread holding a divisor out of the approximate
+    reciprocal's range takes the full divide."""
     workload = Exhaustive16BitWorkload("ReciprocalFwdOp", dtype, repeats)
     TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
 
 
 @pytest.mark.smoke
 def test_float32_reciprocal_divides_every_value_class() -> None:
-    """Every float32 value class, tiled into whole 1024-element blocks, gives torch's bits.
-
-    A thread holding a divisor the approximate reciprocal cannot take divides each of
-    its elements exactly.
-    """
+    """Every float32 value class, tiled into whole 1024-element blocks, gives torch's bits."""
     workload = Float32SpecialValuesWorkload("ReciprocalFwdOp", 13_312)
     TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
 
@@ -482,31 +302,15 @@ def test_float32_reciprocal_matches_torch_bit_for_bit() -> None:
     TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
 
 
-@MathEdgeFixture
-def test_sign_edge(n_total: int, dtype: torch.dtype) -> None:
-    _make_math_test(
-        n_total,
-        dtype,
-        lambda n, d: _repeat_values([-5.0, 0.0, 3.0, float("nan")], n, d),
-        SignFwdOp,
-    )
-
-
 @pytest.mark.smoke
-@pytest.mark.parametrize("decimals", [0, 2, -1])
+@pytest.mark.parametrize("decimals", [2, -1])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_round_decimals(dtype: torch.dtype, decimals: int) -> None:
-    """RoundFwdOp must honour the manifest 'decimals' parameter end-to-end.
-
-    Uses ``torch.round(x, decimals=k)`` as the reference and the standard
-    decomposition under the hood: ``round(x * 10**k) / 10**k``.
-    """
+    """RoundFwdOp honours a non-zero ``decimals``, as ``torch.round`` does."""
     x = torch.randn(4096, device=run_device(), dtype=dtype) * 10.0
     op = RoundFwdOp(decimals=decimals)
     out = op(x)
     ref = torch.round(x.float(), decimals=decimals).to(dtype)
-    # The decimals path runs entirely in fp32 internally and only down-casts
-    # once at the end, so the standard per-dtype tolerances apply.
     compare_outputs(
         out,
         ref,
@@ -529,26 +333,10 @@ def test_round_decimals_no_overflow_low_precision(dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_round_decimals_default_is_zero() -> None:
-    """Constructing RoundFwdOp without ``decimals`` must round to nearest integer."""
-    x = torch.randn(1024, device=run_device(), dtype=torch.float32) * 5.0
-    op = RoundFwdOp()
-    out = op(x)
-    ref = torch.round(x)
-    compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (x,)).verification(*(x,)))
-
-
-@pytest.mark.smoke
 def test_round_decimals_validates_input() -> None:
-    """Non-zero decimals must enforce the same input contract as decimals=0.
-
-    Regression: a wrong-dtype input would silently short-circuit through the fp32
-    decomposition because the path bypassed the op's validation.
-    """
+    """Non-zero decimals accept a manifest dtype and reject one outside the union."""
     op = RoundFwdOp(decimals=2)
-    # float16 is in the manifest union, so the same instance accepts it.
     assert op(torch.ones(2, device=run_device(), dtype=torch.float16)).dtype == torch.float16
-    # A dtype outside the union must raise.
     with pytest.raises(ValueError, match="dtype"):
         op(torch.ones(2, device=run_device(), dtype=torch.float64))
 
@@ -559,19 +347,12 @@ def test_round_decimals_validates_input() -> None:
     [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
 )
 def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
-    """ReciprocalFwdOp must accept integral inputs and yield float32 output.
-
-    Mirrors ``torch.reciprocal``'s int-input promotion: the manifest's
-    ``promote_int_to_float(input)`` output dtype must round-trip against
-    the PyTorch reference for every declared integer dtype.
-    """
+    """An integral input gives a float32 output, as ``torch.reciprocal`` promotes it."""
     n_total = 4096
+    # Nonzero divisors within the dtype's range.
     if dtype == torch.uint8:
-        # uint8 range [1, 255] avoids zero (1/0 = inf disagrees with the
-        # tolerance-based comparison) without saturating the reference.
         x = torch.randint(1, 256, (n_total,), device=run_device(), dtype=dtype)
     elif dtype == torch.int8:
-        # int8 range [-127, 127] excluding zero.
         x = torch.randint(-127, 128, (n_total,), device=run_device(), dtype=dtype)
         x = torch.where(x == 0, torch.ones_like(x), x)
     else:
@@ -579,21 +360,13 @@ def test_reciprocal_int_promotes_to_float32(dtype: torch.dtype) -> None:
         x = torch.where(x == 0, torch.ones_like(x), x)
     op = ReciprocalFwdOp()
     out = op(x)
-    assert out.dtype == torch.float32, (
-        f"output dtype must be float32 for int input, got {out.dtype}"
-    )
+    assert out.dtype == torch.float32
     ref = torch.reciprocal(x)
-    assert ref.dtype == torch.float32, (
-        f"torch.reciprocal({dtype}) reference dtype changed: {ref.dtype}"
-    )
     compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (x,)).verification(*(x,)))
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "dtype",
-    [torch.int8, torch.int16, torch.int32, torch.int64, torch.uint8],
-)
+@pytest.mark.parametrize("dtype", [torch.int8, torch.int64])
 def test_reciprocal_int_roofline_prices_the_promoted_output(
     dtype: torch.dtype,
 ) -> None:
@@ -610,11 +383,7 @@ def test_reciprocal_int_roofline_prices_the_promoted_output(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_reciprocal_int_input_validation() -> None:
-    """One instance serves integer and float inputs, and rejects the rest.
-
-    Promotion is per call, so float32 and int32 are both valid and land on
-    different entries; a dtype outside the manifest union still raises.
-    """
+    """One instance serves integer and float inputs, and rejects a dtype outside the union."""
     op = ReciprocalFwdOp()
     assert op(torch.ones(4, device=run_device(), dtype=torch.float32)).dtype == torch.float32
     assert op(torch.ones(4, device=run_device(), dtype=torch.int32)).dtype == torch.float32

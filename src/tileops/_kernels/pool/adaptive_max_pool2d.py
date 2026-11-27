@@ -109,17 +109,9 @@ def _bin_extent(size_in: int, size_out: int) -> tuple[int, bool]:
 
 
 @target_cache(maxsize=32)
-def _adaptive_max_pool2d_kernel(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-    stage_planes: bool = True,
-):
-    rows = n * c_in
+def _adaptive_max_pool2d_kernel(call: AdaptivePool2dCall, dtype: str, stage_planes: bool = True):
+    h_in, w_in, out_h, out_w = call.h_in, call.w_in, call.out_h, call.out_w
+    rows = call.n * call.c_in
     out_plane = out_h * out_w
     max_kh, uniform_h = _bin_extent(h_in, out_h)
     max_kw, uniform_w = _bin_extent(w_in, out_w)
@@ -238,16 +230,9 @@ def _adaptive_max_pool2d_kernel(
 
 
 @target_cache(maxsize=32)
-def _adaptive_max_pool2d_with_indices_kernel(
-    n: int,
-    c_in: int,
-    h_in: int,
-    w_in: int,
-    out_h: int,
-    out_w: int,
-    dtype: str,
-):
-    rows = n * c_in
+def _adaptive_max_pool2d_with_indices_kernel(call: AdaptivePool2dCall, dtype: str):
+    h_in, w_in, out_h, out_w = call.h_in, call.w_in, call.out_h, call.out_w
+    rows = call.n * call.c_in
     plane = h_in * w_in
     out_plane = out_h * out_w
     max_kh, uniform_h = _bin_extent(h_in, out_h)
@@ -317,12 +302,10 @@ def _adaptive_max_pool2d_with_indices_kernel(
 class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
     """Binds both adaptive max-pool kernels to the plane-staging config policy."""
 
-    def _staging(self) -> _PlaneStaging:
-        return _PlaneStaging(self.n * self.c_in, self.h_in, self.w_in, self.dtype_str)
-
     @property
     def default_config(self) -> dict:
-        return self._staging().default()
+        call = self.call
+        return _PlaneStaging(call.n * call.c_in, call.h_in, call.w_in, self.dtype_str).default()
 
     @property
     def autotune_configs(self) -> None:
@@ -332,10 +315,6 @@ class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
 
 class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase, AdaptiveMaxPool2dFwdInterface):
     """Adaptive max pooling forward kernel for NCHW inputs."""
-
-    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
-        planes = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
-        return planes.view(self.n, self.c_in, self.out_h, self.out_w)
 
     _build = staticmethod(_adaptive_max_pool2d_kernel)
 
@@ -376,10 +355,5 @@ class AdaptiveMaxPool2dWithIndicesKernel(
     _AdaptiveMaxPool2dKernelBase, AdaptiveMaxPool2dIndicesFwdInterface
 ):
     """Adaptive max pooling forward kernel returning values and int64 indices."""
-
-    def _launch(self, program, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        values, indices = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
-        shape = (self.n, self.c_in, self.out_h, self.out_w)
-        return values.view(shape), indices.view(shape)
 
     _build = staticmethod(_adaptive_max_pool2d_with_indices_kernel)

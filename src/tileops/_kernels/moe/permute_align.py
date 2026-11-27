@@ -1,17 +1,12 @@
 """MoE token-to-expert alignment kernel.
 
-Calls with fewer than 1024 routes and at most one warp of experts use a fused small-batch
-kernel. Compact SM90 batches with more experts use a fused per-warp scatter. Other calls
-use an align kernel and launch a follow-up scatter when there are routes. Every path returns
-the same three tensors.
+Every program returns the same three tensors:
 
   sorted_token_ids  [max_num_tokens_padded]  - route indices grouped by expert, each expert's
                                                routes first in its range, numel elsewhere
   expert_ids        [num_blocks]             - the expert of each block of the padded length,
                                                num_experts past it
   num_tokens_post_pad [1]                   - total padded route count
-
-Reference: sglang/sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
 
 import math
@@ -24,9 +19,17 @@ from tileops._kernels.build_target import CUDA_COMPILE_FLAGS, target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
+from tileops._kernels.moe.layout import count_routes, zero_counts
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["MoEPermuteAlignKernel"]
+
+
+def _padded_extents(numel: int, num_experts: int, block_size: int) -> tuple[int, int]:
+    """The lengths of ``sorted_token_ids`` and ``expert_ids``: every route, with each expert's
+    range and one more padded up to a block."""
+    max_padded = numel + (num_experts + 1) * (block_size - 1)
+    return max_padded, math.ceil(max_padded / block_size)
 
 
 @target_cache(maxsize=32)
@@ -36,8 +39,7 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
     Writes num_tokens_post_pad, each expert's range start into cumsum, expert_ids, and numel
     into every slot of sorted_token_ids.
     """
-    max_padded = numel + (num_experts + 1) * (block_size - 1)
-    max_num_blocks = math.ceil(max_padded / block_size)
+    max_padded, max_num_blocks = _padded_extents(numel, num_experts, block_size)
 
     @tilelang.jit(out_idx=[], compile_flags=[*CUDA_COMPILE_FLAGS])
     def _align(threads: int):
@@ -71,16 +73,9 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
                         if idx < max_padded:
                             sorted_token_ids[idx] = numel
                 else:
-                    for i in T.serial(T.ceildiv(num_experts, threads)):
-                        idx = i * threads + tx
-                        if idx < num_experts:
-                            s_counts[idx] = T.int32(0)
+                    zero_counts(s_counts, num_experts, threads, tx)
                     T.sync_threads()
-
-                    for i in T.serial(T.ceildiv(numel, threads)):
-                        idx = i * threads + tx
-                        if idx < numel:
-                            T.atomic_add(s_counts[flat[idx]], 1)
+                    count_routes(s_counts, flat, numel, threads, tx)
                     T.sync_threads()
 
                     lane = tx % WARP_LANES
@@ -169,7 +164,7 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     """
     if numel < 1:
         raise ValueError(f"the scatter needs at least one route, got numel={numel}")
-    max_padded = numel + (num_experts + 1) * (block_size - 1)
+    max_padded, _ = _padded_extents(numel, num_experts, block_size)
     threads = 512
     scatter_blocks = math.ceil(numel / threads)
     expert_rounds = math.ceil(num_experts / threads)
@@ -222,12 +217,8 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
 @target_cache(maxsize=32)
 def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     """The small-batch kernel: one block whose worker lanes count and scatter the routes
-    while the other threads write the padding.
-
-    Each worker counts into its own row, so neither the count nor the scatter takes an
-    atomic. Writes the same outputs as the align and scatter kernels.
-
-    Reference: moe_align_block_size_small_batch_expert_kernel in sgl-kernel.
+    while the other threads write the padding. Writes the same outputs as the align and
+    scatter kernels.
 
     Raises:
         ValueError: ``num_experts`` is more than one warp of workers.
@@ -239,8 +230,7 @@ def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
         raise ValueError(
             f"the small-batch kernel takes at most {worker_threads} experts, got {num_experts}"
         )
-    max_padded = numel + (num_experts + 1) * (block_size - 1)
-    max_num_blocks = math.ceil(max_padded / block_size)
+    max_padded, max_num_blocks = _padded_extents(numel, num_experts, block_size)
     # Threads that write the sentinel fill while the workers count and scatter.
     fill_threads = 256
     total_threads = fill_threads + worker_threads
@@ -345,8 +335,7 @@ def _make_sparse_routes_kernel(numel: int, num_experts: int):
     warps = threads // WARP_LANES
     block_size = 64
     route_rounds = math.ceil(numel / WARP_LANES)
-    max_padded = numel + (num_experts + 1) * (block_size - 1)
-    max_num_blocks = math.ceil(max_padded / block_size)
+    max_padded, max_num_blocks = _padded_extents(numel, num_experts, block_size)
     # At most numel padded blocks, so both totals fit a 16-bit half.
     prefix_mask = (1 << 16) - 1
 
@@ -449,19 +438,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         numel: Total number of (token, expert) assignments = total_tokens * top_k.
         num_experts: Number of experts.
         block_size: GEMM tile size (M dimension).
-        config: Optional config dict with "threads", the align kernel's threads per block: a
-            multiple of 32 in [32, 1024]. Its count, scan and fill loops take ``threads`` items
-            per round, so fewer threads only add rounds; this kernel defines no
-            ``autotune_configs``.
         device_index: The device this kernel is built for.
-
-    Raises:
-        ValueError: ``config`` states a thread count outside that range.
-
-    Note:
-        ``dtype`` does not apply. Every tensor this kernel reads or writes is
-        an int32 index array whose element type is fixed by the MoE grouped
-        GEMM index contract, so there is no free element type to select.
 
     Example:
         ```python linenums="1"
@@ -476,17 +453,14 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
     def entry_for(cls, call: PermuteAlignCall) -> Entry:
         """One build per routed count, expert count, tile height and device."""
         index = call.device_index
-        identity = (call.num_routes, call.num_experts, call.block_size, index)
-        return identity, lambda: cls(
-            call.num_routes, call.num_experts, call.block_size, device_index=index
-        )
+        args = (call.num_routes, call.num_experts, call.block_size)
+        return (*args, index), lambda: cls(*args, device_index=index)
 
     def __init__(
         self,
         numel: int,
         num_experts: int,
         block_size: int,
-        config: dict | None = None,
         *,
         device_index: int | None = None,
     ):
@@ -518,15 +492,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
             self._align_fn = None
             self._scatter_fn = None
 
-        self.init_config(config)
-        # The align kernel's scan totals whole warps only, so the experts a partial warp holds
-        # would drop out of it.
-        threads = self.config["threads"]
-        if threads % WARP_LANES or not WARP_LANES <= threads <= MAX_BLOCK_THREADS:
-            raise ValueError(
-                f"threads must be a multiple of {WARP_LANES} in [{WARP_LANES}, "
-                f"{MAX_BLOCK_THREADS}], got {threads}"
-            )
+        self.init_config()
 
     @property
     def default_config(self) -> dict:
@@ -555,8 +521,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         )
 
         flat = topk_ids.flatten().contiguous()
-        max_padded = self.numel + (self.num_experts + 1) * (self.block_size - 1)
-        max_num_blocks = math.ceil(max_padded / self.block_size)
+        max_padded, max_num_blocks = _padded_extents(self.numel, self.num_experts, self.block_size)
         dev = flat.device
 
         sorted_token_ids = torch.empty(max_padded, dtype=torch.int32, device=dev)

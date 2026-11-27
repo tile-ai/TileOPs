@@ -99,6 +99,11 @@ def _quantize_rows(
     def slot(j, tx):
         return ((j // group) * threads + tx) * group + j % group
 
+    def window(row):
+        """The first vector overlapping row ``row`` and the count of them."""
+        lo = row * k
+        return lo // vec, (lo + k + vec - 1) // vec - lo // vec
+
     def element(values, j, c, half):
         """The float32 of element ``2 * c + half`` of vector ``j``, or ``c`` unless words."""
         return widen(values[j, c], half, dtype) if words else T.cast(values[j, c], "float32")
@@ -133,37 +138,23 @@ def _quantize_rows(
     @T.macro
     def fold(acc, values, xs, div, rcp, j, v, lo, hi, masked: bool, ieee: bool):
         for c in T.unroll(width):
+            e = 2 * c if words else c
+            fold_one(acc, xs, div, rcp, j, e, element(values, j, c, 0), v, lo, hi, masked, ieee)
             if words:
                 fold_one(
-                    acc, xs, div, rcp, j, 2 * c, element(values, j, c, 0), v, lo, hi, masked, ieee
+                    acc, xs, div, rcp, j, e + 1, element(values, j, c, 1), v, lo, hi, masked, ieee
                 )
-                fold_one(
-                    acc,
-                    xs,
-                    div,
-                    rcp,
-                    j,
-                    2 * c + 1,
-                    element(values, j, c, 1),
-                    v,
-                    lo,
-                    hi,
-                    masked,
-                    ieee,
-                )
-            else:
-                fold_one(acc, xs, div, rcp, j, c, element(values, j, c, 0), v, lo, hi, masked, ieee)
 
     @T.macro
     def codes(out, values, xs, j, at, num, clamp: bool):
         for c in T.unroll(width):
+            out[at + (2 * c if words else c)] = quantize(
+                scaled(values, xs, j, c, 0, num), num[1], num[2], clamp
+            )
             if words:
-                out[at + 2 * c] = quantize(scaled(values, xs, j, c, 0, num), num[1], num[2], clamp)
                 out[at + 2 * c + 1] = quantize(
                     scaled(values, xs, j, c, 1, num), num[1], num[2], clamp
                 )
-            else:
-                out[at + c] = quantize(scaled(values, xs, j, c, 0, num), num[1], num[2], clamp)
 
     @T.macro
     def store_group(q, out, values, xs, g, v, num, clamp: bool):
@@ -178,9 +169,7 @@ def _quantize_rows(
             if exact:
                 store_group(q, out, values, xs, g, v0 + slot(g * group, tx), num, clamp)
             elif slot(g, tx) < count:
-                if aligned:
-                    store_group(q, out, values, xs, g, v0 + slot(g, tx), num, clamp)
-                elif (slot(g, tx) == 0) | (slot(g, tx) == count - 1):
+                if not aligned and ((slot(g, tx) == 0) | (slot(g, tx) == count - 1)):
                     codes(out, values, xs, g, 0, num, clamp)
                     for c in T.unroll(vec):
                         if ((v0 + slot(g, tx)) * vec + c >= lo) & (
@@ -223,12 +212,8 @@ def _quantize_rows(
     @T.macro
     def fold_row(acc, values, xs, div, rcp, tx, v0, count, lo, hi, ieee: bool):
         for j in T.unroll(vpt):
-            if exact:
-                fold(acc, values, xs, div, rcp, j, v0 + slot(j, tx), lo, hi, False, ieee)
-            elif slot(j, tx) < count:
-                if aligned:
-                    fold(acc, values, xs, div, rcp, j, v0 + slot(j, tx), lo, hi, False, ieee)
-                elif (slot(j, tx) == 0) | (slot(j, tx) == count - 1):
+            if exact or slot(j, tx) < count:
+                if not aligned and ((slot(j, tx) == 0) | (slot(j, tx) == count - 1)):
                     fold(acc, values, xs, div, rcp, j, v0 + slot(j, tx), lo, hi, True, ieee)
                 else:
                     fold(acc, values, xs, div, rcp, j, v0 + slot(j, tx), lo, hi, False, ieee)
@@ -247,8 +232,7 @@ def _quantize_rows(
     def quantize_row(row, w, q, scale, tx, values, xs, div, rcp, flag, acc, out, num, warp_max):
         lo = row * k
         hi = lo + k
-        v0 = lo // vec
-        count = (hi + vec - 1) // vec - v0
+        v0, count = window(row)
 
         acc[0] = T.if_then_else(flag[0] != 0, T.int32(unsafe), 0) if smoothed else 0
         fold_row(acc, values, xs, div, rcp, tx, v0, count, lo, hi, False)
@@ -295,14 +279,14 @@ def _quantize_rows(
         num = T.alloc_local((3,), "float32")
         warp_max = T.alloc_shared((warps,), "int32")
 
-        load_row(w, values, tx, bx * k // vec, (bx * k + k + vec - 1) // vec - bx * k // vec)
+        load_row(w, values, tx, *window(bx))
         if smoothed:
             flag[0] = 0
             # Column of element c of held vector j: slot * vec + c - off, the same in every
             # row of the CTA.
             off = bx * k % vec
             for j in T.unroll(vpt):
-                if exact or slot(j, tx) < (bx * k + k + vec - 1) // vec - bx * k // vec:
+                if exact or slot(j, tx) < window(bx)[1]:
                     if aligned:
                         for h in T.unroll(vec // smooth_vec):
                             T.call_extern(
@@ -329,14 +313,7 @@ def _quantize_rows(
             for i in T.serial(rows_per_cta):
                 if bx + i * grid < rows:
                     if bx + (i + 1) * grid < rows:
-                        load_row(
-                            w,
-                            ahead,
-                            tx,
-                            (bx + (i + 1) * grid) * k // vec,
-                            ((bx + (i + 1) * grid) * k + k + vec - 1) // vec
-                            - (bx + (i + 1) * grid) * k // vec,
-                        )
+                        load_row(w, ahead, tx, *window(bx + (i + 1) * grid))
                     quantize_row(
                         bx + i * grid,
                         w,
@@ -424,29 +401,11 @@ def _smooth_quant_kernel(rows: int, k: int, dtype: str):
 
 
 class _INT8QuantPerRowKernel(Kernel):
-    """The launch policy of the one-CTA-per-row INT8 quantize program.
-
-    One CTA owns one row and holds it in registers across the row's reduction, so the
-    input is read once and ``q`` written once. ``q`` and ``scale`` are bit-equal to the
-    torch reference: the scale is the product torch computes, and the quotient is
-    correctly rounded.
-    """
+    """The one-CTA-per-row INT8 quantize program, which holds its row in registers across
+    the row's reduction. ``q`` and ``scale`` are bit-equal to the torch reference."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    # The one integer tensor is ``q``, written before anything reads it.
-    autotune_accepts_random_int_inputs = True
 
-    # Calibrated vector count balances per-row parallelism and register pressure.
-    _VPT: ClassVar[int] = 4
-    _FEW_ROWS_VPT: ClassVar[int] = 2
-    # Float32 rows of at least _WIDE_ROW elements hold _WIDE_ROW_ELEMENTS per thread and fill
-    # the SM with threads.
-    _WIDE_ROW: ClassVar[int] = 8192
-    _WIDE_ROW_ELEMENTS: ClassVar[int] = 16
-    # Wider blocks use MAX_BLOCK_THREADS to avoid spilling at the two-CTA register cap.
-    _WIDE_THREADS: ClassVar[int] = 512
-    # Register cap for short rows keeps at least two CTAs resident per SM.
-    _MAX_REGISTERS: ClassVar[int] = 64
     # Use evict-first loads below this input size, default-policy loads above it.
     _EVICT_FIRST_BYTES: ClassVar[int] = 96 << 20
 
@@ -472,6 +431,30 @@ class _INT8QuantPerRowKernel(Kernel):
         self.kernel = self._builder(call.rows, call.cols, self.dtype_str)
         self.init_config(config)
 
+
+class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFwdInterface):
+    """Quantize each row of ``w`` against its own amax, reading ``w`` once.
+
+    Args:
+        call: The call's shape, dtype and device facts.
+        config: Optional dict with ``threads``, ``vpt``, ``pair``, ``evict_first`` and
+            ``min_blocks``.
+    """
+
+    _builder = staticmethod(_int8_quant_per_channel_kernel)
+
+    # Calibrated vector count balances per-row parallelism and register pressure.
+    _VPT: ClassVar[int] = 4
+    _FEW_ROWS_VPT: ClassVar[int] = 2
+    # Float32 rows of at least _WIDE_ROW elements hold _WIDE_ROW_ELEMENTS per thread and fill
+    # the SM with threads.
+    _WIDE_ROW: ClassVar[int] = 8192
+    _WIDE_ROW_ELEMENTS: ClassVar[int] = 16
+    # Wider blocks use MAX_BLOCK_THREADS to avoid spilling at the two-CTA register cap.
+    _WIDE_THREADS: ClassVar[int] = 512
+    # Register cap for short rows keeps at least two CTAs resident per SM.
+    _MAX_REGISTERS: ClassVar[int] = 64
+
     def config_for(self, vpt: int, pair: bool, evict_first: bool, min_blocks: int) -> dict:
         """The launch holding about ``vpt`` vectors per thread."""
         threads = -(-self._span // vpt)
@@ -492,38 +475,22 @@ class _INT8QuantPerRowKernel(Kernel):
     @property
     def default_config(self) -> dict:
         if self.cols >= self._WIDE_ROW and self.dtype.itemsize == 2:
-            # Four vectors a thread, five CTAs an SM; a sixth caps a thread below what it
-            # holds.
-            vpt = 4
-            threads = self.config_for(vpt, True, True, 1)["threads"]
-            min_blocks = min(5, self._resident_threads // threads)
+            vpt = self._VPT
         elif self.cols >= self._WIDE_ROW:
             vpt = self._WIDE_ROW_ELEMENTS * self.dtype.itemsize // VECTOR_ACCESS_BYTES
-            threads = self.config_for(vpt, True, True, 1)["threads"]
-            min_blocks = self._resident_threads // threads
         else:
             vpt = self._FEW_ROWS_VPT if self.rows < self._sm_count else self._VPT
-            threads = self.config_for(vpt, True, True, 1)["threads"]
+        threads = self.config_for(vpt, True, True, 1)["threads"]
+        if self.cols < self._WIDE_ROW:
             min_blocks = max(2, self._register_file // (threads * self._MAX_REGISTERS))
+        elif self.dtype.itemsize == 2:
+            # Five CTAs an SM; a sixth caps a thread below what it holds.
+            min_blocks = min(5, self._resident_threads // threads)
+        else:
+            min_blocks = self._resident_threads // threads
         evict_first = self.rows * self.cols * self.dtype.itemsize < self._EVICT_FIRST_BYTES
         # Pairs of adjacent vectors store 16 bytes of codes at a time.
         return self.config_for(vpt, True, evict_first, min_blocks)
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
-
-class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFwdInterface):
-    """Quantize each row of ``w`` against its own amax, reading ``w`` once.
-
-    Args:
-        call: The call's shape, dtype and device facts.
-        config: Optional dict with ``threads``, ``vpt``, ``pair``, ``evict_first`` and
-            ``min_blocks``.
-    """
-
-    _builder = staticmethod(_int8_quant_per_channel_kernel)
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(w=w)
@@ -548,7 +515,10 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
 
     _builder = staticmethod(_smooth_quant_kernel)
 
-    # Calibrated vector count balances per-row parallelism and register pressure.
+    # The one integer tensor is ``q``, written before anything reads it.
+    autotune_accepts_random_int_inputs = True
+
+    # Rows spanning at least this many vectors load and store them in adjacent pairs.
     _PAIRED_ROW: ClassVar[int] = 512
     # Register budget used to derive CTA residency.
     _MAX_REGISTERS: ClassVar[int] = 80

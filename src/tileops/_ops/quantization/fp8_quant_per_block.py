@@ -13,7 +13,6 @@ from tileops._kernels.quantization import (
     QuantizeCall,
 )
 from tileops._ops.op_base import Op
-from tileops.backend import Target
 
 __all__ = ["FP8QuantPerBlockFwdOp"]
 
@@ -39,19 +38,6 @@ class FP8QuantPerBlockFwdOp(Op):
         "fp8_quant_per_block_fwd": FP8QuantPerBlockFwdInterface
     }
 
-    def __init__(
-        self,
-        *,
-        target: Target = None,
-    ) -> None:
-        """Build the op. Shapes and dtypes are taken from each call.
-
-        Args:
-            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
-                in-tree kernels, or ``None`` to decide from the input device.
-        """
-        super().__init__(target=target)
-
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Quantize each 128x128 tile of ``w`` against its own absolute maximum.
 
@@ -65,11 +51,6 @@ class FP8QuantPerBlockFwdOp(Op):
         w = w.contiguous()
         kernel = self.kernel_for(
             "fp8_quant_per_block_fwd",
-            lambda: QuantizeCall(
-                device=w.device,
-                rows=w.shape[0],
-                cols=w.shape[1],
-                dtype=w.dtype,
-            ),
+            lambda: QuantizeCall(device=w.device, rows=w.shape[0], cols=w.shape[1], dtype=w.dtype),
         )
         return kernel(w)

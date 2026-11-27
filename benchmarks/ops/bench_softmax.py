@@ -1,8 +1,5 @@
 """Benchmarks for softmax-family ops (softmax, log_softmax, logsumexp).
 
-Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines. Each case is one
-manifest call (src/tileops/manifest/); the roofline comes from ``op.eval_roofline()``.
-
 softmax and log_softmax are timed against flag_gems' Triton kernels as well as
 torch, eager and compiled, except on a row passing ``dtype``, which flag_gems' entry points
 do not take. logsumexp has no flag_gems entry point.
@@ -55,16 +52,16 @@ def _dtype(params: dict) -> "torch.dtype | None":
     return getattr(torch, params["dtype"]) if params.get("dtype") else None
 
 
-@pytest.mark.parametrize("case", bench.cases(SoftmaxFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SoftmaxFwdOp))
 def test_softmax_bench(case) -> None:
     _bench(SoftmaxFwdOp, case, "softmax")
 
 
-@pytest.mark.parametrize("case", bench.cases(LogSoftmaxFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(LogSoftmaxFwdOp))
 def test_log_softmax_bench(case) -> None:
     _bench(LogSoftmaxFwdOp, case, "log_softmax")
 
 
-@pytest.mark.parametrize("case", bench.cases(LogSumExpFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(LogSumExpFwdOp))
 def test_logsumexp_bench(case) -> None:
     _bench(LogSumExpFwdOp, case, None)

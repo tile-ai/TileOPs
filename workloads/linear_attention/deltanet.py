@@ -1,13 +1,13 @@
+from dataclasses import dataclass
+
 import torch
 
 from workloads.device import run_device
-from workloads.linear_attention.common import small, step_sizes
+from workloads.linear_attention.common import recurrence_verification, small, step_sizes
 from workloads.numerics import (
     Custom,
     Exact,
     Partial,
-    assert_close,
-    assert_normalized_error,
     assert_rounded,
 )
 from workloads.workload_base import CallWorkload, WorkloadBase
@@ -25,24 +25,15 @@ __all__ = [
 ]
 
 
+@dataclass(eq=False)
 class DeltaNetChunkwiseWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        seq_len: int,
-        dim_k: int,
-        dim_v: int,
-        chunk_size: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.seq_len = seq_len
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.chunk_size = chunk_size
-        self.dtype = dtype
+    batch: int
+    heads: int
+    seq_len: int
+    dim_k: int
+    dim_v: int
+    chunk_size: int
+    dtype: torch.dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, S, DK, DV = self.batch, self.heads, self.seq_len, self.dim_k, self.dim_v
@@ -61,20 +52,13 @@ class DeltaNetChunkwiseWorkload(WorkloadBase):
         return chunkwise_verification(inputs[0].dtype)
 
 
+@dataclass(eq=False)
 class DeltaNetDecodeWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: torch.dtype,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
-        self.dtype = dtype
+    batch: int
+    heads: int
+    dim_k: int
+    dim_v: int
+    dtype: torch.dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         B, H, DK, DV = self.batch, self.heads, self.dim_k, self.dim_v
@@ -100,6 +84,7 @@ class DeltaNetDecodeWorkload(WorkloadBase):
         return decode_verification(inputs[0].dtype)
 
 
+@dataclass(eq=False)
 class DeltaNetFwdWorkload(WorkloadBase):
     """BTHD ungated DeltaNet prefill or single-token decode with recurrent state.
 
@@ -107,23 +92,13 @@ class DeltaNetFwdWorkload(WorkloadBase):
     carry ``cu_seqlens``; ``l2norm`` hands Q and K over unnormalized.
     """
 
-    def __init__(
-        self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        dim: int,
-        dtype: torch.dtype,
-        sequence_lengths: tuple[int, ...] | None = None,
-        l2norm: bool = False,
-    ) -> None:
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim = dim
-        self.dtype = dtype
-        self.sequence_lengths = sequence_lengths
-        self.l2norm = l2norm
+    batch: int
+    seq_len: int
+    heads: int
+    dim: int
+    dtype: torch.dtype
+    sequence_lengths: tuple[int, ...] | None = None
+    l2norm: bool = False
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
         rows = (
@@ -335,32 +310,15 @@ def decode_verification(dtype):
 
 
 def inference_verification(dtype, *, decode=False, l2norm=False):
-    # FLA materializes normalized Q/K in the input dtype; our fused decode
-    # keeps them in FP32. That path includes input rounding, even for one token.
-    if decode and not l2norm:
-
-        def validate_decode(got, expected):
-            # A single step keeps its state in FP32: prefill's accumulation bound
-            # does not apply. The stored output may straddle a half/bfloat rounding
-            # boundary after two FP32 reduction orders; allow one adjacent value,
-            # then apply the original absolute bound to the remaining error.
-            assert_rounded(got[0], expected[0], atol=4e-8)
-            assert_close(got[1], expected[1], atol=4e-8, rtol=4e-8)
-
-        return Custom(validate_decode, "single-step FP32 state and one-rounding-unit output")
-
     tol = {torch.float32: 4e-08, torch.float16: 1e-3, torch.bfloat16: 1.6e-2}[dtype]
-    state_tol = 0.003 if dtype == torch.float16 else tol
-
-    def validate(got, expected):
-        assert_close(got[0], expected[0], atol=tol, rtol=tol)
-        assert_close(got[1], expected[1], atol=state_tol, rtol=tol)
-        if not decode:
-            # The bfloat16 bound exceeds the small prefill outputs, so a zeroed output
-            # would pass it; the normalized-error budget rejects a cleared tensor.
-            assert_normalized_error(got, expected)
-
-    return Custom(validate, "output and accumulated FP32 state")
+    return recurrence_verification(
+        tol,
+        0.003 if dtype == torch.float16 else tol,
+        # FLA normalizes Q/K in the input dtype and the fused decode in FP32, so a normalizing
+        # step keeps the input rounding.
+        single_step=4e-8 if decode and not l2norm else None,
+        normalized=not decode,
+    )
 
 
 def chunkwise_verification(dtype, *, backward=False):

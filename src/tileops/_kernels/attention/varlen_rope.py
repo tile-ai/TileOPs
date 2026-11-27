@@ -1,11 +1,7 @@
 """Rotary Position Embedding (RoPE) for packed variable-length attention.
 
-The two sides are placed differently because they are read differently. A rotated key row
-is read by every query tile of its request and by every query head of its KV group, so it
-is rotated once, in its own launch, before the attention kernel runs. A rotated query tile
-is read by the one CTA that owns it, so rotating it inside that CTA costs the tile's
-registers and nothing else, where materializing it would cost a full round trip through
-global memory.
+Keys are rotated once, in their own launch, because every query tile of a request reads
+them; a query tile is rotated inside the CTA that owns it.
 
 Query token ``i`` of request ``b`` sits at position ``kv_len_b - q_len_b + i`` and key
 token ``j`` at position ``j``.
@@ -81,7 +77,7 @@ def make_varlen_query_rope(
     accum = "float"
     # Frequencies one thread owns: enough that the two channel runs the pair indexing
     # selects form one widest access together.
-    itemsize = torch.empty(0, dtype=getattr(torch, dtype)).element_size()
+    itemsize = getattr(torch, dtype).itemsize
     run = max(1, VECTOR_ACCESS_BYTES // (2 * itemsize))
     while half % run:
         run -= 1
@@ -325,7 +321,7 @@ class VarlenKeyRoPE:
         A thread rotates one run of ``freq`` and reads both channels that run pairs with,
         so the widest vectorized access fixes how many frequencies it takes.
         """
-        itemsize = torch.empty(0, dtype=getattr(torch, dtype)).element_size()
+        itemsize = getattr(torch, dtype).itemsize
         per_thread = max(1, VECTOR_ACCESS_BYTES // itemsize)
         pairs = cls._KEY_ROWS_PER_CTA * (rotary_dim // 2)
         return max(32, min(MAX_BLOCK_THREADS, pairs // per_thread))

@@ -8,6 +8,8 @@ from collections.abc import Callable
 
 import torch
 
+from workloads.numerics import Custom, assert_close, assert_normalized_error, assert_rounded
+
 
 def step_sizes(like: torch.Tensor) -> torch.Tensor:
     """Delta-rule step sizes in ``[0, 0.5)``, with *like*'s shape and dtype."""
@@ -22,6 +24,32 @@ def log_gates(like: torch.Tensor) -> torch.Tensor:
 def small(t: torch.Tensor | None, scale: float = 0.1) -> torch.Tensor | None:
     """*t* times *scale*; ``None`` stays ``None``."""
     return None if t is None else t * scale
+
+
+def recurrence_verification(
+    tol: float, state_tol: float, *, single_step: float | None = None, normalized: bool = False
+) -> Custom:
+    """``(o, final_state)`` within atol *tol* and *state_tol*, rtol *tol*; *normalized* adds
+    the normalized-error bound, which rejects a cleared low-amplitude output.
+
+    With *single_step*, one step keeps its state in FP32: the output may take one adjacent
+    stored value after two FP32 reduction orders, then both meet *single_step*.
+    """
+    if single_step is not None:
+
+        def validate_step(got, expected):
+            assert_rounded(got[0], expected[0], atol=single_step)
+            assert_close(got[1], expected[1], atol=single_step, rtol=single_step)
+
+        return Custom(validate_step, "single-step FP32 state and one-rounding-unit output")
+
+    def validate(got, expected):
+        assert_close(got[0], expected[0], atol=tol, rtol=tol)
+        assert_close(got[1], expected[1], atol=state_tol, rtol=tol)
+        if normalized:
+            assert_normalized_error(got, expected)
+
+    return Custom(validate, "output and accumulated FP32 state")
 
 
 def sequences(

@@ -33,17 +33,9 @@ def _chain_speculative_sampling_kernel(
 ):
     """Build the verification of ``batch`` chains of ``num_draft`` drafts over ``vocab`` tokens.
 
-    The chain test reads ``2 * num_draft`` scalars, so the whole launch moves the one
-    residual row ``max(0, target - draft)`` the accepted prefix stops at. A thread folds the
-    ``vec`` weights of one 16-byte vector and a warp folds its 32 threads, leaving one entry
-    of ``seg`` per (slot, warp), a slot being one vector per thread. Those entries are the
-    leaves the draw descends: the row's blocks, then the block's ``seg`` entries, then the
-    winning warp's lanes, then that lane's weights. Only the last of those re-reads the row,
-    and it re-reads 32 vectors of it.
-
-    The two folds a warp does are float32 over groups that ``vocab`` and ``threads`` fix
-    between them; every sum above them is float64. A launch that splits the row differently
-    therefore regroups float64 sums only.
+    The launch moves the one residual row ``max(0, target - draft)`` the accepted prefix stops
+    at, folded and searched as in `_sampling_from_probs_kernel`: float32 warp folds over groups
+    ``vocab`` and ``threads`` fix, float64 above them.
     """
     full = vocab // vec
     row_tiles = -(-full // threads)
@@ -87,17 +79,10 @@ def _chain_speculative_sampling_kernel(
 
         @T.macro
         def locate(src, n, span, frac, base, lane, pick, prefix, total, left, acc, idx):
-            """Leave in ``pick[0]`` the entry of ``src[0:n]`` the draw lands on and in
-            ``left[0]`` how much of the draw point is left inside that entry.
-
-            Lane ``l`` of warp 0 owns ``src[l * span : (l + 1) * span)`` and sums it into
-            ``lane[l]``; lane 0 turns those sums into the exclusive prefixes ``prefix``, which
-            the descent reads by lane and so stays one buffer; every lane then walks its own
-            entries against a draw point of
-            ``frac * total + base``. The entry taken is the first whose inclusive prefix
-            passes that point and whose own value is positive, and the last positive entry
-            when none does. A zero-weight entry is therefore never taken, and a point that
-            rounding leaves past the total still lands on weight the row carries.
+            """Leave in ``pick[0]`` the entry of ``src[0:n]`` the draw lands on and in ``left[0]`` how
+            much of the draw point is left inside it: the first entry with positive weight whose
+            inclusive prefix passes ``frac * total + base``, else the last positive entry, so rounding
+            past the total still lands on weight the row carries.
             """
             tx = T.get_thread_binding()
             if tx < WARP_LANES:
@@ -116,9 +101,8 @@ def _chain_speculative_sampling_kernel(
             T.sync_threads()
             if tx < WARP_LANES:
                 acc[0] = prefix[tx]
-                # The prefix that placed this level was summed in another order than these
-                # entries, so the remainder can come out negative, and every entry would then
-                # pass the point, a zero-weight one first.
+                # Clamped at zero: the level above summed in another order, so the remainder can
+                # be negative, and only positive entries may pass.
                 acc[1] = T.max(frac * total[0] + base, T.cast(0, "float64"))
                 idx[0] = n
                 idx[1] = -1
@@ -362,21 +346,14 @@ def _chain_speculative_sampling_kernel(
 
 
 class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInterface):
-    """Verify each request's draft chain and draw the token after it, over one read of one row.
+    """Verify each request's draft chain and draw the token after it, over one read of one row: the
+    residual ``max(0, target - draft)`` where the accepted prefix stops (draft zero at the bonus
+    position), searched as `SamplingFromProbsFwdKernel` searches a row.
 
-    The chain test is ``2 N`` scalars a request, so the launch moves one row: the residual
-    ``max(0, target - draft)`` at the position the accepted prefix stops at, the draft read
-    as zero at the bonus position. One streaming pass folds that row into per-(slot, warp)
-    sums and keeps them on chip, so the inverse-CDF search that follows descends those sums
-    instead of the row and re-reads only the 32 vectors the winning warp holds. A batch that
-    leaves blocks idle splits each row across several of them, whose totals meet across one
-    grid barrier.
-
-    The uniforms are a function of the seed, the offset, the draw index and the row index
-    alone, and the acceptance test is the reference's float32 ``u * draft < target``, so
-    ``num_accepted`` and the accepted prefix are the reference's exactly. The token after the
-    prefix follows the same distribution but need not be the reference's index: the
-    inverse-CDF prefix is accumulated over the order the launch folds the row in.
+    The uniforms are a function of seed, offset, draw index and row index alone, and acceptance
+    is the reference's float32 ``u * draft < target``, so ``num_accepted`` and the prefix are the
+    reference's exactly; the token after it follows the same distribution but need not be the
+    reference's index.
 
     Args:
         call: The call's shape, dtype and device facts.
@@ -388,10 +365,8 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
     # ``draft_token_ids`` indexes a row, so a value outside ``[0, V)`` reads out of bounds.
     autotune_accepts_random_int_inputs: bool = False
 
-    # Threads of a block, and the narrower block a crowded batch takes. A thread stages
-    # ``_PACE`` vectors of each row in registers, and a 512-thread block of them leaves an SM
-    # room for one resident block; a batch that already gives the device more blocks than it
-    # has SMs wants a second block resident instead, and gets it from the narrower one.
+    # Threads of a block, and the narrower block a batch of at least one block an SM takes, so
+    # two blocks stay resident on an SM.
     _THREADS: ClassVar[int] = 512
     _CROWDED_THREADS: ClassVar[int] = 256
     # Vectors of each row a thread stages before folding any of them.
@@ -418,9 +393,8 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
         if elements > 2**31 - 1:
             return f"indexes elements with int32, and B * (N + 1) * V = {elements}"
         _vec, _threads, parts, leaves = cls._plan(call.vocab, call.batch, call.sm_count)
-        # One float64 entry per (slot, warp) of a block's chunk, against the shared budget
-        # less the scratch the descent takes. Each buffer starts on a 16-byte boundary;
-        # TileLang may lay a small one over ``seg``, which this does not count on.
+        # ``seg``, one float64 entry per (slot, warp) of a block's chunk, against the budget
+        # less the descent's scratch, each buffer on a 16-byte boundary.
         budget = BLOCK_SHARED_BYTES_OPT_IN[call.arch] - (
             align_up(8 * parts, 16)
             + 3 * 8 * WARP_LANES  # tail, lane, prefix

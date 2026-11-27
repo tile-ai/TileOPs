@@ -10,12 +10,22 @@ from tileops._kernels.build_target import CUDA_COMPILE_FLAGS
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.moe.call_spec import PrePermuteCall, PrePermuteFwdInterface
-from tileops._kernels.moe.layout import row_threads
+from tileops._kernels.moe.layout import count_routes, permute_refusal, row_threads, zero_counts
 
 __all__ = ["MoEPrePermuteContiguousKernel"]
 
 # Elements of a 16-bit row one vector access copies; both gathers copy rows this wide.
 _ROW_VECTOR = VECTOR_ACCESS_BYTES // 2
+
+
+@T.macro
+def _exclusive_prefix(offsets, counts, num_experts, tx):
+    """``offsets[e]``, the sum of ``counts[0:e]``, by thread 0 for ``e`` in
+    ``[0, num_experts]``."""
+    if tx == 0:
+        offsets[0] = T.int32(0)
+        for expert in T.serial(num_experts):
+            offsets[expert + 1] = offsets[expert] + counts[expert]
 
 
 def _make_tight_scan(numel: int, num_experts: int):
@@ -35,22 +45,13 @@ def _make_tight_scan(numel: int, num_experts: int):
                 slot_buf = T.alloc_local([1], "int32")
                 tx = T.get_thread_binding()
 
-                for i in T.serial(T.ceildiv(num_experts, threads)):
-                    expert = i * threads + tx
-                    if expert < num_experts:
-                        counts[expert] = T.int32(0)
+                zero_counts(counts, num_experts, threads, tx)
                 T.sync_threads()
 
-                for i in T.serial(T.ceildiv(numel, threads)):
-                    idx = i * threads + tx
-                    if idx < numel:
-                        T.atomic_add(counts[flat_ids[idx]], 1)
+                count_routes(counts, flat_ids, numel, threads, tx)
                 T.sync_threads()
 
-                if tx == 0:
-                    offsets[0] = T.int32(0)
-                    for expert in T.serial(num_experts):
-                        offsets[expert + 1] = offsets[expert] + counts[expert]
+                _exclusive_prefix(offsets, counts, num_experts, tx)
                 T.sync_threads()
 
                 for i in T.serial(T.ceildiv(num_experts, threads)):
@@ -93,10 +94,7 @@ def _make_parallel_tight_scan(
                 tx = T.get_thread_binding()
                 counts = T.alloc_shared([num_experts], "int32")
 
-                for i in T.serial(T.ceildiv(num_experts, threads)):
-                    expert = i * threads + tx
-                    if expert < num_experts:
-                        counts[expert] = T.int32(0)
+                zero_counts(counts, num_experts, threads, tx)
                 T.sync_threads()
 
                 for i in T.serial(T.ceildiv(routes_per_block, threads)):
@@ -136,10 +134,7 @@ def _make_parallel_tight_scan(
                         totals[expert] = total[0]
                 T.sync_threads()
 
-                if tx == 0:
-                    offsets[0] = T.int32(0)
-                    for expert in T.serial(num_experts):
-                        offsets[expert + 1] = offsets[expert] + totals[expert]
+                _exclusive_prefix(offsets, totals, num_experts, tx)
                 T.sync_threads()
 
                 for i in T.serial(T.ceildiv(num_experts, prefix_threads)):
@@ -215,10 +210,7 @@ def _make_aligned_per_row_scan(
                 upper_buf = T.alloc_local([1], "int32")
                 middle_buf = T.alloc_local([1], "int32")
 
-                for i in T.serial(T.ceildiv(num_experts, threads)):
-                    idx = i * threads + tx
-                    if idx < num_experts:
-                        counts[idx] = T.int32(0)
+                zero_counts(counts, num_experts, threads, tx)
                 for i in T.serial(T.ceildiv(capacity, threads)):
                     row = i * threads + tx
                     if row < capacity:
@@ -226,10 +218,7 @@ def _make_aligned_per_row_scan(
                         permuted_idx[row] = T.int32(num_tokens)
                 T.sync_threads()
 
-                for i in T.serial(T.ceildiv(numel, threads)):
-                    idx = i * threads + tx
-                    if idx < numel:
-                        T.atomic_add(counts[flat_ids[idx]], 1)
+                count_routes(counts, flat_ids, numel, threads, tx)
                 T.sync_threads()
 
                 if tx == 0:
@@ -352,35 +341,28 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
     """Build one contiguous PrePermute specialization from ``call.layout``."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    _SUPPORTED_LAYOUT_KEYS = frozenset(("tight_physical_psum", "aligned_per_row"))
 
     @classmethod
     def refusal(cls, call: PrePermuteCall) -> "str | None":
-        key = getattr(call.layout, "selection_key", None)
-        if key not in cls._SUPPORTED_LAYOUT_KEYS:
-            return f"serves layouts {sorted(cls._SUPPORTED_LAYOUT_KEYS)}, not {key}"
-        if call.input_dtype not in (torch.bfloat16, torch.float16):
-            return f"requires float16 or bfloat16, got {call.input_dtype}"
-        return super().refusal(call)
+        return permute_refusal(call.layout.selection_key, call.input_dtype) or super().refusal(call)
 
-    def __init__(self, call: PrePermuteCall, config: dict | None = None) -> None:
+    def __init__(self, call: PrePermuteCall) -> None:
         super().__init__(device_index=call.device_index)
-        layout = call.layout
-        self.layout_key = getattr(layout, "selection_key", "")
+        self.layout_key = call.layout.selection_key
         self.num_tokens = call.num_tokens
         self.top_k = call.top_k
         self.num_experts = call.num_experts
         self.hidden_size = call.hidden_size
         self.dtype = call.input_dtype
         self.numel = call.num_tokens * call.top_k
-        self.alignment = getattr(layout, "alignment", 1)
+        self.alignment = call.layout.alignment
         self.capacity = (
             self.numel
             if self.layout_key == "tight_physical_psum"
             else math.ceil((self.numel + self.num_experts * (self.alignment - 1)) / self.alignment)
             * self.alignment
         )
-        self.init_config(config)
+        self.init_config()
 
     @property
     def default_config(self) -> dict:

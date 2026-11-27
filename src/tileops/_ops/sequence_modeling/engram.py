@@ -17,6 +17,12 @@ from tileops.backend import Target
 __all__ = ["EngramGateConvBwdOp", "EngramGateConvFwdOp"]
 
 
+def _gate_conv_call(eps: float, x: torch.Tensor) -> EngramGateConvCall:
+    """The facts of one call: *x*'s ``(M, seq_len, d)`` shape, dtype and device, and *eps*."""
+    m, seq_len, d = x.shape
+    return EngramGateConvCall(m=m, seq_len=seq_len, d=d, eps=eps, dtype=x.dtype, device=x.device)
+
+
 class EngramGateConvFwdOp(Op):
     """Engram GateConv forward operator (post-projection fusion).
 
@@ -83,14 +89,7 @@ class EngramGateConvFwdOp(Op):
         inputs = tuple(t.contiguous() for t in (H, k, v, rms_w_h, rms_w_v, conv_w))
         return self.kernel_for(
             "engram_gate_conv_fwd",
-            lambda: EngramGateConvCall(
-                m=inputs[0].shape[0],
-                seq_len=inputs[0].shape[1],
-                d=inputs[0].shape[2],
-                eps=self.eps,
-                dtype=inputs[0].dtype,
-                device=inputs[0].device,
-            ),
+            lambda: _gate_conv_call(self.eps, inputs[0]),
         )(*inputs)
 
 
@@ -176,12 +175,5 @@ class EngramGateConvBwdOp(Op):
         )
         return self.kernel_for(
             "engram_gate_conv_bwd",
-            lambda: EngramGateConvCall(
-                m=inputs[0].shape[0],
-                seq_len=inputs[0].shape[1],
-                d=inputs[0].shape[2],
-                eps=self.eps,
-                dtype=inputs[0].dtype,
-                device=inputs[0].device,
-            ),
+            lambda: _gate_conv_call(self.eps, inputs[0]),
         )(*inputs)

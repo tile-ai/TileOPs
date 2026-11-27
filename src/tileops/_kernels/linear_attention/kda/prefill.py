@@ -63,12 +63,6 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             index,
         )
         return identity, lambda: cls(
-            batch=call.batch,
-            seq_len=call.seq_len,
-            heads=call.heads,
-            value_heads=call.value_heads,
-            dim_k=call.dim_k,
-            dim_v=call.dim_v,
             scale=call.scale,
             l2norm=call.l2norm,
             gate_in_kernel=call.gate_in_kernel,
@@ -82,12 +76,6 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
 
     def __init__(
         self,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        value_heads: int,
-        dim_k: int,
-        dim_v: int,
         scale: float,
         l2norm: bool,
         dtype: torch.dtype,
@@ -101,12 +89,6 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
     ) -> None:
         """Hold the call facts both programs are built from."""
         super().__init__(device_index=device_index)
-        self.batch = batch
-        self.seq_len = seq_len
-        self.heads = heads
-        self.value_heads = value_heads
-        self.dim_k = dim_k
-        self.dim_v = dim_v
         self.scale = scale
         self.l2norm = l2norm
         self.gate_in_kernel = gate_in_kernel

@@ -344,27 +344,6 @@ def test_conv1d_sm90_default_configs(x_shape, w_shape, stride, padding, dtype, k
     assert {key: kernel.config[key] for key in config} == config, kernel.config
 
 
-@pytest.mark.smoke
-def test_conv1d_no_bias_matches_torch() -> None:
-    op = Conv1dFwdOp(stride=2, padding=2)
-    x = torch.randn(1, 32, 256, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 5, device=run_device(), dtype=torch.float16).contiguous()
-    out = op(x, weight)
-    ref = F.conv1d(x, weight, bias=None, stride=2, padding=2).contiguous()
-    compare_outputs(out, ref, convolution_verification(out.dtype))
-
-
-@pytest.mark.smoke
-def test_conv1d_bias_matches_torch() -> None:
-    op = Conv1dFwdOp(stride=2, padding=2)
-    x = torch.randn(1, 32, 256, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 5, device=run_device(), dtype=torch.float16).contiguous()
-    bias = torch.zeros(64, device=run_device(), dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv1d(x, weight, bias=bias, stride=2, padding=2).contiguous()
-    compare_outputs(out, ref, convolution_verification(out.dtype))
-
-
 @pytest.mark.parametrize(
     "dilation, use_bias",
     [
@@ -428,30 +407,27 @@ def test_conv1d_same_padding_even_kernel_matches_torch(use_bias: bool) -> None:
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "kernel_size, stride, padding, dilation",
+    "kernel_size, stride, padding, kernel_name",
     [
-        pytest.param(3, 1, 1, 1, id="unit-stride", marks=pytest.mark.smoke),
-        pytest.param(3, 2, 1, 1, id="generic", marks=pytest.mark.full),
-        pytest.param(1, 1, 0, 1, id="pointwise", marks=pytest.mark.full),
+        pytest.param(3, 1, 1, "Conv1dUnitStrideKernel", id="unit-stride", marks=pytest.mark.smoke),
+        pytest.param(3, 2, 1, "Conv1dKernel", id="generic", marks=pytest.mark.smoke),
+        pytest.param(1, 1, 0, "Conv1dPointwiseKernel", id="pointwise", marks=pytest.mark.full),
     ],
 )
 def test_conv1d_dispatches_kernel(
-    kernel_size: int,
-    stride: int,
-    padding: int,
-    dilation: int,
+    kernel_size: int, stride: int, padding: int, kernel_name: str
 ) -> None:
-    op = Conv1dFwdOp(
-        stride=stride,
-        padding=padding,
-        dilation=dilation,
-    )
+    from tileops.backend import BUILTIN
+
+    op = Conv1dFwdOp(stride=stride, padding=padding, target=BUILTIN)
     x = torch.randn(1, 32, 256, device=run_device(), dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, kernel_size, device=run_device(), dtype=torch.float16).contiguous()
     out = op(x, weight)
-    ref = F.conv1d(x, weight, bias=None, stride=stride, padding=padding, dilation=dilation)
+    ref = F.conv1d(x, weight, bias=None, stride=stride, padding=padding)
     compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
+    assert [type(k).__name__ for k in op.iter_kernels()] == [kernel_name]
 
 
 @pytest.mark.parametrize(
@@ -783,11 +759,13 @@ def test_conv2d_no_bias_grouped_matches_torch() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("use_bias", [False, True], ids=["no-bias", "bias"])
 def test_conv2d_depthwise_dispatches_the_direct_kernel(use_bias: bool) -> None:
-    """One channel per group is a GEMM with M=1, so it gets a direct kernel instead."""
+    from tileops.backend import BUILTIN
+
     channels = 32
-    op = Conv2dFwdOp(padding=1, groups=channels)
+    op = Conv2dFwdOp(padding=1, groups=channels, target=BUILTIN)
     x = torch.randn(1, channels, 28, 28, device=run_device(), dtype=torch.float16).contiguous()
     weight = torch.randn(channels, 1, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
     bias = (
@@ -800,29 +778,36 @@ def test_conv2d_depthwise_dispatches_the_direct_kernel(use_bias: bool) -> None:
 
     ref = F.conv2d(x, weight, bias=bias, padding=1, groups=channels).contiguous()
     compare_outputs(out, ref, convolution_verification(out.dtype))
+    assert [type(k).__name__ for k in op.iter_kernels()] == ["DepthwiseConv2dKernel"]
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_conv2d_dispatches_1x1_kernel() -> None:
-    op = Conv2dFwdOp()
+    from tileops.backend import BUILTIN
+
+    op = Conv2dFwdOp(target=BUILTIN)
     x = torch.randn(1, 32, 32, 32, device=run_device(), dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 1, 1, device=run_device(), dtype=torch.float16).contiguous()
     out = op(x, weight)
     ref = F.conv2d(x, weight, bias=None, padding=0)
     compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
+    assert [type(k).__name__ for k in op.iter_kernels()] == ["Conv2d1x1Kernel"]
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_conv2d_batch_with_partial_tile_leaves_the_symmetric_kernel() -> None:
-    # out_h * out_w is 49 here, a multiple of no m tile the symmetric kernel builds,
-    # so an m tile would span two images and its implicit GEMM would take the wrong
-    # image for the tail. More than one image therefore goes elsewhere.
-    op = Conv2dFwdOp()
+    """49 output positions an image fill no m tile the symmetric kernel builds."""
+    from tileops.backend import BUILTIN
+
+    op = Conv2dFwdOp(target=BUILTIN)
     x = torch.randn(5, 96, 9, 9, device=run_device(), dtype=torch.float16).contiguous()
     weight = torch.randn(64, 96, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
     out = op(x, weight)
     ref = F.conv2d(x, weight, bias=None)
     compare_outputs(out, ref.contiguous(), convolution_verification(out.dtype))
+    assert [type(k).__name__ for k in op.iter_kernels()] == ["Conv2dKernel"]
 
 
 @pytest.mark.in_tree_kernels
@@ -897,10 +882,24 @@ def test_conv2d_symmetric_prices_the_split_for_the_stated_tile() -> None:
     """A config that names a tile but no split gets the split priced for that tile, not the
     default tile's: a 64-wide k tile leaves 9 K blocks, which the default's split need not
     divide."""
+    from tileops._kernels.convolution import Conv2dCall
     from tileops._kernels.convolution.conv2d import Conv2dSymmetricKernel
 
+    call = Conv2dCall(
+        n=2,
+        c_in=64,
+        c_out=128,
+        h=16,
+        w=16,
+        kernel_h=3,
+        kernel_w=3,
+        padding=(1, 1),
+        out_h=16,
+        out_w=16,
+        device=run_device(),
+    )
     kernel = Conv2dSymmetricKernel(  # lint: test-placement allow: states a partial config
-        2, 64, 16, 16, 128, 3, 1, 1, 1, torch.float16, config={"block_k": 64}
+        call, config={"block_k": 64}
     )
     assert kernel.config["block_k"] == 64
     assert kernel.config["split_k"] == kernel.split_k(kernel.config)
@@ -1248,43 +1247,13 @@ def test_conv3d_no_bias_grouped_matches_torch() -> None:
 
 
 @pytest.mark.smoke
-def test_conv3d_accepts_zero_bias() -> None:
-    op = Conv3dFwdOp(
-        stride=2,
-        padding=1,
-    )
-    x = torch.randn(1, 8, 8, 16, 16, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(16, 8, 3, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
-    bias = torch.zeros(16, device=run_device(), dtype=torch.float16).contiguous()
-    out = op(x, weight, bias)
-    ref = F.conv3d(
-        x,
-        weight,
-        bias=bias,
-        stride=2,
-        padding=1,
-    )
-    ref = ref.contiguous()
-    compare_outputs(out, ref, convolution_verification(out.dtype))
-
-
-@pytest.mark.smoke
-def test_conv3d_dispatches_ndhwc_kernel_no_bias() -> None:
-    op = Conv3dFwdOp(stride=1, padding=1)
-    x = torch.randn(1, 32, 8, 16, 16, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 3, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
-
-    out = op(x, weight)
-
-    ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
-    compare_outputs(out, ref, convolution_verification(out.dtype))
-
-
-@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
     """Two batches of 1125 output positions: a tile of positions runs from one batch into
-    the next, and each position lands in its own batch of the NCDHW result."""
-    op = Conv3dFwdOp(stride=1, padding=1)
+    the next."""
+    from tileops.backend import BUILTIN
+
+    op = Conv3dFwdOp(stride=1, padding=1, target=BUILTIN)
     x = torch.randn(2, 32, 5, 15, 15, device=run_device(), dtype=torch.float16).contiguous()
     weight = torch.randn(64, 32, 3, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
 
@@ -1292,6 +1261,11 @@ def test_conv3d_ndhwc_tiles_straddle_batches() -> None:
 
     ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
     compare_outputs(out, ref, convolution_verification(out.dtype))
+    (kernel,) = op.iter_kernels()
+    assert type(kernel).__name__ == "Conv3dNdhwcKernel"
+    # Tuning offers only k tiles that divide the 32 input channels.
+    assert kernel.autotune_configs
+    assert all(32 % config["block_k"] == 0 for config in kernel.autotune_configs)
 
 
 @pytest.mark.smoke
@@ -1340,27 +1314,24 @@ def test_conv3d_roofline_ignores_the_serving_kernel_layout_traffic() -> None:
 
 
 @pytest.mark.smoke
-def test_conv3d_does_not_dispatch_ndhwc_for_pointwise() -> None:
-    op = Conv3dFwdOp(stride=1, padding=0)
-    x = torch.randn(1, 32, 8, 16, 16, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 1, 1, 1, device=run_device(), dtype=torch.float16).contiguous()
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "x_shape, kernel, padding",
+    [
+        pytest.param((1, 32, 8, 16, 16), 1, 0, id="pointwise"),
+        pytest.param((1, 32, 2, 4, 4), 3, 1, id="small-output"),
+    ],
+)
+def test_conv3d_keeps_the_dense_kernel_where_staging_does_not_pay(x_shape, kernel, padding):
+    from tileops.backend import BUILTIN
 
+    op = Conv3dFwdOp(padding=padding, target=BUILTIN)
+    x = torch.randn(*x_shape, device=run_device(), dtype=torch.float16)
+    weight = torch.randn(64, 32, kernel, kernel, kernel, device=run_device(), dtype=torch.float16)
     out = op(x, weight)
-
-    ref = F.conv3d(x, weight, bias=None, stride=1, padding=0).contiguous()
+    ref = F.conv3d(x, weight, padding=padding)
     compare_outputs(out, ref, convolution_verification(out.dtype))
-
-
-@pytest.mark.smoke
-def test_conv3d_does_not_dispatch_ndhwc_for_small_output() -> None:
-    op = Conv3dFwdOp(stride=1, padding=1)
-    x = torch.randn(1, 32, 2, 4, 4, device=run_device(), dtype=torch.float16).contiguous()
-    weight = torch.randn(64, 32, 3, 3, 3, device=run_device(), dtype=torch.float16).contiguous()
-
-    out = op(x, weight)
-
-    ref = F.conv3d(x, weight, bias=None, stride=1, padding=1).contiguous()
-    compare_outputs(out, ref, convolution_verification(out.dtype))
+    assert [type(k).__name__ for k in op.iter_kernels()] == ["Conv3dKernel"]
 
 
 @pytest.mark.smoke

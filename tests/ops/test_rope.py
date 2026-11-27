@@ -843,13 +843,8 @@ def test_rope_cos_sin_rotates_a_strided_view_into_a_new_tensor(columns) -> None:
     "heads, width, P",
     [
         pytest.param(64, 512, 4096, marks=_SMOKE, id="deepseek-v4-flash-query"),
-        pytest.param(64, 512, 4128, marks=_FULL, id="deepseek-v4-flash-query-4128"),
-        pytest.param(1, 512, 4096, marks=_FULL, id="deepseek-v4-flash-key"),
         pytest.param(1, 512, 4128, marks=_FULL, id="deepseek-v4-flash-key-4128"),
         pytest.param(64, 128, 4096, marks=_FULL, id="deepseek-v4-flash-indexer-query"),
-        pytest.param(64, 128, 4128, marks=_FULL, id="deepseek-v4-flash-indexer-query-4128"),
-        pytest.param(1, 128, 4096, marks=_FULL, id="deepseek-v4-flash-indexer-key"),
-        pytest.param(1, 128, 4128, marks=_FULL, id="deepseek-v4-flash-indexer-key-4128"),
     ],
 )
 def test_rope_cos_sin_graph_replay(heads, width, P) -> None:

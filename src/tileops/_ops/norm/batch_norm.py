@@ -170,11 +170,8 @@ class BatchNormFwdOp(Op):
             stats = (running_mean.contiguous(), running_var.contiguous())
             return kernel(x_ncs, *stats, weight, bias).view(input.shape), None, None
 
-        # A training program is built for the tensors passed and reads no stand-in for an
-        # absent one. The running statistics are written, so normalizing them is not
-        # enough: whoever serves this op writes the tensor it was handed, and a copy would
-        # swallow that write. ``contiguous()`` returns the same object when it has nothing
-        # to do, so what came back says whether a write-back is owed.
+        # The kernel writes the running statistics it is handed: a contiguous copy is written
+        # back to the caller's tensor.
         stats = (running_mean, running_var)
         handed = stats if running_mean is None else tuple(stat.contiguous() for stat in stats)
         weight = None if weight is None else weight.contiguous()

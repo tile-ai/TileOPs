@@ -179,12 +179,8 @@ def _nsa_fwd_varlen_tma_kernel(
 ) -> Callable:
     """One warp per (token, KV head) on SM90: tiles move by TMA, Q stays in registers.
 
-    The live slots of a token form a bitmask walked lowest-first by two cursors: the
-    load cursor runs ``stages - 1`` slots ahead of the compute cursor, so with more than
-    one selected block the next K/V block is in flight while this one is attended. With
-    one selected block the ring is a single stage: a second one would only hold smem.
-    TMA zero-fills rows past the packed tensor; keys past the token's limit are masked.
-    The output is staged in the Q tile, whose last reader is the register copy of Q.
+    With one selected block the ring is a single stage. TMA zero-fills rows past the packed
+    tensor; keys past the token's limit are masked.
     """
     if scale is None:
         scale = (1.0 / dim) ** 0.5
@@ -358,11 +354,8 @@ def _nsa_fwd_varlen_gather_kernel(
 ) -> Callable:
     """One CTA per (token, KV head, key split): selected rows gathered into a K/V tile.
 
-    Each step gathers ``block_n`` keys, the ``block_n // block_size`` next slots of the
-    token's selection, row by row, so a block need not fill a tile. The token's G query
-    rows are padded with zeros to the 16 rows of an MMA. With one split the CTA writes the
-    output; with several, each split of the slot range writes its normalized output, its
-    row max and its softmax denominator, and a second kernel merges them. Rows the
+    With one split the CTA writes the output; with several, each split writes its normalized
+    output, its row max and its softmax denominator, and a second kernel merges them. Rows the
     selection does not reach load as zeros: a non-finite value would survive a zero weight.
     """
     groups = heads // heads_kv

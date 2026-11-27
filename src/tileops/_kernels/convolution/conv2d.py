@@ -14,7 +14,7 @@ from tileops._kernels.convolution._common import (
     stage_output_tile,
 )
 from tileops._kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.kernel_base import Kernel
 from tileops._perf import tensor_core_roof
 from tileops._utils import WARP_LANES
 
@@ -89,26 +89,14 @@ def _conv2d_1x1_kernel(
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv2d_1x1_bias_main(
-                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-                weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv2d_1x1_body(x, weight, out, bias)
-
-            return _conv2d_1x1_bias_main
-
         @T.prim_func
         def _conv2d_1x1_main(
             x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in), dtype),  # type: ignore
             out: T.Tensor((n, c_out, h, w), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv2d_1x1_body(x, weight, out, None)
+            _conv2d_1x1_body(x, weight, out, bias if has_bias else None)
 
         return _conv2d_1x1_main
 
@@ -130,16 +118,12 @@ def _conv2d_kernel(
     pad_w: int,
     dilation_h: int,
     dilation_w: int,
+    out_h: int,
+    out_w: int,
     has_bias: bool,
     dtype: str,
-    *,
-    pad_h_end: int,
-    pad_w_end: int,
 ):
-    # The end of each axis may pad more than the start.
     accum_dtype = "float"
-    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     k_total = kernel_h * kernel_w * c_in
 
     # Automatic async copy is off: TileLang does not widen the scalar cp.async it emits for
@@ -223,26 +207,14 @@ def _conv2d_kernel(
 
                 T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv2d_bias_main(
-                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-                weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv2d_body(x, weight, out, bias)
-
-            return _conv2d_bias_main
-
         @T.prim_func
         def _conv2d_main(
             x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in, kernel_h, kernel_w), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv2d_body(x, weight, out, None)
+            _conv2d_body(x, weight, out, bias if has_bias else None)
 
         return _conv2d_main
 
@@ -264,19 +236,15 @@ def _conv2d_group_kernel(
     pad_w: int,
     dilation_h: int,
     dilation_w: int,
+    out_h: int,
+    out_w: int,
     has_bias: bool,
     dtype: str,
     groups: int,
     c_in_g: int,
     c_out_g: int,
-    *,
-    pad_h_end: int,
-    pad_w_end: int,
 ):
-    # The end of each axis may pad more than the start.
     accum_dtype = "float"
-    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     out_hw = out_h * out_w
     k_total = kernel_h * kernel_w * c_in_g
 
@@ -376,26 +344,14 @@ def _conv2d_group_kernel(
                         if oc_g < c_out_g and spatial_idx < out_hw:
                             out[batch_id, oc, oh, ow] = out_shared[i, j]
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv2d_group_bias_main(
-                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-                weight: T.Tensor((c_out, c_in_g, kernel_h, kernel_w), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv2d_group_body(x, weight, out, bias)
-
-            return _conv2d_group_bias_main
-
         @T.prim_func
         def _conv2d_group_main(
             x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, c_in_g, kernel_h, kernel_w), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv2d_group_body(x, weight, out, None)
+            _conv2d_group_body(x, weight, out, bias if has_bias else None)
 
         return _conv2d_group_main
 
@@ -417,11 +373,10 @@ def _conv2d_depthwise_kernel(
     pad_w: int,
     dilation_h: int,
     dilation_w: int,
+    out_h: int,
+    out_w: int,
     has_bias: bool,
     dtype: str,
-    *,
-    pad_h_end: int,
-    pad_w_end: int,
 ):
     """Build the depthwise Conv2d program: one input channel feeds one output channel.
 
@@ -429,10 +384,7 @@ def _conv2d_depthwise_kernel(
     channel, so a tile of ``block_m`` rows carries one useful row. This one multiplies and
     accumulates directly instead, the way the Conv1d depthwise path does.
     """
-    # The end of each axis may pad more than the start.
     accum_dtype = "float"
-    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
     out_hw = out_h * out_w
 
     @tilelang.jit(out_idx=[2], compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"])
@@ -490,26 +442,14 @@ def _conv2d_depthwise_kernel(
                         else:
                             out_flat[bz, oc, spatial_idx] = T.cast(out_local[i, j], dtype)
 
-        if has_bias:
-
-            @T.prim_func
-            def _conv2d_depthwise_bias_main(
-                x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
-                weight: T.Tensor((c_out, 1, kernel_h, kernel_w), dtype),  # type: ignore
-                out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
-                bias: T.Tensor((c_out,), dtype),  # type: ignore
-            ):
-                _conv2d_depthwise_body(x, weight, out, bias)
-
-            return _conv2d_depthwise_bias_main
-
         @T.prim_func
         def _conv2d_depthwise_main(
             x: T.Tensor((n, c_in, h, w), dtype),  # type: ignore
             weight: T.Tensor((c_out, 1, kernel_h, kernel_w), dtype),  # type: ignore
             out: T.Tensor((n, c_out, out_h, out_w), dtype),  # type: ignore
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,  # type: ignore
         ):
-            _conv2d_depthwise_body(x, weight, out, None)
+            _conv2d_depthwise_body(x, weight, out, bias if has_bias else None)
 
         return _conv2d_depthwise_main
 
@@ -741,52 +681,6 @@ def _conv2d_symmetric_kernel(
                 conv_nhwc_implicit_gemm_split(x_nhwc, weight_krsc, partial)
                 sum_partials(partial, out, bias)
 
-        if split_k > 1:
-            partial_shape = (split_k, n, c_out, out_hw)
-            if has_bias:
-
-                @T.prim_func
-                def _conv2d_symmetric_split_bias_main(
-                    x: T.Tensor((n, c_in, h, w), dtype),
-                    weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
-                    x_nhwc: T.Tensor((n, h, w, c_in), dtype),
-                    weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-                    out: T.Tensor((n, c_out, out_h, out_w), dtype),
-                    partial: T.Tensor(partial_shape, partial_dtype),
-                    bias: T.Tensor((c_out,), dtype),
-                ):
-                    _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, partial, bias)
-
-                return _conv2d_symmetric_split_bias_main
-
-            @T.prim_func
-            def _conv2d_symmetric_split_main(
-                x: T.Tensor((n, c_in, h, w), dtype),
-                weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
-                x_nhwc: T.Tensor((n, h, w, c_in), dtype),
-                weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-                out: T.Tensor((n, c_out, out_h, out_w), dtype),
-                partial: T.Tensor(partial_shape, partial_dtype),
-            ):
-                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, partial, None)
-
-            return _conv2d_symmetric_split_main
-
-        if has_bias:
-
-            @T.prim_func
-            def _conv2d_symmetric_bias_main(
-                x: T.Tensor((n, c_in, h, w), dtype),
-                weight: T.Tensor((c_out, c_in, kernel_size, kernel_size), dtype),
-                x_nhwc: T.Tensor((n, h, w, c_in), dtype),
-                weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
-                out: T.Tensor((n, c_out, out_h, out_w), dtype),
-                bias: T.Tensor((c_out,), dtype),
-            ):
-                _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, None, bias)
-
-            return _conv2d_symmetric_bias_main
-
         @T.prim_func
         def _conv2d_symmetric_main(
             x: T.Tensor((n, c_in, h, w), dtype),
@@ -794,12 +688,37 @@ def _conv2d_symmetric_kernel(
             x_nhwc: T.Tensor((n, h, w, c_in), dtype),
             weight_krsc: T.Tensor((c_out, kernel_size, kernel_size, c_in), dtype),
             out: T.Tensor((n, c_out, out_h, out_w), dtype),
+            partial: T.Tensor((split_k, n, c_out, out_hw), partial_dtype)
+            if split_k > 1
+            else None = None,
+            bias: T.Tensor((c_out,), dtype) if has_bias else None = None,
         ):
-            _conv2d_symmetric_body(x, weight, x_nhwc, weight_krsc, out, None, None)
+            _conv2d_symmetric_body(
+                x, weight, x_nhwc, weight_krsc, out, partial, bias if has_bias else None
+            )
 
         return _conv2d_symmetric_main
 
     return _conv2d_symmetric_func
+
+
+def _geometry(call: Conv2dCall) -> tuple[int, ...]:
+    """The arguments the gathered Conv2d builders start with: the extents, the window, and
+    the output extents."""
+    return (
+        call.n,
+        call.c_in,
+        call.h,
+        call.w,
+        call.c_out,
+        call.kernel_h,
+        call.kernel_w,
+        *call.stride,
+        *call.padding,
+        *call.dilation,
+        call.out_h,
+        call.out_w,
+    )
 
 
 def _gathered_gemm_default_config(arch: int) -> dict:
@@ -824,18 +743,12 @@ def _gathered_gemm_default_config(arch: int) -> dict:
 
 
 class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
-    """Dense Conv2d staged through an NHWC implicit GEMM.
-
-    Serves the calls whose window, stride, padding and dilation are equal on both axes
-    and whose channel count is whole 32-element steps, which is what makes the
-    activation gather channel-contiguous.
-    """
+    """Dense Conv2d staged through an NHWC implicit GEMM, for a window, stride, padding and
+    dilation equal on both axes and input channels a multiple of 32."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    # The m tiles this kernel builds. One tuple serves the region, the default
-    # configuration and the autotune filter, so widening it cannot leave the three
-    # disagreeing about what an m tile can be.
+    # The m tiles this kernel builds; the region, the default and the autotune filter read it.
     block_m_candidates: tuple[int, ...] = (64, 128)
 
     @classmethod
@@ -857,14 +770,20 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         m_tiles = -(-(call.n * call.out_hw) // min(cls.block_m_candidates))
         return super().refusal(call) or grid_refusal(y=m_tiles)
 
-    @classmethod
-    def entry_for(cls, call: Conv2dCall) -> Entry:
-        """The cache identity and the thunk that builds this class for *call*.
-
-        Its region is the symmetric one, so one extent of each pair speaks for both.
-        """
-        index = call.device_index
-        args = (
+    def __init__(self, call: Conv2dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.n, self.c_in, self.h, self.w, self.c_out = (
+            call.n,
+            call.c_in,
+            call.h,
+            call.w,
+            call.c_out,
+        )
+        # The region is symmetric, so one extent of each pair speaks for both.
+        self.kernel_size = call.kernel_h
+        self.out_hw = call.out_hw
+        self.dtype = call.dtype
+        self.kernel = _conv2d_symmetric_kernel(
             call.n,
             call.c_in,
             call.h,
@@ -874,51 +793,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             call.stride[0],
             call.padding[0],
             call.dilation[0],
-            call.dtype,
-        )
-        return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, device_index=index
-        )
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        kernel_size: int,
-        stride: int,
-        pad: int,
-        dilation: int,
-        dtype: torch.dtype,
-        has_bias: bool = False,
-        config: dict | None = None,
-        *,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.n = n
-        self.c_in = c_in
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_size = kernel_size
-        self.dtype = dtype
-        self.out_h = (h + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
-        self.out_w = (w + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
-
-        self.kernel = _conv2d_symmetric_kernel(
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            kernel_size,
-            stride,
-            pad,
-            dilation,
-            has_bias,
+            call.has_bias,
             self.dtype_str,
         )
         self.init_config(config)
@@ -927,9 +802,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
     def tile_stays_in_one_image(n: int, out_hw: int, block_m: int) -> bool:
         """Whether an m tile of *block_m* rows never spans two of *n* images.
 
-        The m axis runs over ``n * out_h * out_w``, and both ``T.im2col`` and the
-        epilogue read the image index off the tile's first row. A tile that starts in
-        one image and ends in the next would take the wrong image for its tail.
+        ``T.im2col`` and the epilogue read the image index off the tile's first row.
         """
         return n == 1 or out_hw % block_m == 0
 
@@ -963,9 +836,9 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             elif (
                 self.c_out >= 256
                 and self.c_in >= 256
-                and self.out_h * self.out_w >= 8192
+                and self.out_hw >= 8192
                 and wide_m in self.block_m_candidates
-                and self.tile_stays_in_one_image(self.n, self.out_h * self.out_w, wide_m)
+                and self.tile_stays_in_one_image(self.n, self.out_hw, wide_m)
                 and self.c_in % wide_k == 0
                 and wide_stages * (wide_m + wide_n) * wide_k * self.dtype.itemsize
                 <= self.build_target.smem_budget
@@ -983,16 +856,11 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
     def split_k(self, tile: dict) -> int:
         """How many CTAs share the contraction of each output tile of *tile*'s grid.
 
-        A grid of ``tiles`` output tiles leaves ``sm_count - tiles`` SMs idle through the
-        whole K loop. Split ``s`` ways, each CTA runs ``k_blocks / s`` of the K blocks and
-        ``tiles * s`` CTAs stay in one wave. A split saves the ``k_blocks - k_blocks / s``
-        blocks a CTA no longer runs, each priced at one SM's share of the tensor-core rate.
-        It costs the partials written and read back, priced at the DRAM rate though they
-        mostly stay in L2, and the fixed latency of the launch that sums them. All three
-        are the build target's GPU-profile facts. ``s`` is the divisor of ``k_blocks`` that
-        saves the most, 1 when none saves anything or the profile lacks any of the three.
-        The partial tile is staged in shared memory beside the pipeline, so a split that does
-        not fit there is not taken.
+        The divisor ``s`` of the K blocks, within one wave of ``tiles * s`` CTAs, that saves
+        the most: the K blocks a CTA no longer runs at its SM's share of the tensor-core
+        rate, less the partials written and read back at the DRAM rate and the summing
+        launch's latency. 1 when no split saves time, the GPU profile lacks one of those
+        rates, or the partial tile does not fit in shared memory beside the pipeline.
         """
         target = self.build_target
         flops = dict(target.tensor_core_rates).get(tensor_core_roof(self.dtype).split(".")[1])
@@ -1003,14 +871,12 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             or not target.launch_latency
         ):
             return 1
-        tiles = -(-self.c_out // tile["block_n"]) * -(
-            -(self.n * self.out_h * self.out_w) // tile["block_m"]
-        )
+        tiles = -(-self.c_out // tile["block_n"]) * -(-(self.n * self.out_hw) // tile["block_m"])
         k_blocks = _k_blocks(self.c_in, self.kernel_size, tile["block_k"])
         block_s = (
             2 * tile["block_m"] * tile["block_n"] * tile["block_k"] / (flops / target.sm_count)
         )
-        partial_bytes = self.n * self.c_out * self.out_h * self.out_w * _PARTIAL_DTYPE.itemsize
+        partial_bytes = self.n * self.c_out * self.out_hw * _PARTIAL_DTYPE.itemsize
 
         def saved_s(split: int) -> float:
             run = (k_blocks - k_blocks // split) * block_s
@@ -1063,12 +929,11 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
             block_m=list(self.block_m_candidates),
             block_k=[32, 64],
         )
-        out_hw = self.out_h * self.out_w
         tiles = [
             c
             for c in configs
             if self.c_in % c["block_k"] == 0
-            and self.tile_stays_in_one_image(self.n, out_hw, c["block_m"])
+            and self.tile_stays_in_one_image(self.n, self.out_hw, c["block_m"])
         ]
         return [
             {**tile, "split_k": split}
@@ -1096,7 +961,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         if split_k == 1:
             return launch(self, x, weight, x_nhwc, weight_krsc, bias=bias)
         partial = torch.empty(
-            (split_k, self.n, self.c_out, self.out_h * self.out_w),
+            (split_k, self.n, self.c_out, self.out_hw),
             device=x.device,
             dtype=_PARTIAL_DTYPE,
         )
@@ -1115,77 +980,10 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
             return "serves ungrouped convolution"
         return super().refusal(call) or grid_refusal(z=call.n)
 
-    @classmethod
-    def entry_for(cls, call: Conv2dCall) -> Entry:
-        index = call.device_index
-        args = (
-            call.n,
-            call.c_in,
-            call.h,
-            call.w,
-            call.c_out,
-            call.kernel_h,
-            call.kernel_w,
-            call.stride[0],
-            call.stride[1],
-            call.padding[0],
-            call.padding[1],
-            call.dilation[0],
-            call.dilation[1],
-            call.dtype,
-        )
-        return (*args, call.has_bias, call.padding_end, index), lambda: cls(
-            *args,
-            pad_end=call.padding_end,
-            has_bias=call.has_bias,
-            device_index=index,
-        )
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_h: int,
-        dilation_w: int,
-        dtype: torch.dtype,
-        has_bias: bool = False,
-        pad_end: tuple[int, ...] | None = None,
-        config: dict | None = None,
-        *,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.dtype = dtype
-        pad_h_end, pad_w_end = pad_end if pad_end is not None else (pad_h, pad_w)
-
-        self.kernel = _conv2d_kernel(
-            n,
-            c_in,
-            h,
-            w,
-            c_out,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            has_bias,
-            self.dtype_str,
-            pad_h_end=pad_h_end,
-            pad_w_end=pad_w_end,
-        )
+    def __init__(self, call: Conv2dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.dtype = call.dtype
+        self.kernel = _conv2d_kernel(*_geometry(call), call.has_bias, self.dtype_str)
         self.init_config(config)
 
     @property
@@ -1224,118 +1022,25 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
     def refusal(cls, call: Conv2dCall) -> str | None:
         if call.groups <= 1:
             return "serves grouped convolution"
+        if call.c_in % call.groups or call.c_out % call.groups:
+            return "requires input and output channels divisible by groups"
         return super().refusal(call) or grid_refusal(z=cls._grid_z(call))
 
-    @classmethod
-    def entry_for(cls, call: Conv2dCall) -> Entry:
-        index = call.device_index
-        args = (
-            call.n,
-            call.c_in,
-            call.h,
-            call.w,
-            call.c_out,
-            call.kernel_h,
-            call.kernel_w,
-            call.stride[0],
-            call.stride[1],
-            call.padding[0],
-            call.padding[1],
-            call.dilation[0],
-            call.dilation[1],
-            call.dtype,
-        )
-        group = (call.groups, call.c_in_g, call.c_out_g)
-        return (*args, call.has_bias, *group, call.padding_end, index), lambda: cls(
-            *args,
-            pad_end=call.padding_end,
-            has_bias=call.has_bias,
-            groups=group[0],
-            c_in_g=group[1],
-            c_out_g=group[2],
-            device_index=index,
-        )
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_h: int,
-        dilation_w: int,
-        dtype: torch.dtype,
-        has_bias: bool = False,
-        pad_end: tuple[int, ...] | None = None,
-        config: dict | None = None,
-        *,
-        groups: int,
-        c_in_g: int,
-        c_out_g: int,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.n = n
-        self.c_in = c_in
-        self.h = h
-        self.w = w
-        self.c_out = c_out
-        self.kernel_h = kernel_h
-        self.kernel_w = kernel_w
-        self.stride_h = stride_h
-        self.stride_w = stride_w
-        self.pad_h = pad_h
-        self.pad_w = pad_w
-        self.pad_h_end, self.pad_w_end = pad_end if pad_end is not None else (pad_h, pad_w)
-        self.dilation_h = dilation_h
-        self.dilation_w = dilation_w
-        self.groups = groups
-        self.c_in_g = c_in_g
-        self.c_out_g = c_out_g
-        self.dtype = dtype
-        self.has_bias = has_bias
-        self.out_h = (h + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
-        self.out_w = (w + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
-        if self.groups <= 1:
-            raise ValueError(f"{type(self).__name__} requires groups > 1")
-        if self.c_in % self.groups or self.c_out % self.groups:
-            raise ValueError(
-                f"{type(self).__name__} requires c_in and c_out divisible by groups; "
-                f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
-            )
-        self._build_program()
+    def __init__(self, call: Conv2dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.dtype = call.dtype
+        self.out_hw = call.out_hw
+        self.kernel = self._build(call)
         self.init_config(config)
 
-    def _build_program(self) -> None:
-        """Compile the grouped implicit GEMM over this call's group shape."""
-        self.kernel = _conv2d_group_kernel(
-            self.n,
-            self.c_in,
-            self.h,
-            self.w,
-            self.c_out,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_h,
-            self.stride_w,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_h,
-            self.dilation_w,
-            self.has_bias,
+    def _build(self, call: Conv2dCall):
+        return _conv2d_group_kernel(
+            *_geometry(call),
+            call.has_bias,
             self.dtype_str,
-            self.groups,
-            self.c_in_g,
-            self.c_out_g,
-            pad_h_end=self.pad_h_end,
-            pad_w_end=self.pad_w_end,
+            call.groups,
+            call.c_in_g,
+            call.c_out_g,
         )
 
     @property
@@ -1356,12 +1061,8 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
 
 
 class DepthwiseConv2dKernel(GroupConv2dKernel):
-    """Depthwise Conv2d: one input channel per group, one output channel per group.
-
-    A different program from :class:`GroupConv2dKernel`: with a single channel per group
-    there is no contraction to tile, so each thread accumulates a strip of output
-    positions over the kernel window instead of running an implicit GEMM.
-    """
+    """Depthwise Conv2d: one input and one output channel per group, accumulated directly
+    over the window instead of through an implicit GEMM."""
 
     preferred_over = frozenset({"group_conv2d"})
 
@@ -1376,26 +1077,8 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
         """One block row per image, not per group."""
         return call.n
 
-    def _build_program(self) -> None:
-        self.kernel = _conv2d_depthwise_kernel(
-            self.n,
-            self.c_in,
-            self.h,
-            self.w,
-            self.c_out,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_h,
-            self.stride_w,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_h,
-            self.dilation_w,
-            self.has_bias,
-            self.dtype_str,
-            pad_h_end=self.pad_h_end,
-            pad_w_end=self.pad_w_end,
-        )
+    def _build(self, call: Conv2dCall):
+        return _conv2d_depthwise_kernel(*_geometry(call), call.has_bias, self.dtype_str)
 
     @property
     def default_config(self) -> dict:
@@ -1404,15 +1087,12 @@ class DepthwiseConv2dKernel(GroupConv2dKernel):
             "block_m": 1,
             "block_n": 128,
             "threads": 128,
-            "enable_rasterization": not (
-                self.build_target.arch == 90 and self.out_h * self.out_w >= 4096
-            ),
+            "enable_rasterization": not (self.build_target.arch == 90 and self.out_hw >= 4096),
         }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # One tile shape, since there is no GEMM to tile. The swizzle is still a
-        # choice, so both ways are searched.
+        # One tile shape: there is no GEMM to tile. Both swizzle choices are searched.
         return [{**self.default_config, "enable_rasterization": value} for value in (False, True)]
 
 
@@ -1476,26 +1156,14 @@ def _conv2d_depthwise_warp_kernel(
                         for k in T.vectorized(2):
                             y[image, channel, row + j, column + k] = out[j, k]
 
-        if has_bias:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor[(n, channels, h, w), dtype],
-                weight: T.Tensor[(channels, 1, 3, 3), dtype],
-                y: T.Tensor[(n, channels, h, w), dtype],
-                bias: T.Tensor[(channels,), dtype],
-            ):
-                convolve(x, weight, y, bias)
-
-        else:
-
-            @T.prim_func
-            def main(
-                x: T.Tensor[(n, channels, h, w), dtype],
-                weight: T.Tensor[(channels, 1, 3, 3), dtype],
-                y: T.Tensor[(n, channels, h, w), dtype],
-            ):
-                convolve(x, weight, y, None)
+        @T.prim_func
+        def main(
+            x: T.Tensor[(n, channels, h, w), dtype],
+            weight: T.Tensor[(channels, 1, 3, 3), dtype],
+            y: T.Tensor[(n, channels, h, w), dtype],
+            bias: T.Tensor[(channels,), dtype] if has_bias else None = None,
+        ):
+            convolve(x, weight, y, bias if has_bias else None)
 
         return main
 
@@ -1528,16 +1196,12 @@ class DepthwiseConv2dWarpKernel(Kernel, Conv2dFwdInterface):
             or operand_refusal(call.n * call.c_in * call.h * call.w)
         )
 
-    @classmethod
-    def entry_for(cls, call: Conv2dCall) -> Entry:
-        index = call.device_index
-        args = (call.n, call.c_in, call.h, call.w, call.dtype, call.has_bias)
-        return (*args, index), lambda: cls(*args, device_index=index)
-
-    def __init__(self, n, channels, h, w, dtype, has_bias, *, device_index=None):
-        super().__init__(device_index=device_index)
-        self.dtype = dtype
-        self.kernel = _conv2d_depthwise_warp_kernel(n, channels, h, w, self.dtype_str, has_bias)
+    def __init__(self, call: Conv2dCall) -> None:
+        super().__init__(device_index=call.device_index)
+        self.dtype = call.dtype
+        self.kernel = _conv2d_depthwise_warp_kernel(
+            call.n, call.c_in, call.h, call.w, self.dtype_str, call.has_bias
+        )
         self.init_config()
 
     def forward(
@@ -1574,39 +1238,14 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
             return "serves an ungrouped 1x1 convolution: stride 1, no padding or dilation"
         return super().refusal(call) or grid_refusal(z=call.n)
 
-    @classmethod
-    def entry_for(cls, call: Conv2dCall) -> Entry:
-        index = call.device_index
-        args = (
-            call.n,
-            call.c_in,
-            call.h,
-            call.w,
-            call.c_out,
-            call.dtype,
+    def __init__(self, call: Conv2dCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.c_in = call.c_in
+        self.c_out = call.c_out
+        self.dtype = call.dtype
+        self.kernel = _conv2d_1x1_kernel(
+            call.n, call.c_in, call.h, call.w, call.c_out, call.has_bias, self.dtype_str
         )
-        return (*args, call.has_bias, index), lambda: cls(
-            *args, has_bias=call.has_bias, device_index=index
-        )
-
-    def __init__(
-        self,
-        n: int,
-        c_in: int,
-        h: int,
-        w: int,
-        c_out: int,
-        dtype: torch.dtype,
-        has_bias: bool = False,
-        config: dict | None = None,
-        *,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.c_in = c_in
-        self.c_out = c_out
-        self.dtype = dtype
-        self.kernel = _conv2d_1x1_kernel(n, c_in, h, w, c_out, has_bias, self.dtype_str)
         self.init_config(config)
 
     @property

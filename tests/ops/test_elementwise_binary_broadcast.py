@@ -1,11 +1,4 @@
-"""Bidirectional-broadcast behavior tests for ``elementwise_binary`` ops.
-
-L1 signature/parity (forward arg names, ``__init__`` defaults, manifest
-entry resolution, construction smoke) is specified by
-``scripts/validate_manifest.py`` strict-parity gates C3/C4/C5. This
-file covers the load-bearing external behavior: bidirectional
-broadcast against a PyTorch reference.
-"""
+"""Broadcast layouts of the binary elementwise ops against a PyTorch reference."""
 
 from __future__ import annotations
 
@@ -54,12 +47,7 @@ _BROADCAST_OPS = [
     ("DivFwdOp", _F16, _rand_pos, _rand_pos),
     ("RemainderFwdOp", _F16, _rand_pos, _rand_pos),
     ("PowFwdOp", _F16, _pow_base, _pow_exp),
-    (
-        "FloorDivideFwdOp",
-        _F16,
-        _rand_pos,
-        _rand_pos,
-    ),
+    ("FloorDivideFwdOp", _F16, _rand_pos, _rand_pos),
     ("MaximumFwdOp", _F16, _randn, _randn),
     ("MinimumFwdOp", _F16, _randn, _randn),
     ("EqFwdOp", _F16, _rand_bool, _rand_bool),
@@ -90,25 +78,18 @@ def test_binary_op_bidirectional_broadcast(
     gen_b,
 ) -> None:
     """Bidirectional broadcast: (3,1) x (1,4) -> (3,4)."""
-    cls = getattr(elementwise_mod, op_name)
-    a_shape = (3, 1)
-    b_shape = (1, 4)
-    a = gen_a(a_shape, dtype)
-    b = gen_b(b_shape, dtype)
-    op = cls()
-    workload = ElementwiseWorkload(op_name, (a, b))
-    TestBase.check(workload, op, a, b)
+    a = gen_a((3, 1), dtype)
+    b = gen_b((1, 4), dtype)
+    TestBase.check(ElementwiseWorkload(op_name, (a, b)), getattr(elementwise_mod, op_name)(), a, b)
 
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("op_name", ["MaximumFwdOp", "DivFwdOp"])
 def test_channel_broadcast_with_ragged_inner_dim(op_name: str) -> None:
-    """A per-channel operand over a non-tile-multiple inner dim.
+    """A per-channel operand over 300 columns, which leave a guarded tail block.
 
-    The row-broadcast body splits at trace time into full blocks and one
-    guarded tail block; 300 columns force the tail. ``div`` is ordered, so a
-    swapped operand would not cancel out.
+    ``div`` is ordered, so a swapped operand would not cancel out.
     """
     cls = getattr(elementwise_mod, op_name)
     a = torch.randn(2, 3, 10, 30, dtype=torch.float16, device=run_device())
@@ -252,11 +233,9 @@ _STAGED_SHAPES = [
 @pytest.mark.parametrize("a_shape, b_shape, dtype", _STAGED_SHAPES)
 def test_staged_row_broadcast_matches_torch(a_shape, b_shape, dtype):
     """A staged predicate broadcast agrees with torch on every stride pair."""
-    from tileops._ops.elementwise import GtFwdOp
-
     a = torch.randn(a_shape, device=run_device(), dtype=dtype)
     b = torch.randn(b_shape, device=run_device(), dtype=dtype)
-    out = GtFwdOp()(a, b)
+    out = elementwise_mod.GtFwdOp()(a, b)
     assert out.dtype == torch.bool
     compare_outputs(out, torch.gt(a, b), ElementwiseWorkload("GtFwdOp", (a, b)).verification(a, b))
 
@@ -271,12 +250,10 @@ _TAIL_SHAPES = [
 @pytest.mark.parametrize("a_shape, b_shape", _TAIL_SHAPES)
 def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
     """Both endings of a ragged row write every element torch writes."""
-    from tileops._ops.elementwise import AddFwdOp
-
     a = torch.randn(a_shape, device=run_device(), dtype=torch.float32)
     b = torch.randn(b_shape, device=run_device(), dtype=torch.float32)
     workload = ElementwiseWorkload("AddFwdOp", (a, b))
-    TestBase.check(workload, AddFwdOp(), a, b)
+    TestBase.check(workload, elementwise_mod.AddFwdOp(), a, b)
 
 
 def _with_nans(a_shape, b_shape, dtype):

@@ -148,8 +148,7 @@ def test_embedding_launches_by_id_count(D, monkeypatch) -> None:
     """A one-row tile's call launches the default program within one wave of its CTAs and the
     spread program past it; where the row has a one-wave program, the call launches that,
     asking for the CTAs an SM holds of it, while those fit the call in one wave and the spread
-    program's waves outnumber the ratio of passes a thread (five for two). That program lands
-    its vectors in shared memory; every other lands them in registers."""
+    program's waves outnumber the ratio of passes a thread (five for two)."""
     call = EmbeddingCall(
         dim=D, dtype=torch.bfloat16, index_dtype=torch.int64, device=torch.device(run_device())
     )

@@ -858,8 +858,8 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             rope_cos=rope_cos,
             rope_sin=rope_sin,
         )
-        fp8 = getattr(torch, "float8_e4m3fn", None)
-        if fp8 is None or q.dtype != fp8 or k.dtype != fp8 or v.dtype != fp8:
+        fp8 = torch.float8_e4m3fn
+        if q.dtype != fp8 or k.dtype != fp8 or v.dtype != fp8:
             raise ValueError("GQADenseFP8Kernel requires float8_e4m3fn q, k, and v")
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError("GQADenseFP8Kernel requires q_scale, k_scale, and v_scale")

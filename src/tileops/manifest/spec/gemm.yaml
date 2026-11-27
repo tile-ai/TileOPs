@@ -1,4 +1,3 @@
-# Dense GEMM family.
 GEMMFwdOp:
   ref_api: nvmath.linalg.advanced.Matmul.execute
   family: gemm
@@ -45,8 +44,7 @@ GEMMFwdOp:
   - {M: 32, N: 4096, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m32-mlp-up}
   - {M: 64, N: 7168, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m64-down}
   - {M: 96, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m96-qkv-a}
-  # M = 1 and M = 2 are the only rows that reach the bandwidth kernel modes, one per mode. N stays
-  # narrow at M = 2 because a wider grid sends M = 2 to the operand-swapped generic kernel.
+  # M = 1 and M = 2 reach the two bandwidth kernel modes; a wider N sends M = 2 to the swapped kernel.
   - {M: 1, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m1-qkv-a}
   - {M: 2, N: 2112, K: 7168, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: ds-v3-m2-qkv-a}
   - {M: 1, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-decode}
@@ -191,21 +189,17 @@ GEMMW4A16FwdOp:
   - {M: 1, N: 8192, K: 16384, dtype_cases: [{T: float16}], label: decode-hbm-streaming}
   - {M: 1, N: 7168, K: 20480, dtype_cases: [{T: float16}], label: decode-non-pow2}
   - {M: 1, N: 8192, K: 81920, dtype_cases: [{T: float16}], label: decode-long-k}
-  # The token axis at one shape. Server batching lands here, and the kernel picks a different
-  # tile at each of these counts.
+  # The token axis at one shape; the kernel picks a different tile at each count.
   - {M: 2, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-b2}
   - {M: 8, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-b8}
   - {M: 32, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: decode-b32}
   - {M: 128, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: chunked-prefill-tile}
   - {M: 512, N: 8192, K: 8192, dtype_cases: [{T: float16}], label: prefill-mlp-up}
-  # Hidden sizes other than 8192, where the decode rows above do not predict the result: the
-  # one-token grid under-fills the machine at 4096, the prefill one at 5120, and the tile selector
-  # answers each differently.
+  # Hidden sizes other than 8192, where the tile selector answers differently from the rows above.
   - {M: 1, N: 4096, K: 14336, dtype_cases: [{T: float16}], label: llama-8b-decode-down}
   - {M: 128, N: 4096, K: 14336, dtype_cases: [{T: float16}], label: llama-8b-prefill-down}
   - {M: 128, N: 5120, K: 25600, dtype_cases: [{T: float16}], label: qwen3-32b-prefill-down}
-  # A tensor-parallel shard: N is a fraction of the layer's, so the grid is far smaller than the
-  # machine and the per-CTA work dominates.
+  # A tensor-parallel shard: a grid far smaller than the machine.
   - {M: 1, N: 1024, K: 8192, dtype_cases: [{T: float16}], label: decode-tp8-attn-out}
   # Model projections at decode batches, each in a decode dispatch region no row above reaches.
   - {M: 1, N: 24576, K: 1536, dtype_cases: [{T: float16}], label: ds-v3-q-b-b1}
@@ -523,8 +517,7 @@ GEMMW4A8FwdOp:
   - {M: 129, N: 18432, K: 7168, label: ds-r1-up-b129}
   - {M: 257, N: 18432, K: 7168, label: ds-r1-up-b257}
   - {M: 513, N: 18432, K: 7168, label: ds-r1-up-b513}
-  # Llama-3 8B up projection (hidden 4096, MLP intermediate 14336): its 112 row tiles are
-  # one wave on an H200.
+  # Llama-3 8B up projection (hidden 4096, MLP intermediate 14336): 112 row tiles, one H200 wave.
   - {M: 33, N: 14336, K: 4096, label: llama-8b-up-b33}
   - {M: 128, N: 14336, K: 4096, label: llama-8b-up-b128}
   # Model projections at decode batches, each in a decode dispatch region no row above reaches.

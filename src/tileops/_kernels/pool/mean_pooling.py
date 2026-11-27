@@ -5,19 +5,17 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.constants import MAX_BLOCK_THREADS
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.pool.call_spec import MeanPoolingCall, MeanPoolingFwdInterface
+from tileops._kernels.pool.common import without_device
 from tileops._utils import WARP_LANES
 
 __all__ = ["MeanPoolingFwdKernel"]
 
 
 class _BlockTiling:
-    """How one chunk's ``heads * dim`` is cut into blocks, and each block into lanes.
-
-    The widths and lane shares below describe this kernel's access pattern, not the
-    device, and are held here so that a later kernel does not read them as general truths.
-    """
+    """How one chunk's ``heads * dim`` is cut into blocks, and each block into lanes."""
 
     # Widths a block may take. One that divides `heads * dim` covers it exactly; where none
     # does -- a width that is not a whole number of warps -- the last block is bounds-tested.
@@ -29,17 +27,9 @@ class _BlockTiling:
     # Widths a tuning run tries around the default, wider and narrower.
     _TUNED_WIDER = 1
     _TUNED_NARROWER = 2
-    # Threads a CUDA block can hold.
-    _MAX_THREADS = 1024
 
     def __init__(self, width: int, blocks: int, sm_count: int) -> None:
-        """Fix the tiling for one call's shape.
-
-        Args:
-            width: ``heads * dim``, the axis a block takes its share of.
-            blocks: One block per chunk, before the width is cut.
-            sm_count: Multiprocessors the grid has to cover.
-        """
+        # ``width`` is ``heads * dim``; ``blocks`` is one a chunk, before the width is cut.
         self._width = width
         self._blocks = blocks
         self._sm_count = sm_count
@@ -52,7 +42,7 @@ class _BlockTiling:
     def _threads(self, bwidth: int, lane_elems: int) -> int:
         """The largest whole-warp count dividing ``bwidth`` into ``lane_elems`` or more."""
         threads = min(
-            self._MAX_THREADS,
+            MAX_BLOCK_THREADS,
             max(WARP_LANES, bwidth // lane_elems // WARP_LANES * WARP_LANES),
         )
         while threads > WARP_LANES and bwidth % threads:
@@ -87,24 +77,15 @@ class _BlockTiling:
 
 
 @target_cache(maxsize=32)
-def _mean_pooling_kernel(
-    batch_size: int,
-    seq_len: int,
-    heads: int,
-    dim: int,
-    chunk_size: int,
-    chunks_per_batch: int,
-    seq_num: int,
-    use_offsets: int,
-    dtype: str,
-    accum_dtype: str,
-) -> Callable:
+def _mean_pooling_kernel(call: MeanPoolingCall, dtype: str, accum_dtype: str) -> Callable:
+    batch_size, seq_len, chunk_size = call.batch_size, call.seq_len, call.chunk_size
+    chunks_per_batch, seq_num, use_offsets = call.chunks_per_batch, call.seq_num, call.use_offsets
     # Neither `heads` nor `dim` is reduced and they are the two innermost axes of a
     # contiguous tensor, so a block reads them as one contiguous width.
-    width = heads * dim
+    width = call.heads * call.dim
     # Every chunk is then `chunk_size` tokens at `i_t * chunk_size`, an index that bound
     # analysis places inside the sequence axis without a per-row guard.
-    full_chunks = use_offsets == 0 and seq_len % chunk_size == 0
+    full_chunks = not use_offsets and seq_len % chunk_size == 0
 
     @tilelang.jit(out_idx=[1])
     def _mean_pooling_func(bwidth: int, threads: int) -> None:
@@ -146,7 +127,7 @@ def _mean_pooling_kernel(
                 else:
                     start_token = T.alloc_var(T.int32)
                     end_token = T.alloc_var(T.int32)
-                    if use_offsets == 0:
+                    if not use_offsets:
                         start_token = i_t * chunk_size
                         end_token = T.min(start_token + chunk_size, seq_len)
                     else:
@@ -177,69 +158,18 @@ def _mean_pooling_kernel(
 class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    @classmethod
-    def entry_for(cls, call: MeanPoolingCall) -> Entry:
-        return call, lambda: cls(
-            batch_size=call.batch_size,
-            seq_len=call.seq_len,
-            heads=call.heads,
-            dim=call.dim,
-            chunk_size=call.chunk_size,
-            chunks_per_batch=call.chunks_per_batch,
-            seq_num=call.seq_num,
-            use_offsets=int(call.use_offsets),
-            dtype=call.dtype,
-            accum_dtype=call.accum_dtype,
-            device_index=call.device_index,
-        )
-
-    def __init__(
-        self,
-        batch_size: int,
-        seq_len: int,
-        heads: int,
-        dim: int,
-        chunk_size: int,
-        chunks_per_batch: int,
-        seq_num: int,
-        use_offsets: int,
-        dtype: torch.dtype,
-        accum_dtype: torch.dtype,
-        config: dict | None = None,
-        *,
-        device_index: int | None = None,
-    ) -> None:
-        super().__init__(device_index=device_index)
-        self.batch_size = batch_size
-        self.seq_len = seq_len
-        self.heads = heads
-        self.dim = dim
-        self.chunk_size = chunk_size
-        self.chunks_per_batch = chunks_per_batch
-        self.seq_num = seq_num
-        self.use_offsets = use_offsets
-        self.dtype = dtype
-        self.accum_dtype = accum_dtype
-        self.accum_dtype_str = self.dtype_to_str(self.accum_dtype)
+    def __init__(self, call: MeanPoolingCall, config: dict | None = None) -> None:
+        super().__init__(device_index=call.device_index)
+        self.call = call
+        self.dtype = call.dtype
         self._tiling = _BlockTiling(
-            width=heads * dim,
-            blocks=batch_size * chunks_per_batch,
+            width=call.heads * call.dim,
+            blocks=call.batch_size * call.chunks_per_batch,
             sm_count=self.build_target.sm_count,
         )
-
         self.kernel = _mean_pooling_kernel(
-            self.batch_size,
-            self.seq_len,
-            self.heads,
-            self.dim,
-            self.chunk_size,
-            self.chunks_per_batch,
-            self.seq_num,
-            self.use_offsets,
-            self.dtype_str,
-            self.accum_dtype_str,
+            without_device(call), self.dtype_str, self.dtype_to_str(call.accum_dtype)
         )
-
         self.init_config(config)
 
     @property
@@ -254,8 +184,8 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         from tilelang.utils.tensor import get_tensor_supply
 
         default_supply = get_tensor_supply(tilelang.TensorSupplyType.Auto)
-        seq_len, seq_num = self.seq_len, self.seq_num
-        chunk_size, chunks_per_batch = self.chunk_size, self.chunks_per_batch
+        seq_len, seq_num = self.call.seq_len, self.call.seq_num
+        chunk_size, chunks_per_batch = self.call.chunk_size, self.call.chunks_per_batch
 
         def supply_prog(params):
             device = get_current_device()
@@ -305,11 +235,11 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         self, x: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor
     ) -> torch.Tensor:
         self._require_devices(x=x, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices)
-        width = self.heads * self.dim
+        call = self.call
         pooled = self.program(self._compile)(
-            x.view(self.batch_size, self.seq_len, width), cu_seqlens, chunk_indices
+            x.view(call.batch_size, call.seq_len, call.heads * call.dim), cu_seqlens, chunk_indices
         )
-        return pooled.view(self.batch_size, self.chunks_per_batch, self.heads, self.dim)
+        return pooled.view(call.batch_size, call.chunks_per_batch, call.heads, call.dim)
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""

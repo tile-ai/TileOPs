@@ -1,17 +1,4 @@
-"""Tests for DropoutFwdOp.
-
-Covers:
-- A fresh mask on each call by default, reproducible under torch.manual_seed
-- Deterministic replay (same seed = same output)
-- Statistical drop rate within 3 sigma for p in {0.1, 0.3, 0.5}
-- Independent draws: elements a few apart are dropped together at rate p**2
-- Each draw resolves p to 2**-32
-- A count that ends inside one thread's run
-- A scale past float16's range; the generator advance of a short call
-- Scale factor correctness: non-dropped elements x (1/(1-p))
-- Edge cases: p=0 (identity), p=1 (all zeros), training=False (identity)
-- Multi-dtype coverage
-"""
+"""Tests for DropoutFwdOp."""
 
 import math
 
@@ -24,21 +11,15 @@ from workloads.elementwise import ElementwiseWorkload
 
 
 class DropoutStatFixture(FixtureBase):
-    """Fixture for statistical drop-rate tests.
-
-    Uses 4M elements so that sigma is small enough for the 3-sigma bound
-    to be robust (sigma ~ 2.3e-4 for p=0.5 at N=4M).
-    """
+    """4M elements keep the drop rate's sigma small against the tolerance."""
 
     PARAMS = [
         (
             "n_total, dtype, p",
             [
-                # Smoke: basic dropout
                 pytest.param(4_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
                 pytest.param(4_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
                 pytest.param(4_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
-                # Full: required p values and additional dtypes
                 pytest.param(4_000_000, torch.float16, 0.1, marks=pytest.mark.full),
                 pytest.param(4_000_000, torch.float16, 0.3, marks=pytest.mark.full),
             ],
@@ -60,23 +41,6 @@ class DropoutLayoutFixture(FixtureBase):
     ]
 
 
-class DropoutScaleFixture(FixtureBase):
-    """Fixture for scale-factor tests (does not need large N)."""
-
-    PARAMS = [
-        (
-            "n_total, dtype, p",
-            [
-                pytest.param(1_000_000, torch.float16, 0.5, marks=pytest.mark.smoke),
-                pytest.param(1_000_000, torch.bfloat16, 0.5, marks=pytest.mark.smoke),
-                pytest.param(1_000_000, torch.float32, 0.5, marks=pytest.mark.smoke),
-                pytest.param(1_000_000, torch.float16, 0.1, marks=pytest.mark.full),
-                pytest.param(1_000_000, torch.float16, 0.3, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
 class DropoutDeterminismFixture(FixtureBase):
     PARAMS = [
         (
@@ -89,7 +53,7 @@ class DropoutDeterminismFixture(FixtureBase):
     ]
 
 
-class DropoutEdgeCaseFixture(FixtureBase):
+class DropoutShapeFixture(FixtureBase):
     PARAMS = [
         (
             "n_total, dtype",
@@ -101,9 +65,17 @@ class DropoutEdgeCaseFixture(FixtureBase):
     ]
 
 
+class DropoutHostPathFixture(FixtureBase):
+    """p=0, p=1 and training=False return without a kernel, whatever the dtype."""
+
+    PARAMS = [
+        ("n_total, dtype", [pytest.param(1_000_000, torch.float16, marks=pytest.mark.smoke)]),
+    ]
+
+
 @DropoutStatFixture
 def test_dropout_statistical_rate(n_total: int, dtype: torch.dtype, p: float) -> None:
-    """Verify the shared dropout scaling and sampling-rate contract."""
+    """Kept elements are scaled by 1/(1-p), and the drop rate is p."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
 
     x = torch.ones(n_total, dtype=dtype, device=run_device())
@@ -137,11 +109,7 @@ def test_dropout_draws_each_element_independently(dtype: torch.dtype) -> None:
 @DropoutLayoutFixture
 def test_dropout_resolves_p_to_32_bits(dtype: torch.dtype) -> None:
     """Two probabilities ``(2**16 - 2) * 2**-32`` apart, with one 16-bit prefix, drop
-    different elements.
-
-    A draw resolved to 16 bits rounds both probabilities to the same one and drops the same
-    elements under both.
-    """
+    different elements."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
 
     lower, higher = 0x6000_0001, 0x6000_FFFF  # ceil(p * 2**32) of the two probabilities
@@ -204,20 +172,9 @@ def test_dropout_advances_the_generator_past_a_short_call() -> None:
     assert generator.get_offset() - before >= DropoutFwdInterface.MAX_DRAWS_PER_STREAM
 
 
-@DropoutScaleFixture
-def test_dropout_scale_factor(n_total: int, dtype: torch.dtype, p: float) -> None:
-    """Verify non-dropped elements are scaled by 1/(1-p)."""
-    from tileops._ops.elementwise.dropout import DropoutFwdOp
-
-    x = torch.ones(n_total, dtype=dtype, device=run_device())
-    op = DropoutFwdOp(p=p, seed=123)
-    workload = ElementwiseWorkload("DropoutFwdOp", (x,), p=p)
-    TestBase.check(workload, op, x)
-
-
 @DropoutDeterminismFixture
 def test_dropout_deterministic_replay(n_total: int, dtype: torch.dtype, p: float) -> None:
-    """Same seed must produce identical output."""
+    """The same seed produces identical output."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
 
     x = torch.randn(n_total, dtype=dtype, device=run_device())
@@ -228,20 +185,20 @@ def test_dropout_deterministic_replay(n_total: int, dtype: torch.dtype, p: float
     assert torch.equal(y1, y2), "Deterministic replay failed: same seed produced different outputs"
 
 
-@DropoutDeterminismFixture
-def test_dropout_different_seeds(n_total: int, dtype: torch.dtype, p: float) -> None:
-    """Different seeds must produce different outputs (with overwhelming probability)."""
+@pytest.mark.smoke
+def test_dropout_different_seeds() -> None:
+    """Different seeds produce different outputs."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
 
-    x = torch.ones(n_total, dtype=dtype, device=run_device())
-    op1 = DropoutFwdOp(p=p, seed=42)
-    op2 = DropoutFwdOp(p=p, seed=99)
+    x = torch.ones(1_000_000, dtype=torch.float16, device=run_device())
+    op1 = DropoutFwdOp(p=0.5, seed=42)
+    op2 = DropoutFwdOp(p=0.5, seed=99)
     y1 = op1(x)
     y2 = op2(x)
     assert not torch.equal(y1, y2), "Different seeds produced identical outputs"
 
 
-@DropoutEdgeCaseFixture
+@DropoutHostPathFixture
 def test_dropout_p0_identity(n_total: int, dtype: torch.dtype) -> None:
     """p=0 means no dropout: output equals input."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
@@ -252,7 +209,7 @@ def test_dropout_p0_identity(n_total: int, dtype: torch.dtype) -> None:
     TestBase.check(workload, op, x)
 
 
-@DropoutEdgeCaseFixture
+@DropoutHostPathFixture
 def test_dropout_p1_all_zeros(n_total: int, dtype: torch.dtype) -> None:
     """p=1 means all elements dropped: output is all zeros."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
@@ -263,7 +220,7 @@ def test_dropout_p1_all_zeros(n_total: int, dtype: torch.dtype) -> None:
     TestBase.check(workload, op, x)
 
 
-@DropoutEdgeCaseFixture
+@DropoutHostPathFixture
 def test_dropout_training_false(n_total: int, dtype: torch.dtype) -> None:
     """training=False means identity pass-through regardless of p."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
@@ -274,9 +231,9 @@ def test_dropout_training_false(n_total: int, dtype: torch.dtype) -> None:
     TestBase.check(workload, op, x)
 
 
-@DropoutEdgeCaseFixture
+@DropoutShapeFixture
 def test_dropout_preserves_shape(n_total: int, dtype: torch.dtype) -> None:
-    """Output shape and dtype must match input."""
+    """Output shape and dtype match the input."""
     from tileops._ops.elementwise.dropout import DropoutFwdOp
 
     shape = (100, n_total // 100)

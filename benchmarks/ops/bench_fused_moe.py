@@ -10,58 +10,22 @@ import pytest
 import torch.nn.functional as F
 
 from benchmarks import api as bench
-from benchmarks.baselines import (
-    QUACK_TAG,
-    VLLM_GROUPED_TOPK_SIGMOID,
-    VLLM_TAG,
-    quack_op,
-    vllm_op,
-)
+from benchmarks.baselines import QUACK_TAG, VLLM_TAG, quack_op
 from benchmarks.moe_baselines import (
     flashinfer_experts,
     flashinfer_experts_skip_reason,
     vllm_experts,
+    vllm_router,
 )
 from tileops._ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 
 
 def _routed_moe(op, experts):
-    topk = vllm_op("fused_topk", "model_executor.layers.fused_moe.router.fused_topk_router")
-    topk_bias = vllm_op(
-        "fused_topk_bias", "model_executor.layers.fused_moe.router.fused_topk_bias_router"
-    )
-    grouped_topk = vllm_op("grouped_topk")
+    """vLLM's unscaled routing, then *experts*, whose output is scaled once."""
+    route = vllm_router(op)
 
     def run(hidden, gating, w1, w2, correction_bias, b_gate_up=None, b_down=None):
-        if op.num_expert_group > 1:
-            weights, ids = grouped_topk(
-                gating,
-                op.num_expert_group,
-                op.topk_group,
-                op.top_k,
-                op.renormalize,
-                1.0,
-                correction_bias,
-                VLLM_GROUPED_TOPK_SIGMOID,
-            )
-        elif correction_bias is None:
-            weights, ids, _ = topk(
-                hidden_states=hidden,
-                gating_output=gating,
-                topk=op.top_k,
-                renormalize=op.renormalize,
-                scoring_func=op.scoring_func,
-            )
-        else:
-            weights, ids = topk_bias(
-                hidden_states=hidden,
-                gating_output=gating,
-                topk=op.top_k,
-                renormalize=op.renormalize,
-                scoring_func=op.scoring_func,
-                e_score_correction_bias=correction_bias,
-                routed_scaling_factor=1.0,
-            )
+        weights, ids = route(hidden, gating, correction_bias)
         biases = (
             {}
             if b_gate_up is None and b_down is None
@@ -95,7 +59,7 @@ def _expert_backends(op, hidden, w1, w2, correction_bias, b_gate_up=None, b_down
     return backends
 
 
-@pytest.mark.parametrize("case", bench.cases(FusedMoEFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FusedMoEFwdOp))
 def test_fused_moe_fwd_bench(case) -> None:
     op = FusedMoEFwdOp(**case.arguments)
     hidden, _, w1, w2, correction_bias, b_gate_up, b_down = case.inputs
@@ -115,7 +79,7 @@ def _with_shared_expert(routed):
     return run
 
 
-@pytest.mark.parametrize("case", bench.cases(FusedMoESharedExpertFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FusedMoESharedExpertFwdOp))
 def test_fused_moe_shared_expert_bench(case) -> None:
     op = FusedMoESharedExpertFwdOp(**case.arguments)
     hidden, _, w1, w2, correction_bias, *_ = case.inputs
@@ -134,7 +98,7 @@ def test_fused_moe_shared_expert_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(SharedExpertMLPFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SharedExpertMLPFwdOp))
 def test_shared_expert_mlp_bench(case) -> None:
     op = SharedExpertMLPFwdOp(**case.arguments)
     gemm_act = quack_op("gemm_act", "quack.gemm_interface")

@@ -12,10 +12,6 @@ GEMM.
 - ``moe-grouped-gemm-fp8``: ``MoEGroupedGEMMFP8FwdOp`` on the same rows, metadata and output,
   with FP8 weights under 128 x 128 float32 scales; another weight format, so not comparable.
 
-FlashInfer has no single grouped MXFP4 GEMM on SM90 (``cutlass_fused_moe`` runs the whole MoE;
-its grouped FP4 GEMMs are SM100+), nor has DeepGEMM any FP4 entry point.
-DeepSeek-V4-Flash's own ``fp4_gemm`` is model code, not an installed library, so it has no tag.
-
 Weight repacking, routing tables and per-expert row bounds are prepared once, outside the timed
 call, as at model load or by a caller holding the routing on the host. Every comparator is
 checked on each expert's valid rows only, which is all the op defines.
@@ -199,7 +195,7 @@ def _fp8_grouped_gemm(case) -> bench.Implementation:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMMXFP4FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMMXFP4FwdOp))
 def test_moe_grouped_gemm_mxfp4_bench(case) -> None:
     op = MoEGroupedGEMMMXFP4FwdOp(**case.arguments)
     implementations = {"torch": case.torch}

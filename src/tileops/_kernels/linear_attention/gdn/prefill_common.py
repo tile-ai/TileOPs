@@ -65,12 +65,8 @@ def block_inverse_macro(accum_dtype: str, solve_dtype: str):
     *solve_dtype* where the one-warp block solve rounds it, and its partial sums add their
     terms in that solve's order.
 
-    Warp w inverts diagonal block w, then the blocks below the diagonal follow in three
-    steps, each closed by a barrier all four warps arrive at:
-
-    - step 1: T10, T21 and T32, and the first terms of T20, T30 and T31;
-    - step 2: T20 and T31, and the second term of T30;
-    - step 3: T30.
+    Warp w inverts diagonal block w; the blocks below the diagonal follow in three steps,
+    each closed by a barrier all four warps arrive at.
 
     Args:
         accum_dtype: The dtype each product accumulates in.

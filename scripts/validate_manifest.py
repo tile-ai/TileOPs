@@ -16,6 +16,7 @@ Exit code 0 = all checks pass; 1 = failures found.
 
 from __future__ import annotations
 
+import argparse
 import ast
 import importlib
 import importlib.util
@@ -188,17 +189,10 @@ def _api_calls(tree: ast.Module) -> set[str]:
 
 
 def check_benchmark(op_name: str, bench_path: str, repo_root: Path) -> list[str]:
-    """Check that the benchmark file obeys the benchmark contract.
+    """The benchmark contract on one file, read from its AST: its cases come from
+    ``benchmarks.api.cases`` and it times through ``benchmarks.api.Runner``.
 
-    Uses Python AST parsing (no execution) to verify actual import and usage,
-    rather than raw substring matching which can be fooled by comments.
-
-    This is a property of the file: its cases come from the manifest and its
-    roofline comes from the op. Which manifest entry the file benchmarks is
-    a separate question, answered from a run's report by
-    ``scripts/check_bench_coverage.py``.
-
-    Returns a list of hard validation errors.
+    Which entry the file benchmarks is ``scripts/check_bench_coverage.py``'s check.
     """
     errors: list[str] = []
     full_path = Path(bench_path)
@@ -530,55 +524,23 @@ def validate_manifest(
     return all_errors, all_warnings
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-
-def _parse_levels(argv: list[str]) -> frozenset[str] | None:
-    """Parse ``--levels schema,signature`` from argv. Returns None when flag absent."""
-    for i, arg in enumerate(argv):
-        if arg == "--levels" and i + 1 < len(argv):
-            raw_str = argv[i + 1]
-        elif arg.startswith("--levels="):
-            raw_str = arg.split("=", 1)[1]
-        else:
-            continue
-        parsed = frozenset(t.strip().lower() for t in raw_str.split(","))
-        unknown = parsed - ALL_LEVELS
-        if unknown:
-            print(f"ERROR: unknown levels: {sorted(unknown)}")
-            print(f"  Valid levels: {', '.join(sorted(ALL_LEVELS))}")
-            sys.exit(2)
-        return parsed
-    return None
-
-
-def _parse_check_op(argv: list[str]) -> str | None:
-    """Parse ``--check-op <name>`` from argv.
-
-    Returns the op name, ``None`` when the flag is absent, or calls
-    ``sys.exit(2)`` when the value is missing or looks like another flag.
-    """
-    for i, arg in enumerate(argv):
-        if arg == "--check-op":
-            if i + 1 >= len(argv) or argv[i + 1].startswith("-"):
-                print("ERROR: --check-op requires an op name argument")
-                sys.exit(2)
-            return argv[i + 1]
-        if arg.startswith("--check-op="):
-            value = arg.split("=", 1)[1]
-            if not value or value.startswith("-"):
-                print("ERROR: --check-op requires an op name argument")
-                sys.exit(2)
-            return value
-    return None
+def _levels(text: str) -> frozenset[str]:
+    parsed = frozenset(t.strip().lower() for t in text.split(","))
+    unknown = parsed - ALL_LEVELS
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unknown levels {sorted(unknown)}; valid: {', '.join(sorted(ALL_LEVELS))}"
+        )
+    return parsed
 
 
 def main() -> int:
-    verbose = "--verbose" in sys.argv or "-v" in sys.argv
-    levels = _parse_levels(sys.argv)
-    check_op = _parse_check_op(sys.argv)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--levels", type=_levels, help="comma-separated levels to run")
+    parser.add_argument("--check-op", metavar="NAME", help="check only this entry")
+    args = parser.parse_args()
+    verbose, levels, check_op = args.verbose, args.levels, args.check_op
 
     level_label = ",".join(sorted(levels if levels is not None else DEFAULT_LEVELS))
     check_op_label = f", check-op: {check_op}" if check_op else ""

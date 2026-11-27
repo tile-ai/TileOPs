@@ -34,16 +34,9 @@ def _bool_as_uint8(dtype, value):
 
 @target_cache(maxsize=32)
 def _make_masked_fill_kernel(N, dtype, fill_value):
-    """Build masked_fill kernel: out = mask ? fill_value : x.
-
-    ``MaskedFillFwdKernel.forward`` packs the bool mask as uint8 so that T.copy
-    can perform vectorized loads (TileLang does not vectorize bool tensors).
-    Each uint8 element is 0 or 1; the kernel loads it into a register fragment
-    and unpacks per-element with a != 0 comparison.
-
-    The result is written back into ``x``'s register fragment rather than a
-    third data-typed one.
-    """
+    """Build masked_fill kernel: out = mask ? fill_value : x, the bool mask passed as uint8
+    (TileLang does not vectorize bool tensors); the result is written back into ``x``'s
+    fragment."""
 
     @tilelang.jit(out_idx=[2])
     def kernel(threads_arg, npt_arg):
@@ -71,13 +64,7 @@ def _make_masked_fill_kernel(N, dtype, fill_value):
 
 
 class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
-    """MaskedFill: out = mask ? fill_value : x.
-
-    Supports the PyTorch ``Tensor.masked_fill(mask, value: Number)`` dtype
-    union of integer and floating-point input dtypes, plus bool: bool storage
-    is reinterpreted as uint8 here, because that is this backend's requirement
-    rather than part of the op's semantics.
-    """
+    """MaskedFill: out = mask ? fill_value : x; a bool input computes in uint8 storage."""
 
     SUPPORTED_DTYPES = _MASKED_FILL_DTYPES
     INPUTS = (("x", "tile"), ("mask", "mask"))
@@ -95,9 +82,7 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
         self.fill_value = clamp_to_dtype_range(fill_value, dtype)
         super().__init__(N_total, dtype, config=config)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_masked_fill_kernel
+    _builder = staticmethod(_make_masked_fill_kernel)
 
     def _builder_args(self):
         return (self.fill_value,)
@@ -111,12 +96,8 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
 
 @target_cache(maxsize=32)
 def _make_masked_fill_tensor_value_kernel(N, dtype):
-    """Build masked_fill kernel with a 0-dim Tensor fill value.
-
-    Inputs are flat and of length *N*, except ``value``, which carries the
-    0-dim scalar in a length-one buffer. It is read once before the element
-    loop, not per element. The result is written back into ``x``'s fragment.
-    """
+    """Build masked_fill kernel with a 0-dim Tensor fill value, passed as a length-one buffer
+    and read once before the element loop."""
 
     @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
@@ -148,12 +129,8 @@ def _make_masked_fill_tensor_value_kernel(N, dtype):
 class MaskedFillTensorValueFwdKernel(
     MultiInputElementwiseKernel, MaskedFillTensorValueFwdInterface
 ):
-    """MaskedFill kernel with 0-dim Tensor fill value.
-
-    Computes ``out = mask ? value : x``. Bool storage is reinterpreted as uint8
-    here, being this backend's requirement rather than part of the op's
-    semantics.
-    """
+    """MaskedFill: out = mask ? value : x with a 0-dim Tensor value; a bool input computes in
+    uint8 storage."""
 
     SUPPORTED_DTYPES = _MASKED_FILL_DTYPES
     INPUTS = (("x", "tile"), ("mask", "mask"), ("value", "value"))
@@ -167,9 +144,7 @@ class MaskedFillTensorValueFwdKernel(
         dtype, _ = _bool_as_uint8(call.dtype, None)
         return call, lambda: cls(call.n_total, dtype)
 
-    @staticmethod
-    def _builder_fn():
-        return _make_masked_fill_tensor_value_kernel
+    _builder = staticmethod(_make_masked_fill_tensor_value_kernel)
 
     def _element(self, x, mask, value):
         return select(mask, value, x)

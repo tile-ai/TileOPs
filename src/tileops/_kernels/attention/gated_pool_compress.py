@@ -1166,13 +1166,9 @@ class GatedPoolCompressKernel(Kernel, GatedPoolCompressFwdInterface):
     def _program_facts(self, t_q: int, n: int) -> "tuple[bool, int]":
         """Whether the program pools a request's only token apart, and a long window's warps.
 
-        A call of at most a token a request (T_q <= N) takes the program with the one-token
-        path; the others leave it out, as its test ahead of a request's first loads puts them
-        behind the window blocks' in a saturated DRAM queue. A long window takes 16 warps,
-        two blocks an SM at 64 registers a thread, or 8, four blocks an SM folding two batches
-        in turn: 8 where 16 would pool it in one batch and that fits a one-token call's
-        blocks, a window each, in one wave of the SMs that two waves of 16-warp blocks would
-        take; each wave pays a request's metadata round trip and the merge again.
+        A call of at most one token a request (T_q <= N) takes the one-token path. A long window
+        takes 16 warps, or 8 where 16 would pool it in one batch and a one-token call's blocks fit
+        one wave of the SMs.
         """
         one_token = t_q <= n
         long, vec = self._lane_vec(self.ratio, self.overlap, self.dim)

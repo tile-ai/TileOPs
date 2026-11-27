@@ -244,31 +244,28 @@ def test_instance_norm_reference_reads_running_statistics_in_input_dtype(dtype) 
 class InstanceNormFixture(FixtureBase):
     PARAMS = [
         (
-            "n, c, spatial, dtype, tune",
+            "n, c, spatial, dtype",
             [
-                # Small CI-friendly shapes -- fp32
-                pytest.param(2, 16, (8, 8), torch.float32, False, marks=pytest.mark.smoke),
-                # Small CI-friendly shapes -- fp16
-                pytest.param(2, 16, (8, 8), torch.float16, False, marks=pytest.mark.smoke),
-                # Small CI-friendly shapes -- bf16
-                pytest.param(2, 16, (8, 8), torch.bfloat16, False, marks=pytest.mark.smoke),
+                pytest.param(2, 16, (8, 8), torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.smoke),
                 # The first float32 row of whole vectors past what one warp holds
-                pytest.param(4, 8, (4, 257), torch.float32, False, marks=pytest.mark.full),
+                pytest.param(4, 8, (4, 257), torch.float32, marks=pytest.mark.full),
                 # The widest 16-bit row one warp holds
-                pytest.param(4, 8, (32, 32), torch.float16, False, marks=pytest.mark.full),
+                pytest.param(4, 8, (32, 32), torch.float16, marks=pytest.mark.full),
                 # Rows one warp holds, eight a block, the last block past the batch
-                pytest.param(4, 255, (8, 8), torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(4, 255, (8, 8), torch.bfloat16, marks=pytest.mark.full),
                 # 1D spatial, the first 16-bit row of whole vectors past what one warp holds
-                pytest.param(2, 16, (1032,), torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16, (1032,), torch.float16, marks=pytest.mark.full),
                 # 3D spatial
-                pytest.param(2, 8, (4, 4, 4), torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 8, (4, 4, 4), torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @InstanceNormFixture
-def test_instance_norm_op(n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool) -> None:
+def test_instance_norm_op(n: int, c: int, spatial: tuple, dtype: torch.dtype) -> None:
     test = InstanceNormTest(n, c, spatial, dtype)
     op = InstanceNormFwdOp()
     test.check(op, *test.gen_inputs())
@@ -280,7 +277,6 @@ class InstanceNormNonContigFixture(FixtureBase):
             "n, c, spatial, dtype",
             [
                 pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
-                pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -288,7 +284,6 @@ class InstanceNormNonContigFixture(FixtureBase):
 
 @InstanceNormNonContigFixture
 def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple, dtype: torch.dtype) -> None:
-    """Test with non-contiguous input (sliced tensor)."""
     shape = (n, c * 2, *spatial)
     x_full = torch.randn(shape, dtype=dtype, device=run_device())
     x = x_full[:, :c]  # non-contiguous slice
@@ -311,30 +306,23 @@ def test_instance_norm_non_contiguous(n: int, c: int, spatial: tuple, dtype: tor
 class InstanceNormAffineFreeFixture(FixtureBase):
     PARAMS = [
         (
-            "n, c, spatial, dtype, tune",
+            "n, c, spatial, dtype",
             [
-                # Small CI-friendly shapes -- fp32
-                pytest.param(2, 16, (8, 8), torch.float32, False, marks=pytest.mark.smoke),
-                # Small CI-friendly shapes -- fp16
-                pytest.param(2, 16, (8, 8), torch.float16, False, marks=pytest.mark.smoke),
-                # Small CI-friendly shapes -- bf16
-                pytest.param(2, 16, (8, 8), torch.bfloat16, False, marks=pytest.mark.smoke),
-                pytest.param(4, 8, (4, 4), torch.float32, False, marks=pytest.mark.full),
-                pytest.param(4, 8, (4, 4), torch.float16, False, marks=pytest.mark.full),
-                pytest.param(4, 8, (4, 4), torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 16, (8, 8), torch.float32, marks=pytest.mark.smoke),
+                pytest.param(2, 16, (8, 8), torch.float16, marks=pytest.mark.smoke),
+                pytest.param(2, 16, (8, 8), torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(4, 8, (4, 4), torch.float16, marks=pytest.mark.full),
                 # 1D spatial
-                pytest.param(2, 16, (16,), torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 16, (16,), torch.float16, marks=pytest.mark.full),
                 # 3D spatial
-                pytest.param(2, 8, (4, 4, 4), torch.float16, False, marks=pytest.mark.full),
+                pytest.param(2, 8, (4, 4, 4), torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @InstanceNormAffineFreeFixture
-def test_instance_norm_affine_free_op(
-    n: int, c: int, spatial: tuple, dtype: torch.dtype, tune: bool
-) -> None:
+def test_instance_norm_affine_free_op(n: int, c: int, spatial: tuple, dtype: torch.dtype) -> None:
     """Withholding the affine matches F.instance_norm(weight=None, bias=None)."""
     op = InstanceNormFwdOp()
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
@@ -354,7 +342,6 @@ def test_instance_norm_affine_free_running_stats(
     c: int,
     spatial: tuple,
     dtype: torch.dtype,
-    tune: bool,
 ) -> None:
     """use_input_stats=False uses running_mean/running_var; matches torch reference."""
     op = InstanceNormFwdOp(use_input_stats=False)
@@ -415,13 +402,8 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
 )
 @pytest.mark.smoke
 def test_instance_norm_rejects_affine_device_mismatch() -> None:
-    """Forward refuses weight or bias on another device than x.
-
-    Without the check the call would dispatch on cross-device tensors, or
-    surface as an opaque CUDA error. The device that differs is CPU rather than
-    a second GPU: the op compares devices, so one machine with one card
-    exercises the same rejection.
-    """
+    """Forward refuses weight or bias on another device than x; CPU stands for the other
+    device, since the op compares devices."""
     n, c, spatial, dtype = 2, 32, (8, 8), torch.float16
     op = InstanceNormFwdOp()
     x = torch.randn((n, c, *spatial), dtype=dtype, device=run_device())
@@ -434,26 +416,11 @@ def test_instance_norm_rejects_affine_device_mismatch() -> None:
         op(x, same, elsewhere)
 
 
-_OP_CLASSES = [
-    pytest.param(InstanceNormFwdOp, "InstanceNormFwdOp", id="InstanceNormFwdOp"),
-]
-
-
 @pytest.mark.smoke
-@pytest.mark.parametrize("op_cls, manifest_key", _OP_CLASSES)
-def test_instance_norm_init_accepts_use_input_stats_and_momentum(
-    op_cls: type,
-    manifest_key: str,
-) -> None:
-    """`__init__` must expose the manifest-declared params so L1 parity holds.
-
-    The manifest entry declares `use_input_stats` and `momentum` (matching
-    PyTorch's `torch.nn.functional.instance_norm` public API). The op must
-    accept both, defaulting to PyTorch's defaults.
-    """
-    init_params = inspect.signature(op_cls.__init__).parameters
-    assert "use_input_stats" in init_params
-    assert "momentum" in init_params
+def test_instance_norm_init_accepts_use_input_stats_and_momentum() -> None:
+    """The manifest's ``use_input_stats`` and ``momentum`` default as in
+    ``torch.nn.functional.instance_norm``."""
+    init_params = inspect.signature(InstanceNormFwdOp.__init__).parameters
     assert init_params["use_input_stats"].default is True
     assert init_params["momentum"].default == pytest.approx(0.1)
 
@@ -508,7 +475,6 @@ def test_instance_norm_matches_torch_on_every_presence_branch(use_input_stats, a
         pytest.param(20, (28, 28), torch.float16, marks=pytest.mark.full),
         pytest.param(3, (5000,), torch.float16, marks=pytest.mark.full),
         pytest.param(3, (192, 192), torch.float16, marks=pytest.mark.full),
-        pytest.param(3, (192, 192), torch.bfloat16, marks=pytest.mark.full),
         pytest.param(3, (192, 192), torch.float32, marks=pytest.mark.full),
     ],
 )

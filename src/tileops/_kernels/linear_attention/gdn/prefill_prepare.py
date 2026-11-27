@@ -191,7 +191,7 @@ def prefill_blocksolve_A_bthd_tl(
         beta_stride: Elements between two tokens of beta, ``None`` where it is packed.
     """
     if chunk_size != 64 or dim_k not in (64, 128):
-        raise ValueError("TileLang blocksolve-A currently expects chunk64 and K in {64, 128}")
+        raise ValueError("TileLang blocksolve-A expects chunk64 and K in {64, 128}")
     if head % key_head != 0:
         raise ValueError(f"head ({head}) must be a multiple of key_head ({key_head})")
     if uniform_seq_len and num_sequences * uniform_seq_len != total_tokens:
@@ -1201,13 +1201,7 @@ def _build_prepare_h_kernel(
     qkva_dtype,
     g_dtype,
     b_dtype,
-    h0_dtype,
-    ht_dtype,
     seqlen_dtype,
-    use_initial_state,
-    store_final_state,
-    is_varlen,
-    is_cp,
     l2norm=False,
     beta_sigmoid=False,
     allow_neg_eigval=False,
@@ -1223,21 +1217,12 @@ def _build_prepare_h_kernel(
     # token so the allocation carries no cost.
     rnorm_tokens = num_tokens if l2norm else 1
 
-    if is_varlen:
-        k_shape = (1, num_tokens, Hg, DK)
-        v_shape = (1, num_tokens, H, DV)
-        a_shape = (1, num_tokens, H, chunk_size)
-        g_shape = (1, num_tokens, H)
-        b_shape = (1, num_tokens, H)
-        rnorm_shape = (1, rnorm_tokens, Hg)
-    else:
-        k_shape = (batch_size, num_tokens, Hg, DK)
-        v_shape = (batch_size, num_tokens, H, DV)
-        a_shape = (batch_size, num_tokens, H, chunk_size)
-        g_shape = (batch_size, num_tokens, H)
-        b_shape = (batch_size, num_tokens, H)
-        rnorm_shape = (batch_size, rnorm_tokens, Hg)
-    h0_shape = (batch_size, H, DK, DV)
+    k_shape = (1, num_tokens, Hg, DK)
+    v_shape = (1, num_tokens, H, DV)
+    a_shape = (1, num_tokens, H, chunk_size)
+    g_shape = (1, num_tokens, H)
+    b_shape = (1, num_tokens, H)
+    rnorm_shape = (1, rnorm_tokens, Hg)
     ht_shape = (batch_size, H, DK, DV)
     m_shape = (batch_size, H, DK, DK)
 
@@ -1249,11 +1234,10 @@ def _build_prepare_h_kernel(
         g: T.Tensor(g_shape, dtype=g_dtype),
         b: token_tensor(b_shape, b_stride, b_dtype),
         k_rnorm: T.Tensor(rnorm_shape, dtype=accum_dtype),
-        h0: T.Tensor(h0_shape, dtype=h0_dtype),
         cu_seqlens: T.Tensor([batch_size + 1], dtype=seqlen_dtype),
         num_warmup_chunks: T.Tensor([batch_size, H], dtype=seqlen_dtype),
-        ht: T.Tensor(ht_shape, dtype=ht_dtype),
-        mt: T.Tensor(m_shape, dtype=ht_dtype),
+        ht: T.Tensor(ht_shape, dtype=qkva_dtype),
+        mt: T.Tensor(m_shape, dtype=qkva_dtype),
     ):
         with T.Kernel(batch_size * H, threads=512) as (bbh,):
             bb, bh = bbh // H, bbh % H
@@ -1263,23 +1247,18 @@ def _build_prepare_h_kernel(
             seq_start_idx = T.alloc_var("int32")
             seq_end_idx = T.alloc_var("int32")
 
-            batch_idx = 0 if is_varlen else bb
-            seq_start_idx = cu_seqlens[bb] if is_varlen else 0
-            seq_end_idx = cu_seqlens[bb + 1] if is_varlen else num_tokens
+            batch_idx = 0
+            seq_start_idx = cu_seqlens[bb]
+            seq_end_idx = cu_seqlens[bb + 1]
 
             num_iters = T.alloc_var("int32")
-            num_iters = (
-                num_warmup_chunks[bb, bh]
-                if is_cp
-                else T.ceildiv(seq_end_idx - seq_start_idx, block_S)
-            )
+            num_iters = num_warmup_chunks[bb, bh]
 
-            # A bound value, not a local variable: TileLang 0.1.15 lifts the warp groups'
-            # barriers out of a branch on a local and splits the branch around them, and ptxas
-            # spills the split loops of the X and Y warp groups. The value is taken before
-            # seq_start_idx moves to the warmup start below.
-            calc_mt = is_cp and num_iters >= T.ceildiv(seq_end_idx - seq_start_idx, block_S)
-            seq_start_idx = seq_end_idx - num_iters * block_S if is_cp else seq_start_idx
+            # A bound value, not a local variable: TileLang lifts the warp groups' barriers out
+            # of a branch on a local and splits the branch around them, and ptxas spills the
+            # split loops. The value is taken before seq_start_idx moves to the warmup start.
+            calc_mt = num_iters >= T.ceildiv(seq_end_idx - seq_start_idx, block_S)
+            seq_start_idx = seq_end_idx - num_iters * block_S
 
             k_shared = T.alloc_shared((num_stages, block_S, DK), dtype=qkva_dtype)
             v_shared = T.alloc_shared((num_stages, block_S, DV), dtype=qkva_dtype)
@@ -1333,10 +1312,7 @@ def _build_prepare_h_kernel(
             if tx < 128:
                 T.set_max_nreg(CONSUMER_S_NREG, 1)
 
-                if use_initial_state:
-                    T.copy(h0[bb, bh, 0:DK, 0:DV], h_fragment)
-                else:
-                    T.clear(h_fragment)
+                T.clear(h_fragment)
 
                 for i_s in T.serial(num_iters):
                     T.barrier_wait(data_is_ready[i_s % num_stages], (i_s // num_stages + 0) % 2)
@@ -1366,8 +1342,7 @@ def _build_prepare_h_kernel(
 
                     T.barrier_arrive(data_is_free[i_s % num_stages])
 
-                if store_final_state:
-                    T.copy(h_fragment, ht[bb, bh, 0:DK, 0:DV])
+                T.copy(h_fragment, ht[bb, bh, 0:DK, 0:DV])
 
             elif tx < 256:
                 T.set_max_nreg(CONSUMER_X_NREG, 1)
@@ -1611,10 +1586,6 @@ def fused_gdr_h_program(
     b_dtype,
     seqlen_dtype,
     *,
-    h0_dtype=None,
-    store_final_state=True,
-    is_varlen,
-    is_cp,
     l2norm=False,
     beta_sigmoid=False,
     allow_neg_eigval=False,
@@ -1622,12 +1593,11 @@ def fused_gdr_h_program(
     v_stride=None,
     b_stride=None,
 ):
-    """The program :func:`fused_gdr_h` launches, over 64-token chunks.
+    """The program :func:`fused_gdr_h` launches, over 64-token chunks of packed partitions.
 
-    *h0_dtype* is the initial state's dtype, ``None`` without one; *seqlen_dtype* is the
-    offsets' dtype, int32 for an equal-length call that passes none. *k_stride*, *v_stride*
-    and *b_stride* are the elements between two tokens of ``k``, ``v`` and ``b``, each
-    ``None`` where that tensor is packed.
+    Each partition starts from zero after replaying its warmup chunks; *seqlen_dtype* is the
+    offsets' dtype. *k_stride*, *v_stride* and *b_stride* are the elements between two tokens
+    of ``k``, ``v`` and ``b``, each ``None`` where that tensor is packed.
     """
     assert dim in (64, 128)
     return _build_prepare_h_kernel(
@@ -1639,14 +1609,8 @@ def fused_gdr_h_program(
         qkva_dtype=dtype,
         g_dtype=g_dtype,
         b_dtype=b_dtype,
-        h0_dtype=torch.float32 if h0_dtype is None else h0_dtype,
-        ht_dtype=dtype if is_cp else torch.float32,
         seqlen_dtype=seqlen_dtype,
         accum_dtype="float32",
-        use_initial_state=h0_dtype is not None,
-        store_final_state=store_final_state,
-        is_varlen=is_varlen,
-        is_cp=is_cp,
         l2norm=l2norm,
         beta_sigmoid=beta_sigmoid,
         allow_neg_eigval=allow_neg_eigval,
@@ -1663,10 +1627,8 @@ def fused_gdr_h(
     a: torch.Tensor,
     g: torch.Tensor,
     b: torch.Tensor,
-    initial_state: torch.Tensor | None = None,
-    output_final_state: bool = True,
-    cu_seqlens: torch.LongTensor | None = None,
-    num_warmup_chunks: torch.LongTensor | None = None,
+    cu_seqlens: torch.LongTensor,
+    num_warmup_chunks: torch.LongTensor,
     k_rnorm: torch.Tensor | None = None,
 ):
     """Launch *program*, which :func:`fused_gdr_h_program` built for these tensors."""
@@ -1674,47 +1636,10 @@ def fused_gdr_h(
     _, _, H, V = v.shape
     assert K == V and K in (64, 128)
 
-    if cu_seqlens is None:
-        assert num_warmup_chunks is None
-        real_batch_size = batch_size
-        cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
-        is_cp = False
-    else:
-        real_batch_size = len(cu_seqlens) - 1
-        if num_warmup_chunks is None:
-            num_warmup_chunks = torch.empty(
-                (real_batch_size, H), dtype=cu_seqlens.dtype, device=k.device
-            )
-            is_cp = False
-        else:
-            is_cp = True
-
-    if initial_state is None:
-        initial_state = torch.empty(
-            (real_batch_size, H, K, V), dtype=torch.float32, device=k.device
-        )
-    ht_dtype = k.dtype if is_cp else torch.float32
-    final_state = torch.empty((real_batch_size, H, K, V), dtype=ht_dtype, device=k.device)
-    final_correction = torch.empty((real_batch_size, H, K, K), dtype=ht_dtype, device=k.device)
-
+    partitions = len(cu_seqlens) - 1
+    final_state = torch.empty((partitions, H, K, V), dtype=k.dtype, device=k.device)
+    final_correction = torch.empty((partitions, H, K, K), dtype=k.dtype, device=k.device)
     if k_rnorm is None:
         k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
-    program(
-        k,
-        v,
-        a,
-        g,
-        b,
-        k_rnorm,
-        initial_state,
-        cu_seqlens,
-        num_warmup_chunks,
-        final_state,
-        final_correction,
-    )
-
-    if not output_final_state:
-        final_state = None
-        final_correction = None
-
+    program(k, v, a, g, b, k_rnorm, cu_seqlens, num_warmup_chunks, final_state, final_correction)
     return final_state, final_correction

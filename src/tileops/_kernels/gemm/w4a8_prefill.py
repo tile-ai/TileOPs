@@ -23,6 +23,7 @@ from tileops._kernels.gemm.call_spec import GEMMW4A8Call, GEMMW4A8FwdInterface
 from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
 from tileops._kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
+from tileops._kernels.tiling import align_up, grouped_tile_id
 from tileops._utils import WARP_LANES
 
 __all__ = ["GEMMW4A8PrefillKernel"]
@@ -189,7 +190,7 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
         raise ValueError(f"group_m must be at most {group_limit} for signed 32-bit tile indices")
 
     def aligned(nbytes: int) -> int:
-        return -(-nbytes // SHARED_BUFFER_ALIGN_BYTES) * SHARED_BUFFER_ALIGN_BYTES
+        return align_up(nbytes, SHARED_BUFFER_ALIGN_BYTES)
 
     # An upper bound: every shared buffer the builder allocates, each rounded up to the
     # alignment, the last term the stream-K flag.
@@ -298,15 +299,10 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         )
         arrive_cluster = f"tileops::w4a8_arrive_cluster<{cluster}>"
 
-        @T.macro
         def tile_coords(tid, mt, nt):
             # Tile id -> (M tile, n-tile of the worker): ids run over group_m M tiles first,
             # then over the n-tiles, then on to the next group_m M tiles.
-            per_group = T.int32(group_m * n_pairs)
-            first_m = tid // per_group * T.int32(group_m)
-            gm = T.min(T.int32(group_m), T.int32(tiles_m) - first_m)
-            mt[0] = first_m + (tid % per_group) % gm
-            nt[0] = (tid % per_group) // gm
+            grouped_tile_id(tid, mt, nt, group_size_m=group_m, num_pid_m=tiles_m, num_pid_n=n_pairs)
 
         @T.macro
         def segment(w, s, seg, segments):
@@ -996,13 +992,13 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         """The prefill program compiled from *cfg*, and the schedule and workspace *cfg*
         sizes for it: partial sums, per-tile counters, segments and contributor counts, which
         the kernel holds."""
-        m, n, k, index, target = self.m, self.n, self.k, self.device_index, self.build_target
+        m, n, k, target = self.m, self.n, self.k, self.build_target
         _check_config(n, cfg, target.smem_budget)
         workers = _worker_count(
             m, n, k, target.sm_count, cfg["block_m"], cfg["cluster"], cfg["stream_k"]
         )
         plan = _schedule(m, n, k, workers, cfg["cluster"], cfg["stream_k"], cfg["block_m"])
-        device = torch.device("cuda", index) if index is not None else "cuda"
+        device = self._build_device
         floats, tiles = plan["workspace_floats"], plan["partial_tiles"]
         segments, contributors = plan["segments"], plan["contributor_counts"]
         workspace = (

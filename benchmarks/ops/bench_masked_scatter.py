@@ -14,7 +14,7 @@ from benchmarks.baselines import (
 from tileops.indexing import MaskedScatterFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(MaskedScatterFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MaskedScatterFwdOp))
 def test_masked_scatter_bench(case) -> None:
     op = MaskedScatterFwdOp(**case.arguments)
     merge = vllm_op("_merge_multimodal_embeddings", "model_executor.models.utils")

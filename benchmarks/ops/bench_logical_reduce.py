@@ -1,8 +1,5 @@
 """Benchmarks for logical reduce ops (any, all, count_nonzero).
 
-Measures latency, TFLOPS, and DRAM bandwidth against PyTorch baselines.
-Workload shapes and roofline formulas are loaded from the ops manifest (src/tileops/manifest/).
-
 any and all are timed against flag_gems' Triton reductions as well as torch, eager
 and compiled. count_nonzero has none: its entry point raises on a list of dims.
 """
@@ -42,16 +39,16 @@ def _bench(op_cls: type, case: bench.Case, flaggems_name=None) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(AnyFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AnyFwdOp))
 def test_any_bench(case) -> None:
     _bench(AnyFwdOp, case, "any_dims")
 
 
-@pytest.mark.parametrize("case", bench.cases(AllFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(AllFwdOp))
 def test_all_bench(case) -> None:
     _bench(AllFwdOp, case, "all_dims")
 
 
-@pytest.mark.parametrize("case", bench.cases(CountNonzeroFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(CountNonzeroFwdOp))
 def test_count_nonzero_bench(case) -> None:
     _bench(CountNonzeroFwdOp, case)

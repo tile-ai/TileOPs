@@ -1,8 +1,10 @@
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 
 from workloads.device import run_device
+from workloads.numerics import Custom, assert_quantized
 from workloads.quantization.quantize import (
     StridedInput,
     bitwise_verification,
@@ -34,28 +36,21 @@ def fp8_quant_per_group(
     return q.flatten(-2), scale.squeeze(dim=-1).to(scale_dtype)
 
 
+@dataclass(eq=False)
 class FP8QuantWorkload(WorkloadBase):
     """Group-wise FP8 quantization of a ``shape`` tensor, groups of ``group_size`` columns."""
 
-    def __init__(
-        self,
-        shape: tuple[int, ...],
-        group_size: int,
-        in_dtype: torch.dtype,
-        eps: float = 1e-10,
-        out_q: bool = False,
-        use_ue8m0: bool | None = None,
-        scale_dtype: torch.dtype = torch.float32,
-        inplace: bool = False,
-    ):
-        self.shape = tuple(shape)
-        self.group_size = group_size
-        self.in_dtype = in_dtype
-        self.eps = eps
-        self.out_q = out_q
-        self.use_ue8m0 = use_ue8m0
-        self.scale_dtype = scale_dtype
-        self.inplace = inplace
+    shape: tuple[int, ...]
+    group_size: int
+    in_dtype: torch.dtype
+    eps: float = 1e-10
+    out_q: bool = False
+    use_ue8m0: bool | None = None
+    scale_dtype: torch.dtype = torch.float32
+    inplace: bool = False
+
+    def __post_init__(self) -> None:
+        self.shape = tuple(self.shape)
 
     @classmethod
     def from_call(cls, call: Any) -> "FP8QuantWorkload":
@@ -87,8 +82,6 @@ class FP8QuantWorkload(WorkloadBase):
         return (None, None, out) if self.inplace else (*out, None)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom, assert_quantized
-
         if not self.use_ue8m0:
             return Custom(assert_quantized, "FP8 codes and scales")
 

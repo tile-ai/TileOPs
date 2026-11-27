@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -11,26 +13,16 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 __all__ = ["GQABwdCall", "GQABwdWorkload"]
 
 
+@dataclass(eq=False)
 class GQABwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        heads: int,
-        heads_kv: int,
-        seq_len: int,
-        dim: int,
-        is_causal: bool,
-        dtype: torch.dtype,
-        sm_scale: float | None = None,
-    ) -> None:
-        self.batch = batch
-        self.heads = heads
-        self.heads_kv = heads_kv
-        self.seq_len = seq_len
-        self.dim = dim
-        self.is_causal = is_causal
-        self.dtype = dtype
-        self.sm_scale = sm_scale
+    batch: int
+    heads: int
+    heads_kv: int
+    seq_len: int
+    dim: int
+    is_causal: bool
+    dtype: torch.dtype
+    sm_scale: float | None = None
 
     def gen_inputs(
         self,

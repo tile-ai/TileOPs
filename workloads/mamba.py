@@ -1,4 +1,5 @@
 import math
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -8,28 +9,17 @@ from workloads.numerics import Exact
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
+@dataclass(eq=False)
 class SSDChunkCumsumFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        num_chunks: int,
-        chunk_len: int,
-        n_heads: int,
-        has_dt_bias: bool = False,
-        dt_softplus: bool = False,
-        dtype: torch.dtype = torch.float32,
-        dt_min: float = 0.0,
-        dt_max: float = float("inf"),
-    ):
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.chunk_len = chunk_len
-        self.n_heads = n_heads
-        self.has_dt_bias = has_dt_bias
-        self.dt_softplus = dt_softplus
-        self.dtype = dtype
-        self.dt_min = dt_min
-        self.dt_max = dt_max
+    batch: int
+    num_chunks: int
+    chunk_len: int
+    n_heads: int
+    has_dt_bias: bool = False
+    dt_softplus: bool = False
+    dtype: torch.dtype = torch.float32
+    dt_min: float = 0.0
+    dt_max: float = float("inf")
 
     def gen_inputs(self):
         b, C, Q, h = self.batch, self.num_chunks, self.chunk_len, self.n_heads
@@ -60,26 +50,16 @@ class SSDChunkCumsumFwdWorkload(WorkloadBase):
         )
 
 
+@dataclass(eq=False)
 class SSDChunkScanFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        num_chunks: int,
-        chunk_len: int,
-        n_heads: int,
-        d_head: int,
-        d_state: int,
-        n_groups: int,
-        dtype: torch.dtype,
-    ):
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.chunk_len = chunk_len
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        self.dtype = dtype
+    batch: int
+    num_chunks: int
+    chunk_len: int
+    n_heads: int
+    d_head: int
+    d_state: int
+    n_groups: int
+    dtype: torch.dtype
 
     def gen_inputs(self):
         b, c, L, h, p, n, g = (
@@ -108,28 +88,17 @@ class SSDChunkScanFwdWorkload(WorkloadBase):
         return Exact(atol=atol, rtol=1e-5)
 
 
+@dataclass(eq=False)
 class SSDChunkStateFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        num_chunks: int,
-        chunk_len: int,
-        n_heads: int,
-        d_head: int,
-        d_state: int,
-        n_groups: int,
-        dtype: torch.dtype,
-        has_seq_idx: bool = False,
-    ):
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.chunk_len = chunk_len
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        self.dtype = dtype
-        self.has_seq_idx = has_seq_idx
+    batch: int
+    num_chunks: int
+    chunk_len: int
+    n_heads: int
+    d_head: int
+    d_state: int
+    n_groups: int
+    dtype: torch.dtype
+    has_seq_idx: bool = False
 
     def gen_inputs(self):
         b, c, Q, h, p, n, g = (
@@ -161,22 +130,14 @@ class SSDChunkStateFwdWorkload(WorkloadBase):
         return Exact(atol=atol, rtol=1e-3)
 
 
+@dataclass(eq=False)
 class SSDDecodeWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        n_heads: int,
-        d_head: int,
-        d_state: int,
-        n_groups: int,
-        dtype: torch.dtype,
-    ):
-        self.batch = batch
-        self.n_heads = n_heads
-        self.d_head = d_head
-        self.d_state = d_state
-        self.n_groups = n_groups
-        self.dtype = dtype
+    batch: int
+    n_heads: int
+    d_head: int
+    d_state: int
+    n_groups: int
+    dtype: torch.dtype
 
     def gen_inputs(self):
         b, h, p, n, g = (
@@ -203,22 +164,14 @@ class SSDDecodeWorkload(WorkloadBase):
         return Exact(atol=1e-3, rtol=1e-3)
 
 
+@dataclass(eq=False)
 class SSDStatePassingFwdWorkload(WorkloadBase):
-    def __init__(
-        self,
-        batch: int,
-        num_chunks: int,
-        n_heads: int,
-        d_state: int,
-        dtype: torch.dtype,
-        has_initial_states: bool = True,
-    ):
-        self.has_initial_states = has_initial_states
-        self.batch = batch
-        self.num_chunks = num_chunks
-        self.n_heads = n_heads
-        self.d_state = d_state
-        self.dtype = dtype
+    batch: int
+    num_chunks: int
+    n_heads: int
+    d_state: int
+    dtype: torch.dtype
+    has_initial_states: bool = True
 
     def gen_inputs(self):
         b, c, h, d = self.batch, self.num_chunks, self.n_heads, self.d_state
@@ -289,10 +242,8 @@ def ssd_chunk_cumsum_fwd_ref(
     dt_max: float = float("inf"),
     dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """PyTorch reference for ssd_chunk_cumsum_fwd.
-
-    Applies the same bias / softplus / clamp pipeline as the kernel, then
-    computes dt_out and the chunk-local inclusive prefix sum of dA = dt_out * A.
+    """``dt`` plus ``dt_bias``, softplus-ed and clamped, and the chunk-local inclusive prefix
+    sum of ``dA = dt_out * A``.
 
     Returns:
         dt_out:    (batch, n_heads, num_chunks, chunk_len) dtype — in target dtype

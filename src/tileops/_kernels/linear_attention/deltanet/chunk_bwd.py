@@ -1,12 +1,7 @@
 """
-DeltaNet backward: given dL/do, compute dL/d(q, k, v, beta).
+DeltaNet backward: given dL/do, compute (dq, dk, dv, dbeta); the recurrence has no gate.
 
-Unlike Gated DeltaNet (GDN), there is no gate parameter g, so:
-  - No dg output
-  - No exp(g) scaling anywhere
-  - Returns 4 gradients: (dq, dk, dv, dbeta)
-
-Backward (split for SM utilisation):
+Backward:
   1. bwd_parallel: per-chunk gradients and the walk's operator -(W^T K)
      (grid: num_chunks x B x H)
   2. dh_walk: sequential dh propagation, one matmul a chunk (grid: DV / block_v x B x H)
@@ -154,7 +149,7 @@ def _bwd_parallel_tl(
                 T.copy(
                     k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_late, disable_tma=True
                 )
-                # dq/dk from d_attn (no Gamma weighting)
+                # dq/dk from d_attn
                 T.gemm(d_attn, k_late, d_q_c_frag)
                 T.copy(
                     d_q_c_frag,
@@ -203,27 +198,28 @@ def _bwd_parallel_tl(
 
 
 @target_cache(maxsize=32)
-def _dh_walk_tl(
+def walk_tl(
     batch: int,
     head: int,
     seq_len: int,
     chunk_size: int,
     dim_k: int,
     dim_v: int,
-    dtype: str = "float32",
+    dtype: str,
+    backward: bool,
 ):
-    """Sequential backward walk of the state gradient dh over chunks.
+    """Sequential walk of the state (forward) or its gradient (backward) over chunks.
 
     Grid: (dim_v / block_v, batch, head). Each CTA carries one ``[dim_k, block_v]`` column tile
-    of dh from the last chunk to the first. For ungated DeltaNet
+    from the first chunk to the last (forward) or back. With h_{c+1} = h_c + K_c^T v_new and
+    v_new = U_c - W_c h_c, both are one matmul a chunk:
 
-        dh_c = dh_{c+1} + dh_local[c] - (W_c^T K_c) dh_{c+1},
+        forward:  h_{c+1} = h_c + K_c^T U_c - (K_c^T W_c) h_c,  from ``(neg_kw, ku)``;
+        backward: dh_c = dh_{c+1} + dh_local[c] - (W_c^T K_c) dh_{c+1},  from ``(neg_wk, dh_local)``.
 
-    because h_{c+1} = h_c + K_c^T v_new and v_new = U_c - W_c h_c. The column tiles are
-    independent, and ``neg_wk`` holds -(W_c^T K_c), so the chain is one matmul a chunk.
-
-    Output: dh_out[c], the gradient of the state chunk c hands on (dh_{c+1}), transposed and
-    in the input dtype, which the w/u program reads.
+    Output, forward: S[c], the FP32 state chunk c starts from, and S[num_chunks], the final
+    state. Backward: dh_out[c] = dh_{c+1}, transposed and in the input dtype, which the w/u
+    program reads.
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
@@ -242,33 +238,58 @@ def _dh_walk_tl(
                 f"({min_gemm_n(threads)}) at {threads} threads"
             )
 
-        @T.prim_func
-        def dh_walk_kernel(
-            neg_wk: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
-            dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
-            # Output, transposed: dh_out[..., c, :, :] = dh_{c+1}^T
-            dh_out: T.Tensor([batch, head, num_chunks, dim_v, dim_k], dtype),
-        ):
+        @T.macro
+        def walk(operator, local, out):
             with T.Kernel(dim_v // block_v, batch, head, threads=threads) as (vid, bid, hid):
                 op_s = T.alloc_shared([dim_k, dim_k], dtype)
                 local_s = T.alloc_shared([dim_k, block_v], accum_dtype)
-                dh_s = T.alloc_shared([dim_k, block_v], dtype)
-                dh_frag = T.alloc_fragment([dim_k, block_v], accum_dtype)
+                # The forward holds the state transposed, so the matmul reads it K-major.
+                x_s = T.alloc_shared([dim_k, block_v] if backward else [block_v, dim_k], dtype)
+                x_frag = T.alloc_fragment([dim_k, block_v], accum_dtype)
                 v0 = vid * block_v
 
-                T.clear(dh_frag)
+                T.clear(x_frag)
                 for t in T.Pipelined(num_chunks, num_stages=num_stages):
-                    c = num_chunks - 1 - t
-                    T.copy(neg_wk[bid, hid, c, :, :], op_s, disable_tma=True)
-                    T.copy(dh_local[bid, hid, c, :, v0 : v0 + block_v], local_s, disable_tma=True)
-                    T.copy(dh_frag, dh_s)
-                    for j, i in T.Parallel(block_v, dim_k):
-                        dh_out[bid, hid, c, v0 + j, i] = dh_s[i, j]
+                    c = num_chunks - 1 - t if backward else t
+                    T.copy(operator[bid, hid, c, :, :], op_s, disable_tma=True)
+                    T.copy(local[bid, hid, c, :, v0 : v0 + block_v], local_s, disable_tma=True)
+                    if backward:
+                        T.copy(x_frag, x_s)
+                        for j, i in T.Parallel(block_v, dim_k):
+                            out[bid, hid, c, v0 + j, i] = x_s[i, j]
+                    else:
+                        for i, j in T.Parallel(dim_k, block_v):
+                            x_s[j, i] = x_frag[i, j]
+                        T.copy(x_frag, out[bid, hid, c, :, v0 : v0 + block_v], disable_tma=True)
                     for i, j in T.Parallel(dim_k, block_v):
-                        dh_frag[i, j] = dh_frag[i, j] + local_s[i, j]
-                    T.gemm(op_s, dh_s, dh_frag)
+                        x_frag[i, j] = x_frag[i, j] + local_s[i, j]
+                    T.gemm(op_s, x_s, x_frag, transpose_B=not backward)
+                if not backward:
+                    T.copy(
+                        x_frag, out[bid, hid, num_chunks, :, v0 : v0 + block_v], disable_tma=True
+                    )
 
-        return dh_walk_kernel
+        if backward:
+
+            @T.prim_func
+            def dh_walk_kernel(
+                neg_wk: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
+                dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
+                dh_out: T.Tensor([batch, head, num_chunks, dim_v, dim_k], dtype),
+            ):
+                walk(neg_wk, dh_local, dh_out)
+
+            return dh_walk_kernel
+
+        @T.prim_func
+        def state_walk_kernel(
+            neg_kw: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
+            ku: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
+            S: T.Tensor([batch, head, num_chunks + 1, dim_k, dim_v], accum_dtype),
+        ):
+            walk(neg_kw, ku, S)
+
+        return state_walk_kernel
 
     return _func
 
@@ -330,7 +351,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             cls.dtype_to_str(call.dtype),
         )
         index = call.device_index
-        return (*arguments, index), lambda: cls(*arguments)
+        return (*arguments, index), lambda: cls(*arguments, device_index=index)
 
     @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> str | None:
@@ -367,8 +388,9 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         dim_v: int,
         dtype: str = "float32",
         config: dict | None = None,
+        device_index: int | None = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.head = head
         self.seq_len = seq_len
@@ -521,7 +543,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             {"threads": default["parallel_threads"]},
         )
         walk_best = tune(
-            _dh_walk_tl(*args),
+            walk_tl(*args, backward=True),
             [
                 {"block_v": b, "num_stages": ns, "threads": walk_threads(b, self.dim_k, self.wgmma)}
                 for b in walk_block_v_options(self.dim_v)
@@ -568,7 +590,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         return (
             CompiledProgram(_bwd_parallel_tl(*args)(cfg["parallel_threads"])),
             CompiledProgram(
-                _dh_walk_tl(*args)(
+                walk_tl(*args, backward=True)(
                     block_v, cfg["num_stages"], walk_threads(block_v, self.dim_k, self.wgmma)
                 )
             ),

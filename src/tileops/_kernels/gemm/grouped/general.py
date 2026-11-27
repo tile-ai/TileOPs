@@ -33,7 +33,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
     )
     def _grouped_gemm_func(block_m, block_n, block_k, num_stages, threads):
         if not transpose_a:
-            # NT / NN pattern: iterate over K, batch-offset lookup
+            # NT / NN: groups split the rows of A.
             A_shape = (batch_sum, K)
             C_shape = (batch_sum, N)
             A_shared_shape = (block_m, block_k)
@@ -69,7 +69,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
 
                     _tiling.cumsum(batch_sizes, s_cum)
 
-                    # M-major ordering: each M-tile processes all N-tiles
+                    # Consecutive pids walk the N tiles of one M tile.
                     m_tile = pid // _num_pid_n
                     n_start = (pid % _num_pid_n) * block_n
 
@@ -107,7 +107,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
                                 C[m_start + i, n_start + j] = C_local[i, j]
 
         else:
-            # TN / TT pattern: iterate per batch, outputs 3D tensor
+            # TN / TT: groups split the contraction; one output matrix per group.
             A_shape = (batch_sum, N)
             C_shape = (batch_count, N, K)
             A_shared_shape = (block_m, block_n)
@@ -176,36 +176,12 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
 class GroupedGEMMKernel(Kernel, GroupedGEMMFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general: bool = True
-    # Default configs per layout variant (transpose_a, transpose_b)
-    _DEFAULT_CONFIGS = {
-        (False, True): {
-            "block_m": 64,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": 2,
-            "threads": 128,
-        },
-        (False, False): {
-            "block_m": 128,
-            "block_n": 128,
-            "block_k": 32,
-            "num_stages": 2,
-            "threads": 128,
-        },
-        (True, False): {
-            "block_m": 32,
-            "block_n": 128,
-            "block_k": 128,
-            "num_stages": 2,
-            "threads": 128,
-        },
-        (True, True): {
-            "block_m": 64,
-            "block_n": 256,
-            "block_k": 64,
-            "num_stages": 2,
-            "threads": 128,
-        },
+    # (block_m, block_n, block_k) by layout (transpose_a, transpose_b); two stages, 128 threads.
+    _DEFAULT_TILES = {
+        (False, True): (64, 256, 64),
+        (False, False): (128, 128, 32),
+        (True, False): (32, 128, 128),
+        (True, True): (64, 256, 64),
     }
 
     @classmethod
@@ -248,11 +224,9 @@ class GroupedGEMMKernel(Kernel, GroupedGEMMFwdInterface):
 
     @property
     def autotune_supply_prog(self):
-        """Supply autotuning the batch metadata a real call carries.
+        """Supply autotuning with even ``batch_sizes`` and their tight prefix-sum offsets.
 
-        Both patterns read a group's row count and its start row out of this
-        metadata. The starts take the tight prefix sum, which puts the last
-        group's end at ``batch_sum`` and so keeps every tile inside ``A``.
+        Tight offsets end the last group at ``batch_sum``, so every tile stays inside ``A``.
         """
         from tilelang.utils.device import get_current_device
         from tilelang.utils.tensor import get_tensor_supply
@@ -293,20 +267,22 @@ class GroupedGEMMKernel(Kernel, GroupedGEMMFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return self._DEFAULT_CONFIGS[(self.transpose_a, self.transpose_b)]
+        block_m, block_n, block_k = self._DEFAULT_TILES[(self.transpose_a, self.transpose_b)]
+        return {
+            "block_m": block_m,
+            "block_n": block_n,
+            "block_k": block_k,
+            "num_stages": 2,
+            "threads": 128,
+        }
 
     @property
     def autotune_configs(self) -> list[dict]:
-        block_m = [32, 64, 128, 256]
-        block_n = [32, 64, 128, 256]
-        block_k = [32, 64, 128, 256]
-        num_stages = [0, 1, 2, 3]
-        threads = [128, 256]
-        _configs = list(itertools.product(block_m, block_n, block_k, num_stages, threads))
-
         return [
-            {"block_m": c[0], "block_n": c[1], "block_k": c[2], "num_stages": c[3], "threads": c[4]}
-            for c in _configs
+            {"block_m": bm, "block_n": bn, "block_k": bk, "num_stages": ns, "threads": threads}
+            for bm, bn, bk, ns, threads in itertools.product(
+                (32, 64, 128, 256), (32, 64, 128, 256), (32, 64, 128, 256), (0, 1, 2, 3), (128, 256)
+            )
         ]
 
     def forward(

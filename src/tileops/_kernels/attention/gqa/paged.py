@@ -1,14 +1,11 @@
 """Packed grouped-query attention over a paged KV cache the kernel only reads.
 
 One CTA owns one KV head and ``block_M`` of that head's query rows, where row ``r`` of a
-request is query position ``r // group`` of head ``kv_head * group + r % group``. Folding the
-KV group into the row axis is what makes a one-token request a single tile: the cache then
-crosses memory once per KV head instead of once per query head, which is a factor of ``group``
-on every request short enough for its rows to fit one tile.
+request is query position ``r // group`` of head ``kv_head * group + r % group``, so a
+one-token request's KV group is a single tile.
 
-Request lengths are a runtime input, so the row tiles are enumerated per request and the grid
-takes an upper bound; a tile past the count the kernel computes exits, and a request with no
-query tokens owns no tile.
+The grid takes an upper bound on the row tiles; a tile past the count the kernel computes
+exits, and a request with no query tokens owns no tile.
 """
 
 import math
@@ -66,12 +63,9 @@ def _make_tile_parts(
 ):
     """The key-tile pieces the unsplit and the split program share.
 
-    Both run the same scan over one row tile; they differ only in which part of the key
-    range one CTA walks, so the load, the mask and the softmax step are built once.
-
     An FP8 query or cache is converted to ``dtype`` as it lands in shared memory: e4m3
-    converts exactly into either 16-bit type, so the tensor cores multiply the stored values
-    and the dequantization scales act on the scores and the output instead.
+    converts exactly into either 16-bit type, so the dequantization scales act on the scores
+    and the output instead.
     """
     q_fp8 = q_dtype != dtype
     kv_fp8 = kv_dtype != dtype
@@ -147,12 +141,8 @@ def _make_tile_parts(
         """Read one key tile through the page table, copied where one page holds it and
         otherwise gathered with each row clamped to the cache end.
 
-        Rows a page holds past the cache keep stale values. The mask sends their scores to
-        -inf, so K may carry them, but a NaN or infinity in V would survive its zero weight
-        in the value sum, so the tile the cache end *cuts* clamps V's rows to it, as the
-        gather's do. The clamp costs every load its address arithmetic, so the cut tile
-        takes a loop of its own. Under warp specialization the clamp would also turn V's copy
-        into one the producer releases with K's, before the value sum reads V.
+        The tile the cache end cuts clamps V's rows too, in a loop of its own: a NaN or infinity
+        in a stale V row would survive its zero weight in the value sum.
         """
         if fuse_rope:
             # Positions belong to logical cache rows, not to the physical page pool.
@@ -383,15 +373,21 @@ def _gqa_paged_varlen_kernel(
     kv_dtype: str,
     per_request_kv_scale: bool,
     producer_warpgroup: bool,
+    split: bool,
 ):
     """Build the paged packed-query attention program for one fixed set of call facts.
 
     *dtype* is the type the program computes and returns in; *q_dtype* and *kv_dtype* are the
-    stored query and cache types, either *dtype* or FP8.
+    stored query and cache types, either *dtype* or FP8. With *split* the program cuts each
+    row tile's key range into ``splits`` chunks, one CTA per (row tile, KV head, chunk), and a
+    second launch combines them.
     """
     accum_dtype = "float"
     group = heads // heads_kv
     softmax_scale = _softmax_scale(sm_scale, softcap)
+    # Below this a split saw no key at all. A threshold, not an equality with -inf: fast math
+    # folds comparisons with infinity away.
+    no_key_lse = -1.0e30
 
     @tilelang.jit(
         out_idx=[-1],
@@ -404,7 +400,7 @@ def _gqa_paged_varlen_kernel(
         },
         compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
     )
-    def _func(block_M: int, block_N: int, num_stages: int, threads: int):
+    def _func(block_M: int, block_N: int, num_stages: int, threads: int, splits: int = 1):
         total_q = T.dynamic("total_q")
         pool_rows = T.dynamic("pool_rows")
         shape_q = (total_q, heads, dim)
@@ -412,7 +408,7 @@ def _gqa_paged_varlen_kernel(
         kv_scale_shape = (batch, heads_kv) if per_request_kv_scale else (1,)
         rope_shape = (max_position, rotary_dim // 2) if fuse_rope else (1, 1)
         tiling = GroupTiling(batch, block_M, rows_per_offset=group)
-        parts = _make_tile_parts(
+        load_q, scan_keys = _make_tile_parts(
             block_M,
             block_N,
             dim,
@@ -433,86 +429,93 @@ def _gqa_paged_varlen_kernel(
             kv_dtype,
             num_stages,
         )
-        load_q, scan_keys = parts
         kv_fp8 = kv_dtype != dtype
         descales = _make_descales(dtype, q_dtype, kv_dtype, per_request_kv_scale, accum_dtype)
         sink_scale = make_sink_scale(softmax_scale, accum_dtype, block_M, head_group=group)
 
-        @T.prim_func
-        def gqa_paged_varlen(
-            Q: T.Tensor(shape_q, q_dtype),
-            K: T.Tensor(shape_kv, kv_dtype),
-            V: T.Tensor(shape_kv, kv_dtype),
-            cache_seqlens: T.Tensor([batch], T.int32),
-            page_table: T.Tensor([batch, max_pages_per_req], T.int32),
-            cu_seqlens_q: T.Tensor([batch + 1], T.int32),
-            QS: T.Tensor([batch, heads_kv], accum_dtype),
-            KS: T.Tensor(kv_scale_shape, accum_dtype),
-            VS: T.Tensor(kv_scale_shape, accum_dtype),
-            rope_cos: T.Tensor(rope_shape, dtype),
-            rope_sin: T.Tensor(rope_shape, dtype),
-            Sinks: T.Tensor([heads], "float32"),
-            Output: T.Tensor(shape_q, dtype),
-        ):
-            with T.Kernel(tiling.tile_upper_bound(total_q * group), heads_kv, threads=threads) as (
-                bx,
-                by,
-            ):
-                q_shared = T.alloc_shared([block_M, dim], dtype)
-                k_shared = T.alloc_shared([block_N, dim], dtype)
-                v_shared = T.alloc_shared([block_N, dim], dtype)
-                tile_cum = T.alloc_shared([batch + 1], "int32")
-                acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
-                acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
-                scores_max = T.alloc_fragment([block_M], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
-                scores_scale = T.alloc_fragment([block_M], accum_dtype)
-                scores_sum = T.alloc_fragment([block_M], accum_dtype)
-                logsum = T.alloc_fragment([block_M], accum_dtype)
-                row_scale = T.alloc_fragment([block_M], accum_dtype)
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                found = T.alloc_local([1], "int32")
-                first_row = T.alloc_local([1], "int32")
+        @T.macro
+        def scan(
+            Q, K, V, cache_seqlens, page_table, cu_seqlens_q, QS, KS, VS, rope_cos, rope_sin,
+            Sinks, Output, glse, partial, tile_map, bx, by, bz,
+        ):  # fmt: skip
+            """Row tile *bx* of KV head *by* over key chunk *bz*: into ``Output`` unsplit, else
+            into the chunk's ``partial`` rows and ``glse``, with the tile's decoded request in
+            ``tile_map`` for the combine."""
+            q_shared = T.alloc_shared([block_M, dim], dtype)
+            k_shared = T.alloc_shared([block_N, dim], dtype)
+            v_shared = T.alloc_shared([block_N, dim], dtype)
+            tile_cum = T.alloc_shared([batch + 1], "int32")
+            acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
+            acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+            acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
+            scores_max = T.alloc_fragment([block_M], accum_dtype)
+            scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
+            scores_scale = T.alloc_fragment([block_M], accum_dtype)
+            scores_sum = T.alloc_fragment([block_M], accum_dtype)
+            logsum = T.alloc_fragment([block_M], accum_dtype)
+            row_scale = T.alloc_fragment([block_M], accum_dtype)
+            lo = T.alloc_local([1], "int32")
+            hi = T.alloc_local([1], "int32")
+            found = T.alloc_local([1], "int32")
+            first_row = T.alloc_local([1], "int32")
 
-                tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
-                if bx < tile_cum[batch]:
-                    tiling.decode(bx, tile_cum, lo, hi, found, first_row)
-                    # Bind the search results: warp specialization hands the TMA producer
-                    # uninitialized copies of the local buffers, and it hangs.
-                    request = found[0]
-                    row0 = first_row[0]
+            tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
+            if split:  # noqa: SIM102
+                if (by == 0) & (bz == 0):
+                    tile_map[bx, 0] = -1
+            if bx < tile_cum[batch]:
+                tiling.decode(bx, tile_cum, lo, hi, found, first_row)
+                # Bind the search results: warp specialization hands the TMA producer
+                # uninitialized copies of the local buffers, and it hangs.
+                request = found[0]
+                row0 = first_row[0]
+                q_start = cu_seqlens_q[request]
+                q_len = cu_seqlens_q[request + 1] - q_start
+                rows = q_len * group
+                if split:  # noqa: SIM102
+                    if (by == 0) & (bz == 0):
+                        tile_map[bx, 0] = request
+                        tile_map[bx, 1] = row0
+                        tile_map[bx, 2] = q_start
+                        tile_map[bx, 3] = rows
+                kv_len = cache_seqlens[request]
+                # Queries sit at the end of the cache: position i is key kv_len - q_len + i.
+                align = kv_len - q_len
+                qk_descale, v_descale = descales(QS, KS, VS, request, by)
 
-                    q_start = cu_seqlens_q[request]
-                    q_len = cu_seqlens_q[request + 1] - q_start
-                    kv_len = cache_seqlens[request]
-                    rows = q_len * group
-                    # Queries sit at the end of the cache: position i is key kv_len - q_len + i.
-                    align = kv_len - q_len
-                    qk_descale, v_descale = descales(QS, KS, VS, request, by)
+                load_q(Q, rope_cos, rope_sin, q_shared, q_start, row0, rows, by, align)
+                T.clear(acc_o)
+                T.clear(logsum)
+                T.fill(scores_max, -T.infinity(accum_dtype))
 
-                    load_q(Q, rope_cos, rope_sin, q_shared, q_start, row0, rows, by, align)
-                    T.clear(acc_o)
-                    T.clear(logsum)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
+                scan_keys(
+                    K, V, page_table, rope_cos, rope_sin, q_shared, k_shared, v_shared,
+                    acc_s, acc_s_cast, acc_o, scores_max, scores_max_prev, scores_scale,
+                    scores_sum, logsum, request, by, row0, rows, q_len, align, kv_len,
+                    qk_descale, bz, splits,
+                )  # fmt: skip
 
-                    scan_keys(
-                        K, V, page_table, rope_cos, rope_sin, q_shared, k_shared, v_shared,
-                        acc_s, acc_s_cast, acc_o, scores_max, scores_max_prev, scores_scale,
-                        scores_sum, logsum, request, by, row0, rows, q_len, align, kv_len,
-                        qk_descale, 0, 1,
-                    )  # fmt: skip
-
-                    if has_sinks:
-                        sink_scale(scores_max, logsum, Sinks, by * group, row_scale, row0)
-                    else:
-                        # One reciprocal per row, shared by all output channels.
-                        for i in T.Parallel(block_M):
-                            row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
-                    if kv_fp8:
-                        for i in T.Parallel(block_M):
-                            row_scale[i] *= v_descale
+                if has_sinks and not split:
+                    sink_scale(scores_max, logsum, Sinks, by * group, row_scale, row0)
+                else:
+                    # One reciprocal per row, shared by all output channels.
+                    for i in T.Parallel(block_M):
+                        row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
+                if kv_fp8:
+                    for i in T.Parallel(block_M):
+                        row_scale[i] *= v_descale
+                if split:
+                    for i, d in T.Parallel(block_M, dim):
+                        partial[bx, by, bz, i, d] = T.cast(acc_o[i, d] * row_scale[i], dtype)
+                    for i in T.Parallel(block_M):
+                        # A row this chunk saw no key for weighs nothing in the combine.
+                        safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
+                        glse[bx, by, bz, i] = T.if_then_else(
+                            logsum[i] == 0,
+                            -T.infinity(accum_dtype),
+                            T.log2(safe) + scores_max[i] * softmax_scale,
+                        )
+                else:
                     for i, d in T.Parallel(block_M, dim):
                         if row0 + i < rows:
                             r = row0 + i
@@ -520,66 +523,37 @@ def _gqa_paged_varlen_kernel(
                                 acc_o[i, d] * row_scale[i]
                             )
 
-        return gqa_paged_varlen
+        if not split:
 
-    return _func
+            @T.prim_func
+            def gqa_paged_varlen(
+                Q: T.Tensor(shape_q, q_dtype),
+                K: T.Tensor(shape_kv, kv_dtype),
+                V: T.Tensor(shape_kv, kv_dtype),
+                cache_seqlens: T.Tensor([batch], T.int32),
+                page_table: T.Tensor([batch, max_pages_per_req], T.int32),
+                cu_seqlens_q: T.Tensor([batch + 1], T.int32),
+                QS: T.Tensor([batch, heads_kv], accum_dtype),
+                KS: T.Tensor(kv_scale_shape, accum_dtype),
+                VS: T.Tensor(kv_scale_shape, accum_dtype),
+                rope_cos: T.Tensor(rope_shape, dtype),
+                rope_sin: T.Tensor(rope_shape, dtype),
+                Sinks: T.Tensor([heads], "float32"),
+                Output: T.Tensor(shape_q, dtype),
+            ):
+                with T.Kernel(
+                    tiling.tile_upper_bound(total_q * group), heads_kv, threads=threads
+                ) as (bx, by):
+                    scan(
+                        Q, K, V, cache_seqlens, page_table, cu_seqlens_q, QS, KS, VS, rope_cos,
+                        rope_sin, Sinks, Output, None, None, None, bx, by, 0,
+                    )  # fmt: skip
 
+            return gqa_paged_varlen
 
-@target_cache(maxsize=32)
-def _gqa_paged_varlen_split_kernel(
-    batch: int,
-    heads: int,
-    heads_kv: int,
-    dim: int,
-    page_size: int,
-    max_pages_per_req: int,
-    is_causal: bool,
-    window_size_left: int,
-    window_size_right: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    fuse_rope: bool,
-    max_position: int,
-    rotary_dim: int,
-    rope_layout: str,
-    has_sinks: bool,
-    sm90: bool,
-    q_dtype: str,
-    kv_dtype: str,
-    per_request_kv_scale: bool,
-):
-    """The same scan with the key range cut into ``num_split`` chunks, combined afterwards.
-
-    One CTA per (row tile, KV head, chunk) instead of per (row tile, KV head). It moves the
-    same bytes; what it changes is how many CTAs carry them, which is why it serves a launch
-    whose row tiles fall short of the streaming multiprocessors and nothing else.
-    """
-    accum_dtype = "float"
-    group = heads // heads_kv
-    softmax_scale = _softmax_scale(sm_scale, softcap)
-    # Below this a split saw no key at all. A threshold, not an equality with -inf: fast math
-    # folds comparisons with infinity away.
-    no_key_lse = -1.0e30
-
-    @tilelang.jit(
-        out_idx=[-1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-            tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
-        },
-        compile_flags=[*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"],
-    )
-    def _func(block_M: int, block_N: int, num_split: int, num_stages: int, threads: int):
-        total_q = T.dynamic("total_q")
-        pool_rows = T.dynamic("pool_rows")
         tiles = T.dynamic("tiles")
-        shape_q = (total_q, heads, dim)
-        shape_kv = (pool_rows, heads_kv, dim)
-        kv_scale_shape = (batch, heads_kv) if per_request_kv_scale else (1,)
-        rope_shape = (max_position, rotary_dim // 2) if fuse_rope else (1, 1)
-        shape_lse = (tiles, heads_kv, num_split, block_M)
-        shape_partial = (tiles, heads_kv, num_split, block_M, dim)
+        shape_lse = (tiles, heads_kv, splits, block_M)
+        shape_partial = (tiles, heads_kv, splits, block_M, dim)
         # Each row tile's request, first row, first query and the request's rows, or a request
         # of -1 past the packing's tiles: the scan has decoded them, and the combine reads them
         # instead of rebuilding the tile prefix.
@@ -596,115 +570,6 @@ def _gqa_paged_varlen_split_kernel(
                 combine_threads // math.gcd(dim, combine_threads),
             ),
         )
-        tiling = GroupTiling(batch, block_M, rows_per_offset=group)
-        parts = _make_tile_parts(
-            block_M,
-            block_N,
-            dim,
-            group,
-            is_causal,
-            window_size_left,
-            window_size_right,
-            page_size,
-            sm_scale,
-            softcap,
-            dtype,
-            accum_dtype,
-            fuse_rope,
-            rotary_dim,
-            rope_layout,
-            # The split scan keeps its producer warpgroup.
-            sm90,
-            q_dtype,
-            kv_dtype,
-            num_stages,
-        )
-        load_q, scan_keys = parts
-        kv_fp8 = kv_dtype != dtype
-        descales = _make_descales(dtype, q_dtype, kv_dtype, per_request_kv_scale, accum_dtype)
-
-        @T.macro
-        def scan(
-            Q: T.Tensor(shape_q, q_dtype),
-            K: T.Tensor(shape_kv, kv_dtype),
-            V: T.Tensor(shape_kv, kv_dtype),
-            cache_seqlens: T.Tensor([batch], T.int32),
-            page_table: T.Tensor([batch, max_pages_per_req], T.int32),
-            cu_seqlens_q: T.Tensor([batch + 1], T.int32),
-            QS: T.Tensor([batch, heads_kv], accum_dtype),
-            KS: T.Tensor(kv_scale_shape, accum_dtype),
-            VS: T.Tensor(kv_scale_shape, accum_dtype),
-            rope_cos: T.Tensor(rope_shape, dtype),
-            rope_sin: T.Tensor(rope_shape, dtype),
-            glse: T.Tensor(shape_lse, accum_dtype),
-            partial: T.Tensor(shape_partial, dtype),
-            tile_map: T.Tensor(shape_map, T.int32),
-        ):
-            with T.Kernel(tiles, heads_kv, num_split, threads=threads) as (bx, by, bz):
-                q_shared = T.alloc_shared([block_M, dim], dtype)
-                k_shared = T.alloc_shared([block_N, dim], dtype)
-                v_shared = T.alloc_shared([block_N, dim], dtype)
-                tile_cum = T.alloc_shared([batch + 1], "int32")
-                acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
-                acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
-                scores_max = T.alloc_fragment([block_M], accum_dtype)
-                scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
-                scores_scale = T.alloc_fragment([block_M], accum_dtype)
-                scores_sum = T.alloc_fragment([block_M], accum_dtype)
-                logsum = T.alloc_fragment([block_M], accum_dtype)
-                row_scale = T.alloc_fragment([block_M], accum_dtype)
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                found = T.alloc_local([1], "int32")
-                first_row = T.alloc_local([1], "int32")
-
-                tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
-                if (by == 0) & (bz == 0):
-                    tile_map[bx, 0] = -1
-                if bx < tile_cum[batch]:
-                    tiling.decode(bx, tile_cum, lo, hi, found, first_row)
-                    request = found[0]
-                    row0 = first_row[0]
-                    q_start = cu_seqlens_q[request]
-                    q_len = cu_seqlens_q[request + 1] - q_start
-                    rows = q_len * group
-                    if (by == 0) & (bz == 0):
-                        tile_map[bx, 0] = request
-                        tile_map[bx, 1] = row0
-                        tile_map[bx, 2] = q_start
-                        tile_map[bx, 3] = rows
-                    kv_len = cache_seqlens[request]
-                    align = kv_len - q_len
-                    qk_descale, v_descale = descales(QS, KS, VS, request, by)
-
-                    load_q(Q, rope_cos, rope_sin, q_shared, q_start, row0, rows, by, align)
-                    T.clear(acc_o)
-                    T.clear(logsum)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
-
-                    scan_keys(
-                        K, V, page_table, rope_cos, rope_sin, q_shared, k_shared, v_shared,
-                        acc_s, acc_s_cast, acc_o, scores_max, scores_max_prev, scores_scale,
-                        scores_sum, logsum, request, by, row0, rows, q_len, align, kv_len,
-                        qk_descale, bz, num_split,
-                    )  # fmt: skip
-
-                    for i in T.Parallel(block_M):
-                        row_scale[i] = T.if_then_else(logsum[i] == 0, 0, 1.0 / logsum[i])
-                    if kv_fp8:
-                        for i in T.Parallel(block_M):
-                            row_scale[i] *= v_descale
-                    for i, d in T.Parallel(block_M, dim):
-                        partial[bx, by, bz, i, d] = T.cast(acc_o[i, d] * row_scale[i], dtype)
-                    for i in T.Parallel(block_M):
-                        # A row this chunk saw no key for weighs nothing in the combine.
-                        safe = T.if_then_else(logsum[i] == 0, 1, logsum[i])
-                        glse[bx, by, bz, i] = T.if_then_else(
-                            logsum[i] == 0,
-                            -T.infinity(accum_dtype),
-                            T.log2(safe) + scores_max[i] * softmax_scale,
-                        )
 
         @T.macro
         def combine(
@@ -721,7 +586,7 @@ def _gqa_paged_varlen_split_kernel(
             ):
                 # Each row's weight per chunk, computed row-parallel and stored split-major, so
                 # the threads of one chunk write consecutive words.
-                weight = T.alloc_shared([num_split, combine_rows], accum_dtype)
+                weight = T.alloc_shared([splits, combine_rows], accum_dtype)
                 lse_max = T.alloc_fragment([combine_rows], accum_dtype)
                 total = T.alloc_fragment([combine_rows], accum_dtype)
                 o_accum = T.alloc_fragment([combine_rows, dim], accum_dtype)
@@ -736,19 +601,19 @@ def _gqa_paged_varlen_split_kernel(
                     for i in T.Parallel(combine_rows):
                         sink = Sinks[by * group + (row0 + i) % group] * LOG2E
                         lse_max[i] = -T.infinity(accum_dtype)
-                        for k in T.serial(num_split):
+                        for k in T.serial(splits):
                             lse_max[i] = T.max(lse_max[i], glse[bx, by, k, m0 + i])
                         if has_sinks:
                             lse_max[i] = T.max(lse_max[i], sink)
                         # Weights relative to the max keep the normalization term from
                         # rounding away.
                         total[i] = 0
-                        for k in T.serial(num_split):
+                        for k in T.serial(splits):
                             total[i] += T.exp2(glse[bx, by, k, m0 + i] - lse_max[i])
                         if has_sinks:
                             total[i] += T.exp2(sink - lse_max[i])
                         total[i] = T.log2(total[i]) + lse_max[i]
-                        for k in T.serial(num_split):
+                        for k in T.serial(splits):
                             # A row no chunk saw a key for, or an infinite sink, is zero.
                             weight[k, i] = T.if_then_else(
                                 (lse_max[i] < T.cast(no_key_lse, accum_dtype))
@@ -757,7 +622,7 @@ def _gqa_paged_varlen_split_kernel(
                                 T.exp2(glse[bx, by, k, m0 + i] - total[i]),
                             )
                     T.clear(o_accum)
-                    for k in T.serial(num_split):
+                    for k in T.serial(splits):
                         for i, d in T.Parallel(combine_rows, dim):
                             if row0 + i < rows:
                                 o_accum[i, d] += partial[bx, by, k, m0 + i, d] * weight[k, i]
@@ -785,10 +650,11 @@ def _gqa_paged_varlen_split_kernel(
             tile_map: T.Tensor(shape_map, T.int32),
             Output: T.Tensor(shape_q, dtype),
         ):
-            scan(
-                Q, K, V, cache_seqlens, page_table, cu_seqlens_q, QS, KS, VS, rope_cos, rope_sin,
-                glse, partial, tile_map,
-            )  # fmt: skip
+            with T.Kernel(tiles, heads_kv, splits, threads=threads) as (bx, by, bz):
+                scan(
+                    Q, K, V, cache_seqlens, page_table, cu_seqlens_q, QS, KS, VS, rope_cos,
+                    rope_sin, Sinks, Output, glse, partial, tile_map, bx, by, bz,
+                )  # fmt: skip
             combine(Sinks, glse, partial, tile_map, Output)
 
         return gqa_paged_varlen_split
@@ -980,7 +846,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         # query tile keep it, and so does the split scan, whose chunk is too short to absorb
         # the copy any other way.
         producer = config["threads"] > WARPGROUP_THREADS or config["block_N"] > WGMMA_ROWS
-        return _gqa_paged_varlen_kernel(*self._builder_args, producer)
+        return _gqa_paged_varlen_kernel(*self._builder_args, producer, False)
 
     def _shared_bytes(self, config: dict) -> int:
         """Shared memory the program allocates for *config*: the query rows, a K and a V tile
@@ -992,12 +858,8 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     def default_config(self) -> dict:
         """The 128-row query tile for full requests (average fill with RoPE), 64 otherwise,
         over the widest key tile up to 128 rows that one page holds, or, where a tile row is
-        128 bytes or less, a width the page does not hold so the tile is gathered.
-
-        A request shorter than the query tile pads it, so a packing holding a few of them
-        takes the narrow tile. A key tile the page holds is copied contiguously and a wider
-        one amortises the copy; a page under 32 rows holds no contiguous tile and gathers 64, since
-        a wider gather costs more per tile than it saves.
+        128 bytes or less, a width the page does not hold so the tile is gathered. A page
+        under 32 rows holds no contiguous tile and gathers 64.
         """
         page = self.page_size
         # A tile row of 128 bytes or less leaves the contiguous copy too little to move per
@@ -1158,10 +1020,8 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     def _tile_estimate(self, total_q: int, block_m: int) -> int:
         """Row tiles this packing is likely to launch, for the split count to be read against.
 
-        A request owning tokens owns at least one tile, and no packing owns fewer than its
-        rows need, so the count is at least the larger of the two. It is exact for a packing
-        of one-token requests, which is where the split decides anything, and low for a
-        packing of long ones, where it only asks for a split the tile count then refuses.
+        At least the larger of the request count and the tiles the packed rows need; exact for a
+        packing of one-token requests.
         """
         rows = total_q * (self.heads // self.heads_kv)
         return max(min(self.batch, total_q), -(-rows // block_m), 1)
@@ -1169,17 +1029,10 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     def _splits_for(self, tiles: int, config: dict) -> int:
         """Cover the SMs, then grow towards residency while chunks average eight key tiles.
 
-        A tile used as stored holds one CTA an SM; a gathered or rotated tile holds what shared
-        memory and threads allow, assuming registers do not bind first. A gathered start that
-        already stacks that residency on some SM fills it on every SM. The key range is the
-        page table's span, bounded by a left window, and the count never exceeds its key tiles.
-
-        The combine reads every chunk's ``block_M`` partial rows of a row tile in turn. Without
-        RoPE, the count past covering the SMs is capped at the square root of
-        ``key_tiles * block_N / block_M``: there a row tile's ``splits * block_M`` partial rows
-        match the ``key_tiles * block_N / splits`` key rows one chunk streams, and a further
-        split adds more combine reads than it removes from the scan. A rotated tile also rotates
-        every key row it streams, so this cap does not apply to it.
+        The key range is the page table's span, bounded by a left window, and the count never
+        exceeds its key tiles. Without RoPE, the count past covering the SMs is capped at the
+        square root of ``key_tiles * block_N / block_M``, where a further split adds more combine
+        reads than it removes from the scan.
         """
         resident = tiles * self.heads_kv
         processors = self._processors
@@ -1276,7 +1129,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         """The scan for *cfg*'s tile, unsplit at one split, else cut into *splits* chunks."""
         if splits == 1:
             builder = self._unsplit_builder(cfg)
-            return builder(cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"])
-        return _gqa_paged_varlen_split_kernel(*self._builder_args)(
-            cfg["block_M"], cfg["block_N"], splits, cfg["num_stages"], cfg["threads"]
-        )
+        else:
+            # The split scan keeps its producer warpgroup.
+            builder = _gqa_paged_varlen_kernel(*self._builder_args, True, True)
+        return builder(cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"], splits)

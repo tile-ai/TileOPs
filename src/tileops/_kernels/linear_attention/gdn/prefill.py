@@ -15,6 +15,7 @@ from tileops._kernels.linear_attention.call_spec import (
     GDNFwdInterface,
     head_count_refusal,
 )
+from tileops._kernels.linear_attention.chunk_plan import CHUNK_SIZE
 from tileops._kernels.linear_attention.gdn.prefill_forward import (
     forward_value_tile,
     fused_gdr_fwd,
@@ -164,17 +165,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     @target_cache(maxsize=32)
     def _partition_metadata(
         raw_sequence_lengths: tuple[int, ...],
-        chunk_size: int,
         max_local_chunks: int,
-        use_partition: bool,
         device_idx: int | None,
-    ) -> tuple[
-        torch.Tensor,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-        torch.Tensor | None,
-    ]:
+    ) -> tuple[torch.Tensor, ...]:
         """Build shape-only partition metadata once per static workload."""
         device = "cuda" if device_idx is None else f"cuda:{device_idx}"
         raw_offsets = [0]
@@ -183,13 +176,11 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         raw_cu_seqlens = torch.tensor(
             raw_offsets, dtype=torch.int32, device=device, requires_grad=False
         )
-        if not use_partition:
-            return raw_cu_seqlens, None, None, None, None
         cp_cu_seqlens = []
         ht_mask = []
         seq_map_c2r = []
         seq_map_r2c = [0]
-        split_tokens = max_local_chunks * chunk_size
+        split_tokens = max_local_chunks * CHUNK_SIZE
         for raw_idx, (raw_start, raw_end) in enumerate(
             zip(raw_offsets, raw_offsets[1:], strict=False)
         ):
@@ -256,7 +247,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     def _partition_pays(
         sequence_lengths: tuple[int, ...],
         num_heads: int,
-        chunk_size: int,
         sm_count: int,
     ) -> bool:
         """Whether splitting the sequences shortens the recurrence enough to repay its passes.
@@ -266,7 +256,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         and correction passes, so the sequences stay whole when the long walks already hold
         more than half the SMs, or more than a quarter over walks of at most 32 chunks.
         """
-        chunks = [tilelang.cdiv(length, chunk_size) for length in sequence_lengths]
+        chunks = [tilelang.cdiv(length, CHUNK_SIZE) for length in sequence_lengths]
         longest = max(chunks)
         long_walks = num_heads * sum(1 for count in chunks if 2 * count > longest)
         # Walks this short gain too little from spreading to repay the passes at a quarter
@@ -309,18 +299,15 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         sequence_lengths: tuple[int, ...] | None,
     ) -> int | None:
         """The partition width in chunks, or ``None`` when the sequences are walked whole."""
-        chunk_size = 64
         if sequence_lengths is None or any(length <= 0 for length in sequence_lengths):
             return None
-        num_chunks = tilelang.cdiv(num_tokens, chunk_size)
+        num_chunks = tilelang.cdiv(num_tokens, CHUNK_SIZE)
         if not (
             (num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
-            and self._partition_pays(
-                sequence_lengths, num_heads, chunk_size, self.build_target.sm_count
-            )
+            and self._partition_pays(sequence_lengths, num_heads, self.build_target.sm_count)
         ):
             return None
-        chunks = tuple(tilelang.cdiv(length, chunk_size) for length in sequence_lengths)
+        chunks = tuple(tilelang.cdiv(length, CHUNK_SIZE) for length in sequence_lengths)
         width = self._local_chunks(
             chunks, num_heads, self.dim, self.state_v_first, self.build_target.sm_count
         )
@@ -342,7 +329,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         width = self._width(num_tokens, num_heads, sequence_lengths)
         if width is None:
             return None
-        return self._partition_metadata(sequence_lengths, 64, width, True, device_index)
+        return self._partition_metadata(sequence_lengths, width, device_index)
 
     def _partitioned_initial_state(
         self,
@@ -379,8 +366,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             a=A,
             g=g,
             b=beta,
-            initial_state=None,
-            output_final_state=True,
             cu_seqlens=cp_cu_seqlens_t,
             num_warmup_chunks=num_warmup_chunks,
             k_rnorm=k_rnorm,
@@ -406,7 +391,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         solve: str,
         uniform: int,
         partitions: int,
-        device_index: int | None,
         strides: tuple,
     ) -> tuple:
         """The programs one launch runs, ``None`` for a pass it skips: the gate cumsum, the
@@ -431,7 +415,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             total,
             self.num_sequences,
             value_heads,
-            64,
+            CHUNK_SIZE,
             dtype_name,
             offsets_name,
             self.gate_in_kernel,
@@ -474,7 +458,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                 self.num_sequences,
                 value_heads,
                 heads,
-                64,
+                CHUNK_SIZE,
                 dim,
                 dtype_name,
                 offsets_name,
@@ -502,8 +486,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
                     gate_dtype,
                     beta_dtype,
                     torch.int32,
-                    is_varlen=True,
-                    is_cp=True,
                     l2norm=self.l2norm,
                     beta_sigmoid=self.beta_sigmoid,
                     allow_neg_eigval=self.allow_neg_eigval,
@@ -536,7 +518,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             beta_dtype,
             torch.int32 if partitions else offsets_dtype,
             h0_dtype=start_dtype,
-            is_varlen=True,
             is_cp=bool(partitions),
             state_v_first=self.state_v_first,
             l2norm=self.l2norm,
@@ -575,7 +556,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         del num_accepted_tokens
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
-        chunk_size = 64
         batch, seq_len = q.shape[:2]
         value_heads, dim_v = v.shape[2:]
         q, k, v, g, beta = (
@@ -610,7 +590,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             # is as fast.
             warp_group_pairs = 8 * self.build_target.sm_count
             pairs = (
-                len(lengths) * tilelang.cdiv(uniform, chunk_size) * value_heads if uniform else 0
+                len(lengths) * tilelang.cdiv(uniform, CHUNK_SIZE) * value_heads if uniform else 0
             )
             # The warp-group solve serves bfloat16 rows of one length, whose chunks it
             # addresses by arithmetic; a normalized key takes the one-warp solve for the norms
@@ -628,7 +608,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             solve,
             uniform,
             0 if split is None else split[1].shape[0] - 1,
-            device_index,
             (None, None, None, _token_stride(g), None)
             if solve == "fused"
             else tuple(_token_stride(tensor) for tensor in (q, k, v, g, beta)),
@@ -653,7 +632,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             k_rnorm = None
         else:
             inverse, k_rnorm = prefill_blocksolve_A_bthd(
-                solve_program, k, g, beta, cu_seqlens, chunk_size, l2norm=self.l2norm
+                solve_program, k, g, beta, cu_seqlens, CHUNK_SIZE, l2norm=self.l2norm
             )
         if split is None:
             initial, offsets, cp_seq_map, raw_offsets = (
