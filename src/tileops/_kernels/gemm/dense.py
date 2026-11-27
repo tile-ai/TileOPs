@@ -28,13 +28,14 @@ from tileops._kernels.gemm.heuristics import (
     best_config,
     fp8_ws_config,
     gemv_config,
+    gemv_registers,
     small_batch_config,
     stream_width,
     two_row_gemv_wins,
 )
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.tiling import grouped_tile_id
-from tileops._utils import STR_TO_DTYPE
+from tileops._utils import STR_TO_DTYPE, WARP_LANES, WARP_SHUFFLE_STAGES
 from tileops.trace import _passes as passes
 from tileops.trace import trace
 
@@ -4214,11 +4215,125 @@ def _gemm_small_batch_kernel(
     return _gemm_small_batch_func
 
 
+@target_cache(maxsize=32)
+def _gemv_row_kernel(
+    n: int, k: int, dtype: str = "float16", bias_len: int = 0, out_dtype: str | None = None
+) -> Callable:
+    """One-row GEMV, ``c[0, :] = a[0, :] @ b.T``, one warp per ``rows`` rows of ``b``.
+
+    Each lane loads its 16-byte slices of a row straight into registers, ``depth`` slices
+    per burst, and adds their products into ``reduce_threads / 32`` float32 sums, one per
+    reduction lane it stands in for: reduction lane ``t`` sums K positions
+    ``[i * reduce_threads * 8 + t * 8, +8)`` in order of ``i``, then the lanes are added
+    pairwise from the farthest. That is the order :func:`_gemm_small_batch_kernel` adds in
+    with ``reduce_threads`` threads, so both give the same bits. Buffer extents predicate
+    the K-tail loads, which read zero. A nonzero *bias_len* adds ``bias[col]``, or
+    ``bias[0]`` at 1, after the reduction; C is *out_dtype*, or *dtype* when it is ``None``.
+
+    Returns:
+        JIT factory taking ``(reduce_threads, warps, rows, depth)``, ``reduce_threads`` a
+        power-of-two number of warps and ``depth`` a multiple of that number, and producing C.
+    """
+    accum_dtype = "float"
+    c_dtype = out_dtype or dtype
+    vec = 128 // (STR_TO_DTYPE[dtype].itemsize * 8)
+    flags = [*CUDA_COMPILE_FLAGS, "-DENABLE_BF16"]
+
+    @tilelang.jit(out_idx=[-1], compile_flags=flags)
+    def _gemv_row_func(
+        reduce_threads: int = 128, warps: int = 1, rows: int = 1, depth: int = 32
+    ) -> Callable:
+        groups = reduce_threads // WARP_LANES
+        if reduce_threads % WARP_LANES or groups & (groups - 1) or depth % groups:
+            raise ValueError(
+                f"reduce_threads {reduce_threads} must be a power-of-two number of warps and "
+                f"depth {depth} a multiple of it"
+            )
+        block_k = reduce_threads * vec
+        slices = -(-k // block_k) * groups
+        burst = min(depth, slices)
+        bursts, tail = divmod(slices, burst)
+        tile_rows = warps * rows
+        folds = tuple(groups >> (i + 1) for i in range(groups.bit_length() - 1))
+
+        def slice_col(s, lane):
+            return (s // groups) * block_k + (s % groups * WARP_LANES + lane) * vec
+
+        @T.macro
+        def load_slice(b, b_local, row0, col, j):
+            for r in T.unroll(rows, explicit=True):
+                row = T.min(row0 + r, n - 1)
+                for e in T.vectorized(vec):
+                    b_local[r, j, e] = b[row, col + e]
+
+        @T.macro
+        def add_slice(a, b_local, acc, col, j):
+            a_local = T.alloc_local((vec,), dtype)
+            for e in T.vectorized(vec):
+                a_local[e] = a[0, col + e]
+            for r in T.unroll(rows, explicit=True):
+                for e in T.unroll(vec, explicit=True):
+                    acc[r, j % groups] = acc[r, j % groups] + T.cast(
+                        a_local[e], accum_dtype
+                    ) * T.cast(b_local[r, j, e], accum_dtype)
+
+        @T.macro
+        def _gemv_row_body(a, b, bias, c):
+            with T.Kernel(T.ceildiv(n, tile_rows), threads=warps * WARP_LANES) as bx:
+                tx = T.get_thread_binding(0)
+                lane = tx % WARP_LANES
+                row0 = bx * tile_rows + tx // WARP_LANES * rows
+                b_local = T.alloc_local((rows, burst, vec), dtype)
+                acc = T.alloc_local((rows, groups), accum_dtype)
+                T.clear(acc)
+                for j in T.unroll(burst, explicit=True):
+                    load_slice(b, b_local, row0, slice_col(j, lane), j)
+                if bursts > 1:
+                    for ib in T.serial(bursts - 1):
+                        for j in T.unroll(burst, explicit=True):
+                            add_slice(a, b_local, acc, slice_col(ib * burst + j, lane), j)
+                            load_slice(b, b_local, row0, slice_col((ib + 1) * burst + j, lane), j)
+                for j in T.unroll(burst, explicit=True):
+                    add_slice(a, b_local, acc, slice_col((bursts - 1) * burst + j, lane), j)
+                    if j < tail:
+                        load_slice(b, b_local, row0, slice_col(bursts * burst + j, lane), j)
+                if tail:
+                    for j in T.unroll(tail, explicit=True):
+                        add_slice(a, b_local, acc, slice_col(bursts * burst + j, lane), j)
+                for r in T.unroll(rows, explicit=True):
+                    for g in T.unroll(groups, explicit=True):
+                        for st in T.unroll(WARP_SHUFFLE_STAGES, explicit=True):
+                            acc[r, g] = acc[r, g] + T.shfl_xor(acc[r, g], (WARP_LANES // 2) >> st)
+                    for fold in folds:
+                        for g in T.unroll(fold, explicit=True):
+                            acc[r, g] = acc[r, g] + acc[r, g + fold]
+                    if lane == 0 and row0 + r < n:
+                        if bias_len:
+                            col_bias = 0 if bias_len == 1 else row0 + r
+                            c[0, row0 + r] = T.cast(
+                                acc[r, 0] + T.cast(bias[col_bias], accum_dtype), c_dtype
+                            )
+                        else:
+                            c[0, row0 + r] = T.cast(acc[r, 0], c_dtype)
+
+        return _main(
+            "_gemv_row",
+            _gemv_row_body,
+            (((1, k), dtype), ((n, k), dtype)),
+            ((1, n), c_dtype),
+            ((bias_len,), dtype) if bias_len else None,
+        )
+
+    return _gemv_row_func
+
+
 class GemvKernel(Kernel, GEMMFwdInterface):
     """GEMV and two-row GEMM on :func:`_gemm_small_batch_kernel`.
 
     Serves three bands: the two layouts a vector operand can take, and SM90 ``m == 2``
-    NT calls where ``two_row_gemv_wins``.
+    NT calls where ``two_row_gemv_wins``. A one-row band over rows ``gemv_registers``
+    admits reads them into registers with :func:`_gemv_row_kernel`, which adds a row's
+    products in the ring's order.
 
     Args:
         band: Which band this instance serves, one of :attr:`BANDS`.
@@ -4317,10 +4432,24 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         self.rows, self.out_len = (
             (m, n) if band == "lhs_rows" else (1, n if band == "lhs_row" else m)
         )
-        self.kernel = _gemm_small_batch_kernel(
-            self.rows, self.out_len, k, self.dtype_str, out_dtype=self.out_dtype_str
-        )
+        self.staged = band == "lhs_rows" or not gemv_registers(k)
+        self.kernel = self._builder(bias_len=0)
         self.init_config(config)
+
+    def _builder(self, bias_len: int) -> Callable:
+        """The JIT factory of this band's body, taking ``bias[bias_len]`` when nonzero."""
+        if self.staged:
+            return _gemm_small_batch_kernel(
+                self.rows,
+                self.out_len,
+                self.k,
+                self.dtype_str,
+                bias_len=bias_len,
+                out_dtype=self.out_dtype_str,
+            )
+        return _gemv_row_kernel(
+            self.out_len, self.k, self.dtype_str, bias_len=bias_len, out_dtype=self.out_dtype_str
+        )
 
     @property
     def out_dtype_str(self) -> str:
@@ -4338,8 +4467,16 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         bytes per reduce thread and stage, fits the shared-memory budget."""
         if self.band == "lhs_rows":
             rts, bns, nss = (32, 64, 128), (1, 2, 4), (2, 3, 4, 5)
-        else:
+        elif self.staged:
             rts, bns, nss = (32, 64, 128, 256), (1, 2, 4, 8, 16), (1, 2, 3, 4, 5, 6)
+        else:
+            return [
+                {"reduce_threads": rt, "warps": warps, "rows": rows, "depth": depth}
+                for rt in (32, 64, 128, 256)
+                for warps in (1, 2, 4)
+                for rows in (1, 2, 4)
+                for depth in (16, 32)
+            ]
         smem_cap = self.build_target.smem_budget
         return [
             {"block_n": bn, "reduce_threads": rt, "num_stages": ns}
@@ -4362,20 +4499,13 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         return out.reshape(1, self.n) if self.band == "lhs_row" else out.reshape(self.m, 1)
 
     def _compile(self, cfg: dict, has_bias: bool) -> Callable:
-        """Compile small-batch GEMM with optional column bias.
+        """Compile this band's body with optional column bias.
 
         The ``rhs_col`` band broadcasts ``bias[0]`` over its output column."""
-        builder = self.kernel
-        if has_bias:
-            builder = _gemm_small_batch_kernel(
-                self.rows,
-                self.out_len,
-                self.k,
-                self.dtype_str,
-                bias_len=self.n,
-                out_dtype=self.out_dtype_str,
-            )
-        return builder(cfg["block_n"], cfg["reduce_threads"], cfg["num_stages"])
+        builder = self._builder(self.n) if has_bias else self.kernel
+        if self.staged:
+            return builder(cfg["block_n"], cfg["reduce_threads"], cfg["num_stages"])
+        return builder(cfg["reduce_threads"], cfg["warps"], cfg["rows"], cfg["depth"])
 
 
 @target_cache(maxsize=32)
