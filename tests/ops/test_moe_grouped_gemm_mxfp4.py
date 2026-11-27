@@ -299,13 +299,14 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
 
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("layout", "dtype_case", "n", "k"),
+    ("layout", "dtype_case", "n", "k", "sizes"),
     [
         pytest.param(
             contiguous_layout("tight", "physical_psum"),
             _E8M0,
             256,
             512,
+            SIZES,
             marks=pytest.mark.smoke,
             id="tight-psum",
         ),
@@ -314,6 +315,7 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
             _F32,
             256,
             512,
+            SIZES,
             marks=pytest.mark.full,
             id="aligned-per-row-32-float32",
         ),
@@ -323,15 +325,19 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
             _F32,
             256,
             512,
+            SIZES,
             marks=pytest.mark.full,
             id="aligned-per-row-128-float32",
         ),
-        # K a multiple of 2048 (the e8m0 tables by TMA): token rows past m zero-filled.
+        # The config program at K a multiple of 2048 (the e8m0 tables by TMA), at most four rows
+        # an expert: a 150-row run over three 64-row tiles, its last tile's token rows past m
+        # zero-filled.
         pytest.param(
             contiguous_layout("tight", "per_row"),
             _E8M0,
             256,
             2048,
+            [1] * 63 + [150],
             marks=pytest.mark.full,
             id="tight-per-row-k2048",
         ),
@@ -341,15 +347,16 @@ def test_mxfp4_grouped_gemm_folded_and_split_tasks_on_one_cta() -> None:
             _F32,
             136,
             512,
+            SIZES,
             marks=pytest.mark.full,
             id="tight-per-row-n136",
         ),
     ],
 )
 def test_mxfp4_grouped_gemm_contiguous_rows_of_every_expert(
-    layout: dict, dtype_case: dict, n: int, k: int
+    layout: dict, dtype_case: dict, n: int, k: int, sizes: list
 ) -> None:
-    workload = _contiguous_workload(layout, SIZES, dtype_case, N=n, K=k)
+    workload = _contiguous_workload(layout, sizes, dtype_case, N=n, K=k)
     op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"])
     run_into_guarded_out(op, workload, *workload.gen_inputs())
 
@@ -630,23 +637,6 @@ def test_mxfp4_grouped_gemm_prefill_refuses_row_tiles_off_its_widths() -> None:
         )
         is None
     )
-
-
-@pytest.mark.sm90
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_mxfp4_grouped_gemm_decode_sized_tight_run_over_row_tiles() -> None:
-    """At most four rows an expert on average, tight runs under e8m0 scales at K = 2048 keep the
-    config's program, whose code tables come by TMA: the last expert's 150 rows run over three
-    64-row tiles beside 63 one-row experts, its last tile's token rows past m zero-filled, and
-    every run matches the reference with the next expert's rows left as they are."""
-    workload = _contiguous_workload(
-        contiguous_layout("tight", "per_row"), [1] * 63 + [150], N=256, K=2048
-    )
-    inputs = workload.gen_inputs()
-    op = MoEGroupedGEMMMXFP4FwdOp(workload.call.arguments()["layout"], target=BUILTIN)
-    run_into_guarded_out(op, workload, *inputs)
-    assert next(op.iter_kernels()).prefill_tile(inputs[0].shape[0]) is None
 
 
 @pytest.mark.sm90
