@@ -131,7 +131,6 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
     supported_archs: list[int] = [90]
     # The batch-1 shape, inside what the packed kernel also serves.
     preferred_over = frozenset({"gqa_paged_varlen_kernel"})
-    # A table shorter than this runs the single-pass program; longer ones split the context.
     _MIN_CTX = 1024
 
     @classmethod
@@ -140,19 +139,36 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             return f"serves one query position, got {call.max_seqlen_q}"
         if call.paged_decode_refusal is not None:
             return call.paged_decode_refusal
-        if not call.paged_decode_bs1_region:
+        if not cls._region(call):
             return "serves the batch-1 decode region only"
         # The warp-specialized softmax reduces raw QK before applying the scale.
         # Zero needs scores cleared before masking; the general paged path does this.
         if call.sm_scale is not None and call.sm_scale <= 0.0:
             return f"requires a positive sm_scale, got {call.sm_scale}"
-        if cls.block_n_for_page_size(call.page_size) is None:
+        if cls.block_n_for_page_size(call.page_size, call.dim) is None:
             return f"no key tile covers page size {call.page_size}"
         return super().refusal(call)
 
     @staticmethod
-    def block_n_for_page_size(page_size: int) -> int | None:
-        """Return a page-contained WGMMA N tile, or None when the fast path is unsafe."""
+    def _region(call: AttentionCall) -> bool:
+        """``decode_bs1_region`` in float16 or bfloat16, at head dimension 128 or 256."""
+        if call.batch != 1 or call.softcap != 0.0:
+            return False
+        if call.dtype not in (torch.float16, torch.bfloat16) or call.dim not in (128, 256):
+            return False
+        if call.heads_kv <= 0 or call.heads % call.heads_kv != 0:
+            return False
+        return 1 <= call.heads // call.heads_kv <= 64
+
+    @staticmethod
+    def block_n_for_page_size(page_size: int, dim: int = 128) -> int | None:
+        """Return a page-contained WGMMA N tile, or None when the fast path is unsafe.
+
+        Past head dimension 128 the tile is 64 rows, which keeps the K and V rings in shared
+        memory, so a page must hold whole 64-row tiles.
+        """
+        if dim > 128:
+            return 64 if page_size % 64 == 0 else None
         try:
             block_n = gqa_decode_paged_block_ns(page_size)[0]
         except ValueError:
@@ -217,9 +233,11 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        block_n = self.block_n_for_page_size(self.page_size)
+        block_n = self.block_n_for_page_size(self.page_size, self.dim)
         if block_n is None:
-            raise ValueError("batch=1 paged decode requires page_size=64 or a multiple of 128")
+            raise ValueError(
+                f"no key tile covers page size {self.page_size} at head dim {self.dim}"
+            )
         return {"block_M": 64, "block_N": block_n, "threads": 160}
 
     def _ctx_splits_for(self, capacity: int) -> int:
@@ -248,7 +266,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         Q = Q.contiguous()
         capacity = self.max_pages_per_req * self.page_size
-        if capacity < self._MIN_CTX:
+        if capacity < self._MIN_CTX and self.dtype_str == "float16" and self.dim == 128:
             q = Q.view(self.batch, 1, self.heads, self.dim)
             program = self.program(self._compile_short)
             return program(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
@@ -259,7 +277,9 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         return program(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial)
 
     def _compile_short(self, cfg: dict):
-        """The single-pass program for a table shorter than ``_MIN_CTX`` rows."""
+        """The single-pass program for a float16 table of head dimension 128 shorter than
+        ``_MIN_CTX`` rows, where it reads a one-key cache faster than the context split; the
+        split serves every other table."""
         return gqa_decode_paged_kernel(
             self.batch,
             self.heads,

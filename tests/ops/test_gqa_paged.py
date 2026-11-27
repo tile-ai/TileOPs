@@ -1246,20 +1246,58 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("cache_len", "dtype"),
+    ("heads", "heads_kv", "dim", "page_size", "pages", "cache_len", "dtype"),
     [
-        pytest.param(4097, torch.bfloat16, marks=pytest.mark.smoke, id="bf16-full-table"),
-        pytest.param(4097, torch.float16, marks=pytest.mark.smoke, id="fp16-full-table"),
-        pytest.param(513, torch.bfloat16, marks=pytest.mark.full, id="bf16-short-of-table"),
+        pytest.param(
+            24, 4, 256, 64, 65, 4097, torch.bfloat16, marks=pytest.mark.smoke, id="bf16-full-table"
+        ),
+        pytest.param(
+            24, 4, 256, 64, 65, 4097, torch.float16, marks=pytest.mark.smoke, id="fp16-full-table"
+        ),
+        pytest.param(
+            24,
+            4,
+            256,
+            64,
+            65,
+            513,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="bf16-short-of-table",
+        ),
+        pytest.param(
+            32, 8, 128, 64, 64, 1000, torch.bfloat16, marks=pytest.mark.full, id="bf16-head-dim-128"
+        ),
+        pytest.param(
+            24, 4, 256, 128, 16, 1000, torch.bfloat16, marks=pytest.mark.full, id="128-row-pages"
+        ),
+        pytest.param(
+            24, 4, 256, 64, 15, 900, torch.bfloat16, marks=pytest.mark.full, id="short-table"
+        ),
+        pytest.param(
+            32, 8, 128, 64, 2, 127, torch.bfloat16, marks=pytest.mark.full, id="two-page-table"
+        ),
     ],
 )
-def test_gqa_paged_decode_bs1_serves_head_dim_256(cache_len: int, dtype: torch.dtype) -> None:
-    """Qwen3.8-27B's decode attention, 24 query and 4 KV heads of 256 in 64-row pages over a
-    65-page table, runs the batch-1 kernel, its splits sharing the live keys by whole tiles
-    whether they fill the table or an eighth of it."""
+def test_gqa_paged_decode_bs1_wider_region(
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    page_size: int,
+    pages: int,
+    cache_len: int,
+    dtype: torch.dtype,
+) -> None:
+    """The batch-1 kernel, whose warp-specialized producer feeds SM90 WGMMA through TMA,
+    serves bfloat16 and head dimension 256: Qwen3.8-27B's decode attention over a full and
+    an eighth-full table, bfloat16 at head dimension 128, 128-row pages at head dimension
+    256, and tables shorter than 1024 rows. NaN in every row past the cache keeps a split
+    that reads one key too many from passing."""
     torch.manual_seed(0)
-    workload = GQAPagedFwdWorkload(24, 4, 256, [1], [cache_len], 64, 65, 65, dtype)
-    inputs = workload.gen_inputs()
+    workload = GQAPagedFwdWorkload(
+        heads, heads_kv, dim, [1], [cache_len], page_size, pages, pages, dtype
+    )
+    inputs = _poisoned_inputs(workload)
     op = GQAPagedFwdOp(is_causal=True)
     q, k_cache, _, block_table, _, _, _, k_scale, _, rope_cos, _, sinks = inputs
     call = op._paged_call(q, k_cache, block_table, k_scale, rope_cos, sinks)

@@ -88,9 +88,9 @@ def make_gqa_decode_bs1_split(
     """Create the context-split schedule around a layout-specific KV loader.
 
     A producer of ``threads - 128`` threads feeds one 128-thread WGMMA consumer warpgroup
-    through a ring of ``RING_DEPTH`` slots. A dense cache splits whole key tiles as evenly
-    as possible. A *paged* one reads each request's length from a buffer, gives every split
-    the same whole tiles and the last the rest, and zeroes the value rows past the cache.
+    through a ring of ``RING_DEPTH`` slots. The splits share a request's whole key tiles as
+    evenly as possible; a *paged* cache reads each request's length from a buffer and zeroes
+    the value rows past the cache.
     RoPE makes the producer a warpgroup, whose first warp copies and whose threads all
     rotate K, so the rotation overlaps the consumer and the consumer reads K through WGMMA
     alone.
