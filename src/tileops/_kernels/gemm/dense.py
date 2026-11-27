@@ -4229,9 +4229,11 @@ def _gemv_row_kernel(
     Each of a row's warps stands in for ``reduce_threads / 32 / split`` of the ring's warps:
     its lanes load their 16-byte slices straight into registers, ``depth / split`` slices a
     burst, and a split row's warps hand their sums to its first warp through shared memory.
-    An unsplit warp holds ``rows`` rows. Buffer extents predicate the K-tail loads, which
-    read zero. A nonzero *bias_len* adds ``bias[col]``, or ``bias[0]`` at 1, after the
-    reduction; C is *out_dtype*, or *dtype* when it is ``None``.
+    An unsplit warp holds ``rows`` rows. A warp over vector-aligned rows unrolls its bursts
+    while it loads at most 96 slices: a rolled burst loop doubles the registers a warp holds,
+    and longer or scalar-loaded bodies outgrow the instruction cache unrolled. Buffer extents
+    predicate the K-tail loads, which read zero. A nonzero *bias_len* adds ``bias[col]``, or
+    ``bias[0]`` at 1, after the reduction; C is *out_dtype*, or *dtype* when it is ``None``.
 
     Returns:
         JIT factory taking ``(reduce_threads, warps, rows, depth, split)`` and producing C:
@@ -4264,6 +4266,7 @@ def _gemv_row_kernel(
         slices = -(-k // block_k) * own
         burst = min(depth // split, slices)
         bursts, tail = divmod(slices, burst)
+        unrolled = k % vec == 0 and rows * slices <= 96
         tile_rows = warps // split * rows
         folds = tuple(groups >> (i + 1) for i in range(groups.bit_length() - 1))
 
@@ -4309,7 +4312,7 @@ def _gemv_row_kernel(
                 for j in T.unroll(burst, explicit=True):
                     load_slice(b, b_local, row0, slice_col(j, part, lane), j)
                 if bursts > 1:
-                    for ib in T.serial(bursts - 1):
+                    for ib in (T.unroll if unrolled else T.serial)(bursts - 1):
                         for j in T.unroll(burst, explicit=True):
                             add_slice(a, b_local, acc, slice_col(ib * burst + j, part, lane), j)
                             load_slice(
@@ -4464,7 +4467,9 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         self.rows, self.out_len = (
             (m, n) if band == "lhs_rows" else (1, n if band == "lhs_row" else m)
         )
-        self.staged = band == "lhs_rows" or not gemv_registers(k)
+        self.staged = band == "lhs_rows" or not gemv_registers(
+            self.out_len, k, self.build_target.sm_count
+        )
         self.kernel = self._builder(bias_len=0)
         self.init_config(config)
 
@@ -4491,7 +4496,9 @@ class GemvKernel(Kernel, GEMMFwdInterface):
     def default_config(self) -> dict:
         if self.band == "lhs_rows":
             return small_batch_config(self.n, self.k, self.build_target.sm_count)
-        return gemv_config(self.k, registers=not self.staged)
+        return gemv_config(
+            self.out_len, self.k, self.build_target.sm_count, registers=not self.staged
+        )
 
     @property
     def autotune_configs(self) -> list[dict]:

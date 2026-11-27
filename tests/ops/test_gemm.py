@@ -3616,6 +3616,28 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             marks=pytest.mark.full,
             id="rhs-col-scalar-bias",
         ),
+        pytest.param(
+            1,
+            257,
+            24576,
+            True,
+            False,
+            None,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="three-unrolled-bursts",
+        ),
+        pytest.param(
+            1,
+            257,
+            24577,
+            True,
+            False,
+            None,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="three-rolled-bursts",
+        ),
     ],
 )
 def test_gemv_register_body(
@@ -3628,8 +3650,9 @@ def test_gemv_register_body(
     dtype: torch.dtype,
 ) -> None:
     """One-row calls dispatch reads into registers: a K tail, a K off the vector width,
-    rows reduced over 256 lanes, bursts past the first with a float32 output, a column bias,
-    and the one-column band with its scalar bias."""
+    rows reduced over 256 lanes, a second burst with a float32 output, a column bias, the
+    one-column band with its scalar bias, and three bursts of aligned rows, unrolled, and of
+    odd rows, in a loop."""
     test = GEMMTest(m, n, k, dtype, trans_b=trans_b, bias=bias, out_dtype=out_dtype)
     op = GEMMFwdOp(trans_b=trans_b, out_dtype=out_dtype)
     test.check(op, *test.gen_inputs())
@@ -3639,19 +3662,42 @@ def test_gemv_register_body(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("k", "staged"),
+    ("per_sm", "extra", "k", "rows"),
     [
-        pytest.param(4096, True, marks=pytest.mark.smoke, id="row-of-4096"),
-        pytest.param(4097, False, marks=pytest.mark.full, id="row-of-4097"),
+        pytest.param(0, 7, 4096, None, marks=pytest.mark.smoke, id="row-of-4096"),
+        pytest.param(0, 7, 4097, 1, marks=pytest.mark.full, id="row-of-4097"),
+        pytest.param(15, 0, 10240, 1, marks=pytest.mark.full, id="mid-rows-at-15-an-sm"),
+        pytest.param(12, 0, 24576, 1, marks=pytest.mark.full, id="long-rows-at-12-an-sm"),
+        pytest.param(12, 1, 24576, None, marks=pytest.mark.full, id="long-rows-past-12-an-sm"),
+        pytest.param(18, 0, 24576, None, marks=pytest.mark.full, id="long-rows-at-18-an-sm"),
+        pytest.param(18, 1, 24576, 1, marks=pytest.mark.full, id="long-rows-past-18-an-sm"),
+        pytest.param(25, 0, 32768, 1, marks=pytest.mark.full, id="rows-of-32768-at-25-an-sm"),
+        pytest.param(25, 1, 32768, None, marks=pytest.mark.full, id="rows-of-32768-past-25-an-sm"),
+        pytest.param(28, 0, 32768, None, marks=pytest.mark.full, id="rows-of-32768-at-28-an-sm"),
+        pytest.param(28, 1, 32768, 1, marks=pytest.mark.full, id="rows-of-32768-past-28-an-sm"),
+        pytest.param(0, 7, 49152, 1, marks=pytest.mark.full, id="row-of-49152"),
+        pytest.param(0, 7, 49160, None, marks=pytest.mark.full, id="row-past-49152"),
+        pytest.param(2, 0, 6143, 1, marks=pytest.mark.full, id="odd-rows-at-2-an-sm"),
+        pytest.param(2, 1, 6143, None, marks=pytest.mark.full, id="odd-rows-past-2-an-sm"),
+        pytest.param(12, -1, 6143, None, marks=pytest.mark.full, id="odd-rows-under-12-an-sm"),
+        pytest.param(12, 0, 6143, 2, marks=pytest.mark.full, id="odd-rows-at-12-an-sm"),
+        pytest.param(8, -1, 12289, 1, marks=pytest.mark.full, id="odd-long-rows-under-8-an-sm"),
+        pytest.param(8, 0, 12289, 2, marks=pytest.mark.full, id="odd-long-rows-at-8-an-sm"),
     ],
 )
-def test_gemv_reads_rows_past_4096_into_registers(k: int, staged: bool) -> None:
-    """A one-row band reads rows longer than 4096 values into registers, at any row count,
-    and keeps the staged ring for shorter ones."""
+def test_gemv_register_dispatch(per_sm: int, extra: int, k: int, rows: int | None) -> None:
+    """Which one-row calls read into registers, and how many rows a warp then holds: not
+    rows of up to 4096 values, odd rows over 2 to 12 rows an SM, or even rows of 12288 or
+    more values past 49152 values, over 12 to 18 rows an SM, or of 32768 values over 25 to
+    28 rows an SM. Two rows a warp run three bursts of odd rows in a loop."""
+    n = per_sm * get_sm_count(torch.device(run_device()).index) + extra
+    test = GEMMTest(1, n, k, torch.bfloat16, trans_b=True)
     op = GEMMFwdOp()
-    op(*GEMMWorkload(1, 7, k, torch.bfloat16, trans_b=True).gen_inputs())
+    test.check(op, *test.gen_inputs())
     (kernel,) = op._entries_built("gemm").values()
-    assert isinstance(kernel, GemvKernel) and kernel.staged is staged
+    assert isinstance(kernel, GemvKernel) and kernel.staged is (rows is None)
+    if rows is not None:
+        assert kernel.config["rows"] == rows
 
 
 @pytest.mark.smoke

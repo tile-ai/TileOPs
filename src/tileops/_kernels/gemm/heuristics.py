@@ -810,32 +810,52 @@ def best_config(
     return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, l2_bytes, cal, out_bytes))
 
 
-def gemv_registers(k: int) -> bool:
-    """Whether ``GemvKernel``'s one-row bands read rows of ``k`` values into registers
-    (``_gemv_row_kernel``) rather than through the staged ring: rows past 4096 values,
-    one fill of the ring's 128-lane stages.
+def gemv_registers(n: int, k: int, sm_count: int) -> bool:
+    """Whether ``GemvKernel``'s one-row bands read ``n`` rows of ``k`` values into registers
+    (``_gemv_row_kernel``) rather than through the staged ring.
+
+    Calibrated on SM90 against the ring at the same ``reduce_threads``. The ring keeps rows
+    of up to 4096 values; odd rows over 2 to 12 rows an SM; and even rows of 12288 values or
+    more past 49152 values, over 12 to 18 rows an SM, a fraction of a wave past what the
+    register body's one-row blocks fill, or of 32768 values over 25 to 28 rows an SM, where
+    the ring's two-row blocks stream them faster. Odd rows of 12288 or more, which those
+    blocks cannot copy, always take registers.
     """
-    return k > 4096
+    if k <= 4096:
+        return False
+    if k % 2:
+        return k >= 12288 or not 2 * sm_count < n < 12 * sm_count
+    if k < 12288:
+        return True
+    if k > 49152 or 12 * sm_count < n <= 18 * sm_count:
+        return False
+    return k != 32768 or not 25 * sm_count < n <= 28 * sm_count
 
 
-def gemv_config(k: int, registers: bool) -> dict:
+def gemv_config(n: int, k: int, sm_count: int, registers: bool) -> dict:
     """SM90 ``GemvKernel`` config for its one-row bands (single-row / single-column GEMV).
 
     ``reduce_threads``, which fixes a row's bits, is 64 at ``k >= 12288``, 256 at
-    ``k >= 6144`` and 128 below. The staged ring runs one row a block over four stages; in
-    registers a row is one block of a warp for each of the ring's warps, 32 slices a burst.
+    ``k >= 6144`` and 128 below. The staged ring takes two rows a block over five stages at
+    64 threads, else one over four. In registers a row is one block of a warp for each of the
+    ring's warps, 32 slices a burst. Odd rows, whose loads are scalar, go two to a warp at
+    bursts of 8 from 12 rows an SM, or from 8 for rows of 12288 values or more.
     """
     reduce_threads = 64 if k >= 12288 else 256 if k >= 6144 else 128
-    if registers:
-        warps = reduce_threads // 32
-        return {
-            "reduce_threads": reduce_threads,
-            "warps": warps,
-            "rows": 1,
-            "depth": 32,
-            "split": warps,
-        }
-    return {"block_n": 1, "reduce_threads": reduce_threads, "num_stages": 4}
+    if not registers:
+        if k >= 12288:
+            return {"block_n": 2, "reduce_threads": 64, "num_stages": 5}
+        return {"block_n": 1, "reduce_threads": reduce_threads, "num_stages": 4}
+    if k % 2 and n >= (8 if k >= 12288 else 12) * sm_count:
+        return {"reduce_threads": reduce_threads, "warps": 1, "rows": 2, "depth": 8, "split": 1}
+    warps = reduce_threads // 32
+    return {
+        "reduce_threads": reduce_threads,
+        "warps": warps,
+        "rows": 1,
+        "depth": 32,
+        "split": warps,
+    }
 
 
 def small_batch_config(n: int, k: int, sm_count: int) -> dict:
