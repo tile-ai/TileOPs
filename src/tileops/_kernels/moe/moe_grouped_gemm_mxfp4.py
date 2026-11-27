@@ -1903,9 +1903,17 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         config's program. Its row tile is the shortest of ``_PREFILL_BLOCK_M`` that holds twice
         the mean rows an expert, the rule ``default_tile`` applies to masked slabs: routing
         skews the rows, so the busiest experts run well past the mean. Its ring is the deepest
-        that fits and divides the K steps (its slots are compile-time), no deeper than a quarter
-        of the steps, and shallow enough that the tile's width loops, each unrolled by the
-        depth, hold at most 16 steps between them. ``_prefill_tiles`` keeps each row tile's.
+        that fits and divides the K steps (its slots are compile-time), within two bounds:
+
+        - No deeper than a quarter of the steps. Every CTA fills its ring at once when its first
+          task starts, so a deeper ring puts the first step behind more loads in flight, and
+          holds stages a task of few steps cannot keep busy.
+        - Shallow enough that the tile's width loops, each unrolled by the depth, hold at most
+          16 steps between them. Each width loop is its own copy of the unrolled body, so a
+          longer unroll grows the code the instruction cache must hold and the registers ptxas
+          must find beside the WGMMAs' accumulators.
+
+        ``_prefill_tiles`` keeps each row tile's.
 
         The plan follows each launch's rows, which the call spec does not compare, so tuning,
         which sets the call spec's ``config``, does not reach it.
