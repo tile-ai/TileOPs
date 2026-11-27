@@ -285,6 +285,7 @@ def test_bmm_pingpong_matches_the_reference(
         ),
     ],
 )
+@pytest.mark.in_tree_kernels
 def test_bmm_reads_and_writes_batch_strided_views(
     tune: bool, batch: int, m: int, n: int, k: int, key: str
 ) -> None:
