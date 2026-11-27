@@ -55,7 +55,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 - A run defaults to `BUILTIN`, so an installed backend does not serve it. `--tileops-target=detect` restores device detection; `--tileops-target=<name>` selects a target.
 - A test of target dispatch names its target or isolates the registry.
 - An op contract test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
-- A test that depends on the in-tree implementations — a coverage gap, a registered stand-in implementation, a kernel path it pins `target=BUILTIN` to reach — carries `in_tree_kernels`, which deselects it off the builtin target.
+- A test that depends on the in-tree implementations — a coverage gap, a registered stand-in implementation, a kernel path it pins `target=BUILTIN` to reach, a warning the op's body emits — carries `in_tree_kernels`, which deselects it off the builtin target.
 - The full `tests/ops` suite on a device other than CUDA runs under a `--tileops-target` naming a backend that serves the device; `cpu` with the builtin target is not a configuration of that suite.
 - A run of `tests/ops` on the `tileops_test` device uses the `tileops_test` target. Its kernel for every op is that op's reference: the `ref_program` of the op's call workload (`workloads.calls`), on the manifest call the kernel's tensors and params state. A call the reference does not compute, or whose inputs it does not read in their call form, is not served.
 - A call the `tileops_test` target refuses raises `tests.conftest.UnservedError`, and the test is reported unvalidated: neither a failure nor evidence.

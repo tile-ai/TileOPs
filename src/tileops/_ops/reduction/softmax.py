@@ -67,7 +67,8 @@ class _SoftmaxBaseOp(Op):
 
         Args:
             dim: The axis to normalize along. ``None`` takes torch's implicit axis (``0``
-                at rank 0, 1 or 3, else ``1``) and warns, as torch does.
+                at rank 0, 1 or 3, else ``1``); the in-tree implementation warns, as torch
+                does.
             dtype: The dtype the input is cast to first, and the output's; ``None`` keeps
                 the input's.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
