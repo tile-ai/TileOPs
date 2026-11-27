@@ -578,6 +578,14 @@ class BMMW8A16Fixture(FixtureBase):
                 pytest.param(2, 130, 520, 640, marks=pytest.mark.full, id="few-64-row-units"),
                 pytest.param(2, 260, 4232, 256, marks=pytest.mark.full, id="two-weight-warpgroups"),
                 pytest.param(1, 300, 72, 256, marks=pytest.mark.full, id="n-in-one-block"),
+                pytest.param(
+                    1,
+                    2**21 + 128,
+                    1024,
+                    128,
+                    marks=pytest.mark.nightly,
+                    id="output-past-2-31-elements",
+                ),
             ],
         ),
     ]
