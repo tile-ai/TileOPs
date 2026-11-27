@@ -146,8 +146,8 @@ class AttentionCall(CallSpec):
 
     @property
     def decode_bs1_region(self) -> bool:
-        """The batch-1 decode shape the contiguous batch-1 kernels serve; the paged one also
-        serves it in bfloat16 and at head dimension 256."""
+        """The batch-1 decode shape at which the contiguous batch-1 kernel serves a call with
+        fused RoPE."""
         return self.batch1_decode((torch.float16,), (128,))
 
     def batch1_decode(self, dtypes: tuple[torch.dtype, ...], dims: tuple[int, ...]) -> bool:

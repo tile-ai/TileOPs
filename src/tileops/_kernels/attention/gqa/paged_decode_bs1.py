@@ -146,7 +146,7 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         return super().refusal(call)
 
     @staticmethod
-    def block_n_for_page_size(page_size: int, dim: int = 128) -> int | None:
+    def block_n_for_page_size(page_size: int, dim: int) -> int | None:
         """Return a page-contained WGMMA N tile, or None when the fast path is unsafe.
 
         Past head dimension 128 the tile is 64 rows, which keeps the K and V rings in shared
