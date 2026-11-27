@@ -86,16 +86,22 @@ def _tile_config(m: int, n: int, batch: int, sm_count: int) -> dict:
     return wide
 
 
-def _ring_config(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) -> dict:
-    """The ring depth and CTA count of ``tile``: as many stages as shared memory holds, at most
-    the K steps of all of one CTA's units, and the fewest CTAs that run the units in as many
+def _ring_limits(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) -> tuple:
+    """The deepest ring shared memory holds beside ``tile``'s fixed buffers, the K steps one
+    CTA streams over all of its units, and the fewest CTAs that run the units in as many
     rounds as ``sm_count`` CTAs."""
     tile_m, wgs = tile["tile_m"], tile["wgs"]
     units = batch * -(-m // tile_m) * -(-n // (wgs * WGMMA_ROWS))
     rounds = -(-units // sm_count)
-    ctas = -(-units // rounds)
     deepest = (BLOCK_SHARED_BYTES_OPT_IN[90] - _fixed_bytes(k, tile)) // _stage_bytes(tile_m, wgs)
-    return {**tile, "num_stages": min(deepest, rounds * (k // _SCALE_BLOCK)), "ctas": ctas}
+    return deepest, rounds * (k // _SCALE_BLOCK), -(-units // rounds)
+
+
+def _ring_config(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) -> dict:
+    """``tile`` with its ring depth, as many stages as shared memory holds and at most the K
+    steps one CTA streams, and its CTA count, from :func:`_ring_limits`."""
+    deepest, steps, ctas = _ring_limits(m, n, k, batch, sm_count, tile)
+    return {**tile, "num_stages": min(deepest, steps), "ctas": ctas}
 
 
 @target_cache(maxsize=32)
@@ -116,7 +122,10 @@ def _bmm_w8a16_kernel(
     ``u // nblk % mblk`` (``tile_m`` rows) of batch item ``u // (nblk * mblk)``; CTA ``p`` runs
     units ``p``, ``p + ctas``, ... through one ring. ``wgs * ksplit`` consumer warpgroups run
     a unit: warpgroup ``w`` takes weight rows ``64 * (w % wgs)`` on and the unit's K steps
-    ``w // wgs``, ``w // wgs + ksplit``, ...; the K parts' sums meet in shared memory.
+    ``w // wgs``, ``w // wgs + ksplit``, ...; the K parts' sums meet in shared memory. The
+    producer warpgroup, which only issues TMA, drops to 24 registers, the fewest
+    ``setmaxnreg`` sets, and the consumers share the rest of the block's register file, at
+    most 240 each, the count the FP8 stream kernel's consumer takes.
 
     Args:
         batch: Batch items.
@@ -265,7 +274,6 @@ def _bmm_w8a16_kernel(
                                 if unit < units and idx < out_chunks and m0 + mi < m and n0 + j < n:
                                     for v in T.vectorized(8):
                                         c[g, m0 + mi, n0 + j + v] = staged[wg, mi, j + v]
-                        T.sync_threads(barrier_id=15, arrive_count=consumers)
                 else:
                     T.dec_max_nreg(_PRODUCER_REGS)
                     for s in T.serial(per_cta):
@@ -328,6 +336,14 @@ class BMMW8A16Kernel(Kernel, BMMW8A16FwdInterface):
             return f"k={call.k} is not a positive multiple of {_SCALE_BLOCK}, the scale block"
         if call.n % 8:
             return f"n={call.n} is not a multiple of 8, the output's 16-byte store"
+        tile = _tile_config(call.m, call.n, call.batch, call.sm_count)
+        deepest, steps, _ = _ring_limits(call.m, call.n, call.k, call.batch, call.sm_count, tile)
+        if deepest < min(tile["ksplit"], steps):
+            return (
+                f"k={call.k} leaves shared memory {max(deepest, 0)} ring stages for "
+                f"{steps} K steps, fewer than the {tile['ksplit']} K parts that each wait on a "
+                "stage of their own"
+            )
         return super().refusal(call)
 
     @classmethod

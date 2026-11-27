@@ -71,14 +71,14 @@ def test_bmm_fp8_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(BMMW8A16FwdOp), ids=lambda case: case.id)
 def test_bmm_w8a16_bench(case) -> None:
-    """Against cuBLAS's bfloat16 batched matmul on the weight dequantized once beforehand, as
-    DeepSeek-V4-Flash's inference holds ``wo_a``."""
+    """Against cuBLAS's bfloat16 batched matmul on the weight dequantized to bfloat16 once
+    beforehand, as DeepSeek-V4-Flash's inference holds ``wo_a``."""
     activation, weight, weight_scale = case.inputs
-    dequantized = dequantize_block_scaled(weight, weight_scale).transpose(1, 2).contiguous()
+    dequantized = dequantize_block_scaled(weight, weight_scale).to(torch.bfloat16)
     bench.Runner(BMMW8A16FwdOp(**case.arguments), case).compare(
         {
-            "torch-cublas-dequantized": bench.Implementation(
-                run=torch.bmm, args=(activation, dequantized)
+            "torch-dequantized-matmul": bench.Implementation(
+                run=torch.bmm, args=(activation, dequantized.transpose(1, 2).contiguous())
             )
         }
     )

@@ -5,7 +5,7 @@ from tests.cuda_graph_contract import CapturedGraph, check_replay
 from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._kernels.gemm import BMMCall
+from tileops._kernels.gemm import BMMCall, BMMW8A16Call
 from tileops.backend import OpNotAvailableError
 from tileops.gemm import BMMFP8FwdOp, BMMFwdOp, BMMW8A16FwdOp
 from workloads.device import run_device
@@ -578,6 +578,7 @@ class BMMW8A16Fixture(FixtureBase):
                 pytest.param(2, 130, 520, 640, marks=pytest.mark.full, id="few-64-row-units"),
                 pytest.param(2, 260, 4232, 256, marks=pytest.mark.full, id="two-weight-warpgroups"),
                 pytest.param(1, 300, 72, 256, marks=pytest.mark.full, id="n-in-one-block"),
+                pytest.param(7, 2, 2432, 1408, marks=pytest.mark.full, id="split-k-units-per-cta"),
                 pytest.param(
                     1,
                     2**21 + 128,
@@ -600,9 +601,11 @@ def test_bmm_w8a16(batch: int, m: int, n: int, k: int) -> None:
 @pytest.mark.parametrize(
     "batch, m, n, k",
     [
-        pytest.param(2, 64, 192, 512, marks=pytest.mark.smoke, id="split-k-tile"),
+        pytest.param(8, 1, 1024, 4096, marks=pytest.mark.smoke, id="ds-v4-flash-wo-a-decode"),
+        pytest.param(2, 64, 192, 512, marks=pytest.mark.full, id="split-k-tile"),
         pytest.param(2, 200, 520, 1024, marks=pytest.mark.full, id="64-row-tiles"),
         pytest.param(2, 260, 4232, 256, marks=pytest.mark.full, id="two-weight-warpgroups"),
+        pytest.param(1, 512, 128, 16512, marks=pytest.mark.full, id="k-past-128-scale-steps"),
     ],
 )
 def test_bmm_w8a16_dequantizes_each_weight_exactly(batch: int, m: int, n: int, k: int) -> None:
@@ -636,13 +639,12 @@ def test_bmm_w8a16_reads_and_writes_batch_strided_views(batch: int, m: int, n: i
 
 @pytest.mark.smoke
 def test_bmm_w8a16_takes_operands_of_any_strides() -> None:
-    """Operands around ``n`` = 136, which ends inside a 64-row weight block: ``activation``
-    whose rows lie four elements past their width, 8 bytes, which TMA cannot address, and
-    ``out`` likewise; ``out`` whose rows lie eight elements past their width, which the kernel
-    writes in place; ``activation`` of every other element; ``out`` transposed in its last two
-    axes. Each gives the contiguous call's product, and every padding element stays
-    untouched."""
-    batch, m, n, k = 2, 24, 136, 256
+    """Operands at the decode shape: ``activation`` whose rows lie four elements past their
+    width, 8 bytes, which TMA cannot address, and ``out`` likewise; ``out`` whose rows lie eight
+    elements past their width, which the kernel writes in place; ``activation`` of every other
+    element; ``out`` transposed in its last two axes. Each gives the contiguous call's product,
+    and every padding element stays untouched."""
+    batch, m, n, k = 8, 1, 1024, 4096
     test = BMMW8A16Test(batch, m, n, k)
     a, weight, scale = test.gen_inputs()
     op = BMMW8A16FwdOp()
@@ -660,6 +662,16 @@ def test_bmm_w8a16_takes_operands_of_any_strides() -> None:
     out = torch.full((batch, n, m), float("nan"), dtype=a.dtype, device=a.device).mT
     assert op(a_wide[..., ::2], weight, scale, out=out) is out
     assert torch.equal(out, expected)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_bmm_w8a16_k_past_its_ring_is_refused() -> None:
+    """The in-tree kernel refuses a K whose staged scales leave the ring fewer stages than the
+    warpgroups splitting K, each of which waits on a stage of its own."""
+    call = BMMW8A16Call(batch=1, m=64, n=1024, k=128 * 20000, device=run_device())
+    with pytest.raises(OpNotAvailableError, match="ring stages"):
+        BMMW8A16FwdOp().key_for("bmm_w8a16", call)
 
 
 @pytest.mark.smoke

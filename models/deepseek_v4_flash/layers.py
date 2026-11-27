@@ -289,12 +289,13 @@ class Attention:
     back, projected per group by ``wo_a`` and mixed by ``wo_b``. A call of at most 64 tokens reads
     ``wo_a``'s weights more than it multiplies them, and runs ``BMMW8A16FwdOp`` on the checkpoint's
     FP8 codes and block scales, half the bytes; a longer call runs the bfloat16 batched matmul on a
-    dequantized copy, at a rate the W8A16 kernel does not reach past 64 rows. Both give the bfloat16
-    product of the same weights. ``wq_a_kv`` stacks the rows of ``wq_a`` and ``wkv``, which read the
-    same input, and ``wq_b_index`` those of ``wq_b`` and ``indexer_wq_b``, the indexer's query
-    projection; each layer of a pair is a row view of its stack. A one-token call quantizes the
-    input once and runs one GEMM for each pair, whose output columns lie in place; a longer call's
-    would be strided, so it runs the two views.
+    dequantized copy. The 64 is the W8A16 kernel's tile limit: up to 64 rows it splits K over
+    warpgroups that widen the weights together, and past it the kernel runs slower than the bfloat16
+    batched matmul. Both give the bfloat16 product of the same weights. ``wq_a_kv`` stacks the rows
+    of ``wq_a`` and ``wkv``, which read the same input, and ``wq_b_index`` those of ``wq_b`` and
+    ``indexer_wq_b``, the indexer's query projection; each layer of a pair is a row view of its
+    stack. A one-token call quantizes the input once and runs one GEMM for each pair, whose output
+    columns lie in place; a longer call's would be strided, so it runs the two views.
     """
 
     def __init__(

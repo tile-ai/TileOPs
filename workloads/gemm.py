@@ -751,17 +751,20 @@ class BMMFP8Workload(WorkloadBase):
 
 def dequantize_block_scaled(weight: torch.Tensor, weight_scale: torch.Tensor) -> torch.Tensor:
     """``[B, N, K]`` e4m3 codes, each times its 128x128 block's scale in ``weight_scale``
-    (``[B, ceil(N / 128), K / 128]``) and rounded to bfloat16, as the official ``convert.py``
-    dequantizes DeepSeek-V4-Flash's ``wo_a``."""
+    (``[B, ceil(N / 128), K / 128]``), in float32."""
     n, k = weight.shape[1:]
     scale = weight_scale.repeat_interleave(128, 1)[:, :n].repeat_interleave(128, 2)[..., :k]
-    return (weight.float() * scale).to(torch.bfloat16)
+    return weight.float() * scale
 
 
 def bmm_w8a16_reference(
     activation: torch.Tensor, weight: torch.Tensor, weight_scale: torch.Tensor
 ) -> torch.Tensor:
-    """The batched W8A16 product as DeepSeek-V4-Flash's inference computes ``wo_a``.
+    """The batched W8A16 product: each weight the code times its block's scale.
+
+    With power-of-two scales, as DeepSeek's FP8 checkpoints hold, each weight is the bfloat16
+    value the official ``convert.py`` dequantizes DeepSeek-V4-Flash's ``wo_a`` to, and the
+    product is the one its inference computes.
 
     Args:
         activation: ``[B, M, K]`` bfloat16.
@@ -773,7 +776,7 @@ def bmm_w8a16_reference(
         contracted in float32 and rounded to bfloat16, ``[B, M, N]``.
     """
     w = dequantize_block_scaled(weight, weight_scale)
-    return torch.bmm(activation.float(), w.float().transpose(1, 2)).to(torch.bfloat16)
+    return torch.bmm(activation.float(), w.transpose(1, 2)).to(torch.bfloat16)
 
 
 class BMMW8A16Workload(WorkloadBase):
@@ -822,10 +825,11 @@ class BMMW8A16BatchStridedWorkload(BMMW8A16Workload):
 
 
 class BMMW8A16BasisWorkload(BMMW8A16Workload):
-    """Each activation row a basis vector, so each output is one dequantized weight and no
-    sum rounds it: row ``i`` of batch item ``b`` selects K index ``(37 * i + 5 * b) % K``,
-    which visits every 16-byte chunk of a K step's codes. The weights take every e4m3 code
-    but NaN, under scales that differ per block and are not all powers of two."""
+    """Each activation row a basis vector, so each output is one weight, the code times its
+    block's scale rounded once to bfloat16, and no sum rounds it: row ``i`` of batch item
+    ``b`` selects K index ``(37 * i + 5 * b) % K``, which visits every 16-byte chunk of a K
+    step's codes. The weights take every e4m3 code but NaN, under scales that differ per block
+    and are not all powers of two."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         device = run_device()
