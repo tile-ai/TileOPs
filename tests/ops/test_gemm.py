@@ -3665,7 +3665,9 @@ def test_gemv_register_body(
     ("per_sm", "extra", "k", "dtype", "rows"),
     [
         pytest.param(0, 7, 4096, torch.bfloat16, None, marks=pytest.mark.smoke, id="row-of-4096"),
-        pytest.param(0, 7, 4100, torch.float16, 1, marks=pytest.mark.smoke, id="fp16-row-of-4100"),
+        pytest.param(
+            15, 0, 24576, torch.float16, 1, marks=pytest.mark.smoke, id="fp16-in-the-window"
+        ),
         pytest.param(0, 7, 4097, torch.bfloat16, 1, marks=pytest.mark.full, id="row-of-4097"),
         pytest.param(
             15, 0, 10240, torch.bfloat16, 1, marks=pytest.mark.full, id="mid-rows-at-15-an-sm"
@@ -3683,13 +3685,19 @@ def test_gemv_register_body(
             18, 1, 24576, torch.bfloat16, 1, marks=pytest.mark.full, id="long-rows-past-18-an-sm"
         ),
         pytest.param(
-            15, 0, 12800, torch.bfloat16, None, marks=pytest.mark.full, id="window-from-12800"
+            15,
+            0,
+            12800,
+            torch.bfloat16,
+            None,
+            marks=pytest.mark.full,
+            id="window-at-a-stage-multiple",
         ),
         pytest.param(
-            15, 0, 12792, torch.bfloat16, 1, marks=pytest.mark.full, id="window-not-below-12800"
+            15, 0, 12928, torch.bfloat16, 1, marks=pytest.mark.full, id="window-off-the-stage-width"
         ),
         pytest.param(
-            15, 0, 24576, torch.float16, 1, marks=pytest.mark.full, id="fp16-in-the-window"
+            15, 0, 12288, torch.bfloat16, 1, marks=pytest.mark.full, id="window-not-at-12288"
         ),
         pytest.param(
             15, 0, 24580, torch.bfloat16, 1, marks=pytest.mark.full, id="unaligned-in-the-window"
@@ -3699,7 +3707,10 @@ def test_gemv_register_body(
             0, 7, 49160, torch.bfloat16, None, marks=pytest.mark.full, id="aligned-row-past-49152"
         ),
         pytest.param(
-            0, 7, 49156, torch.bfloat16, 1, marks=pytest.mark.full, id="unaligned-row-past-49152"
+            0, 7, 49156, torch.bfloat16, None, marks=pytest.mark.full, id="8-byte-row-past-49152"
+        ),
+        pytest.param(
+            0, 7, 49154, torch.bfloat16, 1, marks=pytest.mark.full, id="4-byte-row-past-49152"
         ),
         pytest.param(
             2, 0, 6143, torch.bfloat16, 1, marks=pytest.mark.full, id="odd-rows-at-2-an-sm"
@@ -3730,11 +3741,12 @@ def test_gemv_register_body(
 def test_gemv_register_dispatch(
     per_sm: int, extra: int, k: int, dtype: torch.dtype, rows: int | None
 ) -> None:
-    """Which one-row calls read into registers, and how many rows a warp then holds: not
-    rows of up to 4096 values, odd rows over 2 to 12 rows an SM, aligned rows past what the
-    split row unrolls, or aligned bf16 rows from 12800 values over 12 to 18 rows an SM;
-    fp16 and unaligned rows keep registers there. Two rows a warp run three bursts of odd rows in a
-    loop."""
+    """Which one-row calls read into registers, and how many rows a warp then holds. The
+    staged ring keeps rows of up to 4096 values, odd rows below 12288 values over 2 to 12
+    rows an SM, rows past the split row's unroll limit that it copies 8 bytes at a time, and
+    aligned bf16 rows past the first two-row K, at a multiple of its stage width, over 12 to
+    18 rows an SM. Odd rows of 12288 or more values, fp16 rows and rows off the stage width
+    keep registers. Two rows a warp run three bursts of odd rows in a loop."""
     n = per_sm * get_sm_count(torch.device(run_device()).index) + extra
     test = GEMMTest(1, n, k, dtype, trans_b=True)
     op = GEMMFwdOp()
