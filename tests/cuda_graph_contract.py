@@ -12,6 +12,7 @@ QUALIFIED_OPS = frozenset(
     {
         "ArgmaxFwdOp",
         "BMMFwdOp",
+        "BMMW8A16FwdOp",
         "CausalConv1dFwdOp",
         "CausalConv1dUpdateFwdOp",
         "Conv1dFwdOp",
