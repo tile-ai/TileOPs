@@ -339,8 +339,6 @@ class BMMW8A16Kernel(Kernel, BMMW8A16FwdInterface):
             return f"k={call.k} is not a positive multiple of {_SCALE_BLOCK}, the scale block"
         if call.n % 8:
             return f"n={call.n} is not a multiple of 8, the output's 16-byte store"
-        if not call.batch * call.m * call.n:
-            return super().refusal(call)
         tile = _tile_config(call.m, call.n, call.batch, call.sm_count)
         deepest, steps, _ = _ring_limits(call.m, call.n, call.k, call.batch, call.sm_count, tile)
         if deepest < min(tile["ksplit"], steps):

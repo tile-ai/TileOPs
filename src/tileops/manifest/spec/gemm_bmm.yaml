@@ -93,7 +93,7 @@ BMMW8A16FwdOp:
     outputs:
       d: {dtype: bfloat16, shape: "[B, M, N]", buffer: out}
     shape_rules:
-    - "K > 0 and K % 128 == 0"
+    - "K % 128 == 0"
 
   workloads:
   # DeepSeek-V4-Flash's wo_a: eight groups of 4096 attention-output columns, each projected
