@@ -1464,17 +1464,23 @@ def test_gemm_fp8_short_call_streams_b_in_64_row_blocks(
 @pytest.mark.parametrize(
     "n, k",
     [
-        pytest.param(1024, 4096, marks=pytest.mark.smoke, id="deepseek-v4-flash-wq-a"),
+        pytest.param(1024 + 512, 4096, marks=pytest.mark.smoke, id="deepseek-v4-flash-wq-a-wkv"),
         pytest.param(64 * 512, 1024, marks=pytest.mark.full, id="deepseek-v4-flash-wq-b"),
-        pytest.param(512, 4096, marks=pytest.mark.full, id="deepseek-v4-flash-wkv"),
+        pytest.param(
+            64 * 512 + 64 * 128,
+            1024,
+            marks=pytest.mark.full,
+            id="deepseek-v4-flash-wq-b-indexer-wq-b",
+        ),
         pytest.param(4096, 8 * 1024, marks=pytest.mark.full, id="deepseek-v4-flash-wo-b"),
-        pytest.param(64 * 128, 1024, marks=pytest.mark.full, id="deepseek-v4-flash-indexer-wq-b"),
         pytest.param(2 * 2048, 4096, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w13"),
         pytest.param(4096, 2048, marks=pytest.mark.full, id="deepseek-v4-flash-shared-w2"),
     ],
 )
 def test_gemm_fp8_graph_replay(n: int, k: int) -> None:
-    """DeepSeek-V4-Flash's block-scaled FP8 linears of one decode token."""
+    """The block-scaled FP8 GEMMs of one DeepSeek-V4-Flash decode token: the stacked ``wq_a``
+    and ``wkv``, the stacked ``wq_b`` and indexer ``wq_b``, ``wq_b`` alone where a layer has no
+    indexer, ``wo_b`` and the shared expert's two."""
     check_replay(GEMMFP8Test(1, n, k, torch.float8_e4m3fn, "block128x128"), GEMMFP8FwdOp())
 
 

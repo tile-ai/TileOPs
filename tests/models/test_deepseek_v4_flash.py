@@ -123,6 +123,7 @@ def checkpoint(tmp_path_factory):
     [
         pytest.param({}, "layers.0.attn.bias", "layer 0: unused tensors", id="in-layer"),
         pytest.param({"moe_intermediate_size": 64}, None, "128-row blocks", id="partial-block"),
+        pytest.param({"q_lora_rank": 192}, None, "128-row blocks", id="low-rank-partial-block"),
     ],
 )
 def test_from_pretrained_refuses_a_checkpoint_it_cannot_read_whole(tmp_path, change, extra, match):
@@ -221,7 +222,7 @@ def test_layers_and_logits_match_the_official_model(checkpoint, prompt_len, deco
                 indexer = layer.attn.indexer
                 layer.attn.indexer = Recorded(
                     indexer,
-                    lambda idx, ops, rope, x, qr, step, ratio=indexer.ratio: selections.append(
+                    lambda idx, ops, rope, x, q, step, ratio=indexer.ratio: selections.append(
                         (idx, step.start_pos, step.offset, ratio)
                     ),
                 )
