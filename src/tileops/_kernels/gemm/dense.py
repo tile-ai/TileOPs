@@ -1,4 +1,5 @@
 import dataclasses
+import functools
 from collections.abc import Callable
 
 import tilelang
@@ -29,6 +30,7 @@ from tileops._kernels.gemm.heuristics import (
     fp8_ws_config,
     gemv_config,
     gemv_registers,
+    gemv_ring_copies,
     gemv_unrolled,
     small_batch_config,
     stream_width,
@@ -4366,9 +4368,10 @@ class GemvKernel(Kernel, GEMMFwdInterface):
     """GEMV and two-row GEMM on :func:`_gemm_small_batch_kernel`.
 
     Serves three bands: the two layouts a vector operand can take, and SM90 ``m == 2``
-    NT calls where ``two_row_gemv_wins``. A one-row band over rows ``gemv_registers``
-    admits reads them into registers with :func:`_gemv_row_kernel`, which adds a row's
-    products in the ring's order, so a row's bits do not depend on the body.
+    NT calls where ``two_row_gemv_wins``. On SM90, a one-row band over rows
+    ``gemv_registers`` admits reads them into registers with :func:`_gemv_row_kernel`,
+    which adds a row's products in the ring's order, so a row's bits do not depend on the
+    body.
 
     Args:
         band: Which band this instance serves, one of :attr:`BANDS`.
@@ -4467,11 +4470,19 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         self.rows, self.out_len = (
             (m, n) if band == "lhs_rows" else (1, n if band == "lhs_row" else m)
         )
-        self.staged = band == "lhs_rows" or not gemv_registers(
-            self.out_len, k, self.build_target.sm_count, self.dtype_str
-        )
         self.kernel = self._builder(bias_len=0)
         self.init_config(config)
+
+    @functools.cached_property
+    def staged(self) -> bool:
+        """Whether this instance runs the staged ring rather than the register body: the
+        two-row band does, and a one-row call does off SM90, where the register body was
+        calibrated, when the ring can copy its rows, or where ``gemv_registers`` keeps it."""
+        if self.band == "lhs_rows":
+            return True
+        if self.build_target.arch != 90 and gemv_ring_copies(self.k):
+            return True
+        return not gemv_registers(self.out_len, self.k, self.build_target.sm_count, self.dtype_str)
 
     def _builder(self, bias_len: int) -> Callable:
         """The JIT factory of this band's body, taking ``bias[bias_len]`` when nonzero."""

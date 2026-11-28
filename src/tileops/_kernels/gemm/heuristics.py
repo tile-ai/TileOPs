@@ -20,6 +20,7 @@ __all__ = [
     "fp8_ws_config",
     "gemv_config",
     "gemv_registers",
+    "gemv_ring_copies",
     "gemv_unrolled",
     "int8_pingpong_grid",
     "int8_w8a8_config",
@@ -853,6 +854,12 @@ def _two_rows_a_warp_from(k: int) -> int:
     return 8 if _ring_config(k)["block_n"] == 2 else 12
 
 
+def gemv_ring_copies(k: int) -> bool:
+    """Whether the staged ring can copy one-row bands of ``k`` values: its two-row blocks
+    cannot copy odd rows, whose 2-byte width no asynchronous copy takes."""
+    return not (k % 2 and _ring_config(k)["block_n"] == 2)
+
+
 def _wave_window(k: int, sm_count: int) -> tuple[int, int]:
     """Rows over which bf16 default split rows of ``k`` values need a second wave while the
     staged ring's two-row blocks still fit one: an SM holds 12 split-row blocks and 9 ring
@@ -876,7 +883,7 @@ def gemv_registers(n: int, k: int, sm_count: int, dtype: str) -> bool:
     if k <= 4096:
         return False
     if k % 2:
-        return _ring_config(k)["block_n"] == 2 or not (
+        return not gemv_ring_copies(k) or not (
             2 * sm_count < n < _two_rows_a_warp_from(k) * sm_count
         )
     stage = _stage_values(k)
