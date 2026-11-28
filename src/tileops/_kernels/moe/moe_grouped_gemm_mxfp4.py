@@ -1929,8 +1929,8 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
 
         ``_prefill_tiles`` keeps each row tile's.
 
-        The plan follows each launch's rows, which the call spec does not compare, so tuning,
-        which sets the call spec's ``config``, does not reach it.
+        The plan follows each launch's rows, which the entry's key drops, so tuning, which sets
+        the entry's ``config``, does not reach it.
         """
         call = self.call
         if (
@@ -2112,10 +2112,6 @@ class MoEGroupedGEMMMXFP4SharedDecodeKernel(MoEGroupedGEMMMXFP4Kernel):
             "scale_k": self.scale_k,
             "alignment": self.alignment,
         }
-
-    def prefill_tile(self, m: int) -> None:
-        """``None``: aligned rows decode into shared memory at every row count."""
-        return None
 
     @property
     def autotune_configs(self) -> list[dict]:

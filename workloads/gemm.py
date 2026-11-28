@@ -762,10 +762,6 @@ def bmm_w8a16_reference(
 ) -> torch.Tensor:
     """The batched W8A16 product: each weight the code times its block's scale.
 
-    With power-of-two scales, as DeepSeek's FP8 checkpoints hold, each weight is the bfloat16
-    value the official ``convert.py`` dequantizes DeepSeek-V4-Flash's ``wo_a`` to, and the
-    product is the one its inference computes.
-
     Args:
         activation: ``[B, M, K]`` bfloat16.
         weight: ``[B, N, K]`` e4m3 codes.

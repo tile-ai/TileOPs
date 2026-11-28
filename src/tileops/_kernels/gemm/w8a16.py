@@ -8,8 +8,7 @@ eight columns rather than 64 rows. A producer warpgroup fills a TMA ring with ea
 128 weight columns in e4m3 and the activation's in bfloat16. Every e4m3 code is a bfloat16
 value, so the widened weights and their products with the activations are exact; a K step's
 float32 sum is multiplied by its block's scale, exactly for a power-of-two scale, and added to
-the unit's float32 sum. For power-of-two scales the result is the bfloat16 batched matmul of
-the dequantized weight, up to the order of the float32 additions.
+the unit's float32 sum.
 """
 
 from collections.abc import Callable
@@ -50,11 +49,6 @@ def _in_place(t: torch.Tensor) -> bool:
     )
 
 
-def _stage_bytes(tile_m: int, wgs: int) -> int:
-    """Shared bytes one ring stage holds: the weight rows' e4m3 step and the activation's."""
-    return wgs * WGMMA_ROWS * QUANT_SCALE_BLOCK + tile_m * QUANT_SCALE_BLOCK * 2
-
-
 def _fixed_bytes(k: int, tile: dict) -> int:
     """Shared bytes beside the ring, each buffer in whole KiB as TileLang aligns them: the
     output staging tile, the unit's scales, the sums of every K part but the first, which only
@@ -88,20 +82,10 @@ def _tile_config(m: int, n: int, batch: int, sm_count: int) -> dict:
     return wide
 
 
-def _ring_limits(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) -> tuple:
-    """The deepest ring shared memory holds beside ``tile``'s fixed buffers, the K steps one
-    CTA streams over all of its units, and the fewest CTAs that run the units in as many
-    rounds as ``sm_count`` CTAs."""
-    tile_m, wgs = tile["tile_m"], tile["wgs"]
-    units = batch * -(-m // tile_m) * -(-n // (wgs * WGMMA_ROWS))
-    rounds = -(-units // sm_count)
-    deepest = (BLOCK_SHARED_BYTES_OPT_IN[90] - _fixed_bytes(k, tile)) // _stage_bytes(tile_m, wgs)
-    return deepest, rounds * (k // QUANT_SCALE_BLOCK), -(-units // rounds)
-
-
 def _ring_config(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) -> dict:
     """``tile`` with its ring depth, as many stages as shared memory holds and at most the K
-    steps one CTA streams, and its CTA count, from :func:`_ring_limits`.
+    steps one CTA streams, and its CTA count, the fewest CTAs that run the units in as many
+    rounds as ``sm_count`` CTAs.
 
     A ring that wraps within a unit holds a whole number of K parts' steps, so every fill of a
     slot within a unit belongs to one part: a part waits on a slot's fills by their parity
@@ -109,7 +93,14 @@ def _ring_config(m: int, n: int, k: int, batch: int, sm_count: int, tile: dict) 
     whole parts while each part keeps two stages, one in flight while it multiplies the other;
     with fewer, the K parts halve instead, which also frees the shared memory their sums take."""
     while True:
-        deepest, steps, ctas = _ring_limits(m, n, k, batch, sm_count, tile)
+        tile_m, wgs = tile["tile_m"], tile["wgs"]
+        units = batch * -(-m // tile_m) * -(-n // (wgs * WGMMA_ROWS))
+        rounds = -(-units // sm_count)
+        # A stage holds the weight rows' e4m3 K step and the activation's bfloat16 one.
+        stage_bytes = wgs * WGMMA_ROWS * QUANT_SCALE_BLOCK + tile_m * QUANT_SCALE_BLOCK * 2
+        deepest = (BLOCK_SHARED_BYTES_OPT_IN[90] - _fixed_bytes(k, tile)) // stage_bytes
+        steps = rounds * (k // QUANT_SCALE_BLOCK)
+        ctas = -(-units // rounds)
         stages, parts = min(deepest, steps), tile["ksplit"]
         if stages < k // QUANT_SCALE_BLOCK:
             stages -= stages % parts

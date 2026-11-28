@@ -76,9 +76,7 @@ BMMFP8FwdOp:
     flops: "2 * B * M * N * K + 2 * B * M * N"
 
 # Batched NT GEMM of bfloat16 activations against e4m3 weights under one float32 scale per
-# 128x128 block, each weight the code times its block's scale, contracted in float32. With
-# power-of-two scales, as DeepSeek's FP8 checkpoints hold, each such weight is the bfloat16
-# value DeepSeek-V4-Flash's inference dequantizes its grouped output projection wo_a to.
+# 128x128 block, each weight the code times its block's scale, contracted in float32.
 BMMW8A16FwdOp:
   family: gemm
   status: implemented

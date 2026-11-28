@@ -126,7 +126,7 @@ class AttentionCall(CallSpec):
         if self.max_seqlen_q > 1:
             return "ws" if self.max_seqlen_q <= 64 and not self.fuse_rope else None
         if self.fuse_rope:
-            if self.decode_bs1_region:
+            if self.batch1_decode((torch.float16,), (128,)):
                 return "batch1"
             return "split" if self.dim == 128 else None
         # The kernel module imports this one, so the split program's constants are read here.
@@ -143,12 +143,6 @@ class AttentionCall(CallSpec):
         if self.batch == 1 and 2 * units * parts <= self.sm_count:
             return "batch1"
         return "ws"
-
-    @property
-    def decode_bs1_region(self) -> bool:
-        """The batch-1 decode shape at which the contiguous batch-1 kernel serves a call with
-        fused RoPE."""
-        return self.batch1_decode((torch.float16,), (128,))
 
     def batch1_decode(self, dtypes: tuple[torch.dtype, ...], dims: tuple[int, ...]) -> bool:
         """Whether this is a batch-1 call in one of *dtypes* at one of *dims*, unsoftcapped,
