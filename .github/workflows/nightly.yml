@@ -131,80 +131,7 @@ jobs:
       # Keep this out of the benchmark step below: that step sets
       # continue-on-error, which would swallow a failure here.
       - name: Validate GPU exclusivity and clock
-        run: |
-          set -euo pipefail
-
-          if ! command -v nvidia-smi >/dev/null 2>&1; then
-            echo "::error::nvidia-smi is not available on this runner"
-            exit 1
-          fi
-
-          # The benchmark needs exclusive access to one card. A second visible
-          # GPU means the container is misprovisioned, and work landing on it
-          # perturbs these timings.
-          # Count non-blank rows rather than newlines: output without a trailing
-          # newline undercounts, which would let a second card pass. Counted in
-          # the shell so gpu_count is always a number — a pipeline here could
-          # fail into an empty value, and the comparison below would then error
-          # out inside an `if`, where set -e does not fire, and pass the guard.
-          if ! gpu_indices=$(nvidia-smi --query-gpu=index --format=csv,noheader); then
-            echo "::error::nvidia-smi failed to report GPU indices"
-            exit 1
-          fi
-          gpu_count=0
-          while IFS= read -r gpu_row; do
-            if [ -n "${gpu_row//[[:space:]]/}" ]; then
-              gpu_count=$((gpu_count + 1))
-            fi
-          done <<< "${gpu_indices}"
-          if [ "${gpu_count}" -ne 1 ]; then
-            echo "::error::expected exactly 1 visible GPU, found ${gpu_count}"
-            nvidia-smi --query-gpu=index,name --format=csv,noheader
-            exit 1
-          fi
-
-          # The runner is ephemeral, so this log is the only record of which
-          # card the job got.
-          echo "GPU under test:"
-          nvidia-smi --query-gpu=uuid,compute_mode,memory.used --format=csv
-
-          compute_mode=$(nvidia-smi --query-gpu=compute_mode --format=csv,noheader | xargs)
-          if [ "${compute_mode}" != "Exclusive_Process" ]; then
-            echo "::error::expected compute mode Exclusive_Process, found ${compute_mode}"
-            exit 1
-          fi
-
-          # Read memory, not --query-compute-apps: the container's PID namespace
-          # makes process queries come back empty even for a busy card.
-          MAX_USED_MIB=64
-          mem_used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | xargs)
-          # A non-numeric reading ([N/A], empty) would make the comparison below
-          # error out, and an error inside `if` does not trip set -e: the guard
-          # would pass. Reject it here so an unreadable GPU fails closed.
-          case "${mem_used}" in
-            ''|*[!0-9]*)
-              echo "::error::could not read GPU memory use, got '${mem_used}'"
-              exit 1
-              ;;
-          esac
-          if [ "${mem_used}" -gt "${MAX_USED_MIB}" ]; then
-            echo "::error::GPU is not idle: ${mem_used} MiB in use, limit ${MAX_USED_MIB} MiB"
-            nvidia-smi
-            exit 1
-          fi
-
-          TARGET_CLOCK_MHZ=1500
-          RETRIES=5
-          for i in $(seq 1 "${RETRIES}"); do
-            gpu_clock=$(nvidia-smi --query-gpu=clocks.current.graphics --format=csv,noheader,nounits | xargs)
-            echo "GPU clock: ${gpu_clock} MHz (attempt ${i}/${RETRIES})"
-            if [ "${gpu_clock}" = "${TARGET_CLOCK_MHZ}" ]; then break; fi
-            if [ "${i}" -eq "${RETRIES}" ]; then
-              echo "::error::GPU frequency validation failed. Expected ${TARGET_CLOCK_MHZ} MHz, got ${gpu_clock} MHz."
-              exit 1
-            fi
-            sleep 2
-          done
+        run: scripts/ci/validate_bench_gpu.sh
         shell: bash
 
       # Each case checks its warmup outputs before sampling; there is no second sweep.
@@ -412,15 +339,6 @@ jobs:
           python3 -m pytest tests/models -m nightly -v --tb=short --timeout=900 --timeout-method=thread --junit-xml=model_test_results.xml | tee tileops_model_test.log
         shell: bash
 
-      - name: Time the models on one GPU
-        id: model_throughput
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
-          python3 scripts/model_throughput.py --output model_throughput.json | tee tileops_model_throughput.log
-        shell: bash
-
       - name: Upload model test artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: ${{ always() }}
@@ -430,8 +348,6 @@ jobs:
           path: |
             model_test_results.xml
             tileops_model_test.log
-            model_throughput.json
-            tileops_model_throughput.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -441,11 +357,60 @@ jobs:
         shell: bash
 
   # =========================================================================
-  # Phase 2 — Nightly report from the benchmark, op test and model test results
+  # Phase 1c — Model throughput on the bench runner's validated, exclusive GPU,
+  # in a job of its own so it can be re-run without the benchmark
+  # =========================================================================
+  model-throughput:
+    if: ${{ !cancelled() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    needs: [benchmark]
+    continue-on-error: true
+    timeout-minutes: 60
+    runs-on: [self-hosted, tile-ops, bench]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Verify nightly runner environment
+        run: scripts/ci/verify_nightly_runner.sh
+        shell: bash
+
+      - name: Install TileOPs (image-baked stack, --no-deps)
+        run: bash scripts/ci/install_tileops.sh
+        shell: bash
+
+      - name: Validate GPU exclusivity and clock
+        run: scripts/ci/validate_bench_gpu.sh
+        shell: bash
+
+      - name: Time the models on one GPU
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${GITHUB_WORKSPACE}${PYTHONPATH:+:$PYTHONPATH}"
+          timeout --kill-after=2m 40m python3 scripts/model_throughput.py --output model_throughput.json | tee tileops_model_throughput.log
+        shell: bash
+
+      - name: Upload model throughput artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ always() }}
+        with:
+          name: tileops_model_throughput_${{ github.run_id }}
+          overwrite: true
+          path: |
+            model_throughput.json
+            tileops_model_throughput.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  # =========================================================================
+  # Phase 2 — Nightly report from the benchmark, op test, model test and model
+  # throughput results
   # =========================================================================
   nightly-report:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
-    needs: [benchmark, op-test, model-test]
+    needs: [benchmark, op-test, model-test, model-throughput]
     timeout-minutes: 30
     runs-on: [self-hosted, tile-ops, shared]
     steps:
@@ -474,6 +439,13 @@ jobs:
         if: ${{ always() }}
         with:
           name: tileops_model_test_${{ github.run_id }}
+        continue-on-error: true
+
+      - name: Download model throughput artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        if: ${{ always() }}
+        with:
+          name: tileops_model_throughput_${{ github.run_id }}
         continue-on-error: true
 
       - name: Download benchmark artifacts
