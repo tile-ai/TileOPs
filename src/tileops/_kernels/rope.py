@@ -4,8 +4,8 @@
 - ``RoPENonNeoxKernel``: RoFormer (GPT-J) adjacent pairs, ``(x[2k], x[2k + 1])``.
 
 Both rotate the query and the key in one launch at the row each token's position names,
-rotate each head's leading ``rotary_dim`` columns and copy the rest; one built kernel serves
-every token count.
+rotate each head's leading ``rotary_dim`` columns and copy the rest, or in place leave the rest
+untouched; one built kernel serves every token count.
 
 - ``RoPECosSinKernel``: the caller's tables, one row a sequence position; either pairing,
   dense or packed tokens, at any strides, in place or not.
@@ -60,6 +60,9 @@ class RoPECall(CallSpec):
     position_dtype: torch.dtype = torch.int64
     # None for a call without offsets.
     offset_dtype: torch.dtype | None = None
+    # In place, the elements from one token's query row to the next and from one key row to
+    # the next (0 without a key); None for a call that writes new tensors.
+    row_strides: tuple[int, int] | None = None
 
 
 class RoPEPositionsFwdInterface(KernelInterface):
@@ -77,22 +80,23 @@ class RoPEPositionsFwdInterface(KernelInterface):
         cos: torch.Tensor,
         sin: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Rotate each token's leading rotary columns; nothing is written in place.
+        """Rotate each token's leading rotary columns, in place where ``call.row_strides`` is set.
 
         Token ``t`` reads table row ``positions[t] + offsets[t]`` (``positions[t]`` without
         offsets) and rotates the first
         ``call.rotary_dim`` columns of each head of ``call.head_size`` columns; the remaining
-        columns are copied. A position outside ``[0, call.max_position)`` is clamped to the
-        table rather than read out of bounds. Nothing is written in place, and no output
-        aliases an input.
+        columns are copied, or in place left as they are. A position outside
+        ``[0, call.max_position)`` is clamped to the table rather than read out of bounds.
 
         Args:
             positions: ``[*S]`` in ``call.position_dtype``, ``int32`` or ``int64``, on
                 ``call.device``, contiguous.
             query: ``[*S, call.query_heads * call.head_size]`` in ``call.dtype`` on
-                ``call.device``, contiguous.
-            key: ``[*S, call.key_heads * call.head_size]`` in the same dtype, device and
-                layout, or None; with ``call.key_heads`` 0 it may still be present, and empty.
+                ``call.device``; contiguous, or in place viewable as rows
+                ``call.row_strides[0]`` elements apart of contiguous columns.
+            key: ``[*S, call.key_heads * call.head_size]`` in the same dtype and device, laid
+                out as ``query`` with rows ``call.row_strides[1]`` apart in place, or None;
+                with ``call.key_heads`` 0 it may still be present, and empty.
             offsets: ``[*S]`` in ``call.offset_dtype``, ``int32`` or ``int64``, on
                 ``call.device``, contiguous, or None where ``call.offset_dtype`` is. A call
                 with offsets has a key.
@@ -101,8 +105,9 @@ class RoPEPositionsFwdInterface(KernelInterface):
             sin: The sine table, in the same shape, dtype, device and layout.
 
         Returns:
-            ``(query_out, key_out)``: new contiguous tensors on ``call.device``, shaped and
-            typed as ``query`` and ``key``; ``key_out`` is None where ``key`` is.
+            ``(query_out, key_out)``: ``query`` and ``key`` themselves in place, otherwise new
+            contiguous tensors on ``call.device`` shaped and typed as them; ``key_out`` is None
+            where ``key`` is.
         """
 
 
@@ -163,6 +168,9 @@ def _rope_positions_kernel(
     rot_vec: int,
     tail_vec: int,
     row_vec: int,
+    inplace: bool = False,
+    query_stride: int = 0,
+    key_stride: int = 0,
 ) -> object:
     """The rotation of a query and a key of ``tokens`` rows, ``tokens`` dynamic.
 
@@ -170,6 +178,8 @@ def _rope_positions_kernel(
     facing them in the high half; GPT-J, ``rot_vec`` adjacent columns; or ``tail_vec`` columns
     past ``rotary_dim``, copied. ``rot_vec`` and ``tail_vec`` divide every column offset they
     start at. A token's query units come before its key units, so one launch serves both.
+    ``inplace`` writes the rotated units back into the query and the key, whose rows lie
+    ``query_stride`` and ``key_stride`` elements apart, and no unit copies.
 
     Three programs:
 
@@ -185,16 +195,20 @@ def _rope_positions_kernel(
     """
     half = rotary_dim // 2
     width, rot_units, tail_units = _head_units(neox, head_size, rotary_dim, rot_vec, tail_vec)
+    if inplace:
+        tail_units = 0
     table_width = width if neox else width // 2
     # A unit's stride in a thread's registers: a rotating unit's low columns or a copied run.
-    run = max(width, tail_vec)
+    run = width if inplace else max(width, tail_vec)
     vector_pairs = neox or rot_vec >= 2
     head_units = rot_units + tail_units
     token_units = (query_heads + key_heads) * head_units
 
     sides = _staged_sides(key_heads)
 
-    @tilelang.jit(out_idx=[6, 7] if offset_dtype else [5, 6] if key_heads else [4])
+    @tilelang.jit(
+        out_idx=[] if inplace else [6, 7] if offset_dtype else [5, 6] if key_heads else [4]
+    )
     def kernel(threads, units, staged, wide):
         num_tokens = T.dynamic("num_tokens")
         query_shape = (num_tokens, query_heads * head_size)
@@ -421,7 +435,7 @@ def _rope_positions_kernel(
                         stage_row(query, query_out, query_heads, *rows)
                     else:
                         stage_row(key, key_out, key_heads, *rows)
-                elif tail_units == 0 and not wide:
+                elif tail_units == 0 and not wide and not inplace:
                     # Other resident blocks of a throughput-bound call hide each block's wait on the
                     # position.
                     table_row(positions, offsets, token, row)
@@ -433,10 +447,11 @@ def _rope_positions_kernel(
                     cs = T.alloc_local([units * table_width], dtype)
                     sn = T.alloc_local([units * table_width], dtype)
                     regs = (lo, hi, cs, sn, lo)
-                    if units == 1:
+                    if units == 1 or inplace:
                         # A copying lane needs no position, and in a wide call no other block hides
                         # the position's load, so the columns load first: ptxas waits out that load
-                        # at the clamp, ahead of any later load.
+                        # at the clamp, ahead of any later load. In place the output buffer is
+                        # the input, so every unit loads before the first store.
                         each_unit(None, regs, True, False, *tensors)
                         table_row(positions, offsets, token, row)
                         each_unit(row, regs, False, True, *tensors)
@@ -447,7 +462,35 @@ def _rope_positions_kernel(
                         each_unit(row, regs, True, False, *tensors)
                         each_unit(None, regs, False, True, *tensors)
 
-        if offset_dtype:
+        if inplace:
+            query_rows = T.StridedTensor(query_shape, (query_stride, 1), dtype)
+            key_rows = T.StridedTensor(key_shape, (key_stride, 1), dtype)
+            if key_heads:
+
+                @T.prim_func
+                def main(
+                    positions: T.Tensor((num_tokens,), position_dtype),
+                    query: query_rows,
+                    key: key_rows,
+                    cos_table: T.Tensor(table_shape, dtype),
+                    sin_table: T.Tensor(table_shape, dtype),
+                ):
+                    rotate_token(positions, positions, query, key, cos_table, sin_table, query, key)
+
+            else:
+
+                @T.prim_func
+                def main(
+                    positions: T.Tensor((num_tokens,), position_dtype),
+                    query: query_rows,
+                    cos_table: T.Tensor(table_shape, dtype),
+                    sin_table: T.Tensor(table_shape, dtype),
+                ):
+                    rotate_token(
+                        positions, positions, query, query, cos_table, sin_table, query, query
+                    )
+
+        elif offset_dtype:
 
             @T.prim_func
             def main(
@@ -520,6 +563,7 @@ class _RoPEPositionsKernel(Kernel):
             call.dtype,
             position_dtype=call.position_dtype,
             offset_dtype=call.offset_dtype,
+            row_strides=call.row_strides,
             **cls._device_terms(call),
         )
 
@@ -543,6 +587,7 @@ class _RoPEPositionsKernel(Kernel):
         *,
         position_dtype: torch.dtype = torch.int64,
         offset_dtype: torch.dtype | None = None,
+        row_strides: tuple[int, int] | None = None,
         resident_threads: int = 0,
         sm_count: int = 0,
     ):
@@ -562,11 +607,15 @@ class _RoPEPositionsKernel(Kernel):
             raise ValueError(f"offset_dtype must be int32, int64 or None, got {offset_dtype}")
         self.key_heads = key_heads
         self.dtype = dtype
+        self.inplace = row_strides is not None
         lanes = VECTOR_ACCESS_BYTES // dtype.itemsize
         span = rotary_dim // 2 if self._NEOX else rotary_dim
-        rot_vec = math.gcd(lanes, head_size, span)
+        # In place a vector also divides the row strides, so every row starts aligned to it.
+        rot_vec = math.gcd(lanes, head_size, span, *(row_strides or ()))
         tail_vec = math.gcd(lanes, head_size, rotary_dim)
         _, rotating, copying = _head_units(self._NEOX, head_size, rotary_dim, rot_vec, tail_vec)
+        if self.inplace:
+            copying = 0
         heads, head_units = query_heads + key_heads, rotating + copying
         self._token_units = heads * head_units
         self._resident_threads = resident_threads
@@ -591,6 +640,8 @@ class _RoPEPositionsKernel(Kernel):
             rot_vec,
             tail_vec,
             math.gcd(lanes, head_size),
+            self.inplace,
+            *(row_strides or (0, 0)),
         )
         self.init_config(config)
 
@@ -610,17 +661,25 @@ class _RoPEPositionsKernel(Kernel):
         sin: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if positions.numel() == 0:
+            if self.inplace:
+                return query, key
             return torch.empty_like(query), None if key is None else torch.empty_like(key)
         rows = positions.view(-1)
         program = self.program(self._compile, self._shape(rows.numel()))
         query_rows = query.view(rows.numel(), query.shape[-1])
         if not self.key_heads and offsets is None:
             # A key of no heads is built into the query-only program.
+            if self.inplace:
+                program(rows, query_rows, cos, sin)
+                return query, key
             query_out = program(rows, query_rows, cos, sin).view(query.shape)
             return query_out, None if key is None else torch.empty_like(key)
         tensors = (rows, query_rows, key.view(rows.numel(), key.shape[-1]))
         if offsets is not None:
             tensors += (offsets.view(-1),)
+        if self.inplace:
+            program(*tensors, cos, sin)
+            return query, key
         query_out, key_out = program(*tensors, cos, sin)
         return query_out.view(query.shape), key_out.view(key.shape)
 
@@ -678,8 +737,8 @@ class _RoPEStagedRowsKernel(_RoPEPositionsKernel):
 
     @classmethod
     def refusal(cls, call: RoPECall) -> str | None:
-        if call.rotary_dim == call.head_size:
-            return "the heads copy no columns"
+        if call.rotary_dim == call.head_size or call.row_strides is not None:
+            return "the call copies no columns"
         if cls._row_bytes(call) > call.smem_budget:
             return (
                 f"a row takes {cls._row_bytes(call)} bytes, past the {call.smem_budget} a block has"

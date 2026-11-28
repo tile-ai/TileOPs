@@ -887,6 +887,12 @@ def _rope_cases():
     def rope(neox):
         return lambda: (RoPEFwdOp(**common, is_neox_style=neox, dtype=_DTYPE), _inputs())
 
+    def rope_inplace():
+        # In place, the leading half of each head rotating and the rest untouched.
+        partial = {**common, "rotary_dim": _D // 2}
+        op = RoPEFwdOp(**partial, is_neox_style=False, dtype=_DTYPE, inplace=True)
+        return op, _inputs()
+
     def llama31():
         op = RoPELlama31FwdOp(
             **common,
@@ -924,6 +930,7 @@ def _rope_cases():
     return (
         ("rope-neox", rope(True)),
         ("rope-gptj", rope(False)),
+        ("rope-gptj-inplace", rope_inplace),
         ("rope-llama31", llama31),
         ("rope-yarn", yarn),
         ("rope-longrope", longrope),

@@ -179,6 +179,103 @@ def test_rope_zero_tokens(key_heads) -> None:
     compare_outputs(op(positions, query, key), ref, rope_verification())
 
 
+@pytest.mark.parametrize(
+    ("neox", "rotary_dim", "dtype", "tokens", "spare", "heads"),
+    [
+        # Rows a whole number of 16-byte vectors apart.
+        pytest.param(False, 32, torch.float16, (37,), 64, (4, 2), marks=_SMOKE, id="gptj-partial"),
+        pytest.param(
+            True, 64, torch.bfloat16, (37,), 0, (4, 2), marks=_SMOKE, id="neox-contiguous"
+        ),
+        # Rows an odd number of elements apart: one column a vector.
+        pytest.param(
+            True, 32, torch.float32, (37,), 3, (4, None), marks=_SMOKE, id="neox-odd-stride"
+        ),
+        pytest.param(
+            False, 64, torch.float16, (2, 5), 3, (4, 2), marks=_FULL, id="gptj-batched-odd"
+        ),
+        pytest.param(True, 32, torch.bfloat16, (1,), 5, (4, 2), marks=_FULL, id="neox-one-token"),
+        pytest.param(
+            False, 32, torch.float16, (2, 5), 8, (4, 0), marks=_FULL, id="key-of-no-heads"
+        ),
+        # More units than half the resident threads, and than a block's threads in a token:
+        # the program of several units a thread.
+        pytest.param(True, 64, torch.bfloat16, (1024,), 8, (32, 8), marks=_FULL, id="many-units"),
+    ],
+)
+def test_rope_inplace_rewrites_only_the_rotary_columns_of_strided_rows(
+    neox, rotary_dim, dtype, tokens, spare, heads
+) -> None:
+    """``inplace`` returns query and key, views of wider rows, with the reference's values in
+    their rotary columns and every other column of the wider rows as it was."""
+    changes = {"rotary_dim": rotary_dim, "is_neox_style": neox}
+    op, params = _op("RoPEFwdOp", dtype, **changes, inplace=True)
+    hs = params["head_size"]
+    positions = torch.randint(0, 4096, tokens, device=run_device())
+    widths = [(h or 0) * hs for h in heads]
+    rows = [torch.randn(*tokens, w + spare, device=run_device(), dtype=dtype) for w in widths]
+    query = rows[0][..., : widths[0]]
+    key = None if heads[1] is None else rows[1][..., : widths[1]]
+    before = [r.clone() for r in rows]
+    copies = (query.clone(), None if key is None else key.clone())
+    want = _reference("RoPEFwdOp", params, positions, *copies)
+    got = op(positions, query, key)
+    assert got[0] is query and got[1] is key
+    for out, ref in zip(got, want, strict=True):
+        if out is not None:
+            compare_outputs(out, ref, rope_verification())
+    for row, old, w in zip(rows, before, widths, strict=True):
+        untouched = torch.ones_like(row, dtype=torch.bool)
+        untouched[..., :w].unflatten(-1, (w // hs, hs))[..., :rotary_dim] = False
+        assert torch.equal(row[untouched], old[untouched])
+
+
+@pytest.mark.parametrize("start", [0, 1], ids=["aligned", "off-a-vector"])
+@pytest.mark.smoke
+def test_rope_inplace_rotates_query_and_key_sliced_from_one_qkv_buffer(start) -> None:
+    """vLLM's layout: query, key and value are column slices of one qkv row. Query and key are
+    rotated in place; every other column, the value's included, keeps its value. Starting one
+    column in, every slice starts off a 16-byte boundary while its rows, padded to 8 columns,
+    stay 16 bytes apart, so the kernel's 16-byte vectors are legal only on the executor's
+    aligned copy."""
+    dtype, q_heads, kv_heads, tokens = torch.float16, 4, 2, 37
+    op, params = _op("RoPEFwdOp", dtype, rotary_dim=32, is_neox_style=False, inplace=True)
+    hs = params["head_size"]
+    q_end, k_end = start + q_heads * hs, start + (q_heads + kv_heads) * hs
+    width = -(-(k_end + kv_heads * hs) // 8) * 8
+    qkv = torch.randn(tokens, width, device=run_device(), dtype=dtype)
+    query, key = qkv[:, start:q_end], qkv[:, q_end:k_end]
+    positions = torch.randint(0, 4096, (tokens,), device=run_device())
+    before = qkv.clone()
+    want = _reference("RoPEFwdOp", params, positions, query.clone(), key.clone())
+    got = op(positions, query, key)
+    assert got[0] is query and got[1] is key
+    compare_outputs(got, want, rope_verification())
+    untouched = torch.ones_like(qkv, dtype=torch.bool)
+    untouched[:, start:k_end].unflatten(-1, (q_heads + kv_heads, hs))[..., :32] = False
+    assert torch.equal(qkv[untouched], before[untouched])
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("shape", "view", "message"),
+    [
+        ((8, 256), (slice(None), slice(None, None, 2)), "columns must be contiguous"),
+        # Tokens 0..4 of each of 2 sequences of 8: no one stride steps from row to row.
+        ((2, 8, 128), (slice(None), slice(0, 5)), "must collapse to one row stride"),
+    ],
+    ids=["strided-columns", "uncollapsible-tokens"],
+)
+def test_rope_inplace_rejects_a_layout_it_cannot_address(shape, view, message) -> None:
+    dtype = torch.float16
+    op, _ = _op("RoPEFwdOp", dtype, inplace=True)
+    query = torch.randn(shape, device=run_device(), dtype=dtype)[view]
+    positions = torch.arange(query.numel() // 128, device=run_device()).view(query.shape[:-1])
+    with pytest.raises(ValueError, match=message):
+        op(positions, query)
+
+
 @pytest.mark.smoke
 def test_rope_takes_batched_positions_and_a_query_alone() -> None:
     dtype = torch.bfloat16
