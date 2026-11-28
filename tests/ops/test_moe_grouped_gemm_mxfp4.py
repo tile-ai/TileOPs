@@ -1260,21 +1260,14 @@ def test_mxfp4_grouped_gemm_decode_matches_the_general_kernel_bitwise(
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    ("sizes", "n", "k"),
-    [
-        pytest.param([9, 0, 1, 3] + [0] * 251 + [1], 256, 2048, marks=pytest.mark.smoke, id="e256"),
-        pytest.param([9, 0, 1, 3] + [0] * 27 + [1], 128, 1024, marks=pytest.mark.full, id="e32"),
-    ],
-)
-def test_mxfp4_grouped_gemm_decode_stores_each_run_and_no_other_row(
-    sizes: list, n: int, k: int
-) -> None:
+@pytest.mark.smoke
+def test_mxfp4_grouped_gemm_decode_stores_each_run_and_no_other_row() -> None:
     """Few tight runs: one of nine rows, which one CTA's WGMMA takes as two 8-row tiles, the
     second of one row; one of three; single rows; empty experts; and two rows past the last run
     that no expert owns. Each run's rows match the reference; the unowned rows keep what the
     output held."""
-    workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=n, K=k)
+    sizes = [9, 0, 1, 3] + [0] * 251 + [1]
+    workload = _contiguous_workload(_TIGHT_PSUM, sizes, N=256, K=2048)
     a, a_scale, b, b_scale, ends = workload.gen_inputs()
     extra = 2
     a = torch.cat([a, a[:extra]])

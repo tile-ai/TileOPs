@@ -1657,6 +1657,28 @@ def _moe_grouped_gemm_mxfp4_shared_decode_kernel(
     return _moe_grouped_gemm_mxfp4_shared_decode_func
 
 
+def mxfp4_tuning_operands(
+    call: MGroupedGEMMMXFP4Call, scale_k: int, rows: tuple, device: torch.device
+) -> list:
+    """Random ``a`` of shape ``rows`` by K, its scales, packed e2m1 ``b`` and its scales for
+    tuning *call*: e8m0 scales as the bytes of codes 123 to 128, as ``forward`` hands the
+    program e8m0 codes, float32 scales in ``[0.5, 1.5)``."""
+
+    def scales(*shape):
+        if call.scale_dtype == torch.float8_e8m0fnu:
+            return torch.randint(123, 129, shape, dtype=torch.uint8, device=device)
+        return torch.rand(*shape, device=device) + 0.5
+
+    return [
+        torch.randn(*rows, call.k, device=device).to(torch.float8_e4m3fn),
+        scales(*rows, scale_k),
+        torch.randint(
+            0, 256, (call.num_groups, call.n, call.k // 2), dtype=torch.uint8, device=device
+        ),
+        scales(call.num_groups, call.n, call.k // _B_SCALE_BLOCK),
+    ]
+
+
 class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP4FwdInterface):
     """MXFP4 grouped GEMM over masked expert slabs or contiguous expert rows, on SM90 TMA and
     WGMMA.
@@ -1884,22 +1906,7 @@ class MoEGroupedGEMMMXFP4Kernel(GroupedGEMMConfigMixin, Kernel, MGroupedGEMMMXFP
         ]
 
     def _tuning_operands(self, rows: tuple, device) -> list:
-        call = self.call
-
-        def scales(*shape):
-            # The program reads e8m0 codes as bytes, as forward hands them.
-            if call.scale_dtype == torch.float8_e8m0fnu:
-                return torch.randint(123, 129, shape, dtype=torch.uint8, device=device)
-            return torch.rand(*shape, device=device) + 0.5
-
-        return [
-            torch.randn(*rows, call.k, device=device).to(torch.float8_e4m3fn),
-            scales(*rows, self.scale_k),
-            torch.randint(
-                0, 256, (call.num_groups, call.n, call.k // 2), dtype=torch.uint8, device=device
-            ),
-            scales(call.num_groups, call.n, call.k // _B_SCALE_BLOCK),
-        ]
+        return mxfp4_tuning_operands(self.call, self.scale_k, rows, device)
 
     def prefill_tile(self, m: int) -> tuple[int, int, int] | None:
         """``(block_m, block_n, num_stages)`` of the prefill program for a launch of ``m`` rows,

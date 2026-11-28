@@ -36,6 +36,7 @@ from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import (
     _B_SCALE_BLOCK,
     _SUB_BLOCKS,
     MoEGroupedGEMMMXFP4Kernel,
+    mxfp4_tuning_operands,
 )
 from tileops.manifest.primitives import moe_layout_metadata
 
@@ -583,17 +584,8 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
         def supply_prog(params: list) -> list:
             device = get_current_device()
             metadata = moe_layout_metadata(call, call.m, call.num_groups)
-
-            def codes(*shape):
-                return torch.randint(123, 129, shape, dtype=torch.uint8, device=device)
-
             return [
-                torch.randn(call.m, call.k, device=device).to(torch.float8_e4m3fn),
-                codes(call.m, self.scale_k),
-                torch.randint(
-                    0, 256, (call.num_groups, call.n, call.k // 2), dtype=torch.uint8, device=device
-                ),
-                codes(call.num_groups, call.n, call.k // _B_SCALE_BLOCK),
+                *mxfp4_tuning_operands(call, self.scale_k, (call.m,), device),
                 torch.tensor(metadata, dtype=torch.int32, device=device),
                 torch.empty(call.m, call.n, dtype=torch.bfloat16, device=device),
             ]
