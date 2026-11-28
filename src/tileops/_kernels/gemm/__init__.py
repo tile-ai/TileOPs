@@ -16,6 +16,8 @@ from tileops._kernels.gemm.call_spec import (
     BMMFP8TransposeCall,
     BMMFP8TransposeFwdInterface,
     BMMFwdInterface,
+    BMMW8A16Call,
+    BMMW8A16FwdInterface,
     GEMMCall,
     GEMMFP8Call,
     GEMMFP8FwdInterface,
@@ -50,6 +52,7 @@ from tileops._kernels.gemm.w4a8_prefill import GEMMW4A8PrefillKernel
 from tileops._kernels.gemm.w4a8_repack import W4A8RepackKernel
 from tileops._kernels.gemm.w4a16 import GEMMW4A16Kernel, GEMMW4A16MMAKernel, GEMMW4A16TwoGroupKernel
 from tileops._kernels.gemm.w4a16_repack import W4A16RepackKernel
+from tileops._kernels.gemm.w8a16 import BMMW8A16Kernel
 
 __all__ = [
     "BMMCall",
@@ -65,6 +68,9 @@ __all__ = [
     "BMMKernel",
     "BMMPersistentKernel",
     "BMMPingPongKernel",
+    "BMMW8A16Call",
+    "BMMW8A16FwdInterface",
+    "BMMW8A16Kernel",
     "GEMMCall",
     "GEMMCpAsyncKernel",
     "GEMMFP8Block128WaveFwdKernel",

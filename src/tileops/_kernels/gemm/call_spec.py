@@ -18,6 +18,8 @@ __all__ = [
     "BMMFP8TransposeCall",
     "BMMFP8TransposeFwdInterface",
     "BMMFwdInterface",
+    "BMMW8A16Call",
+    "BMMW8A16FwdInterface",
     "GEMMCall",
     "GEMMFP8Call",
     "GEMMFP8FwdInterface",
@@ -146,6 +148,16 @@ class BMMFP8Call(CallSpec):
     k: int = 0
     dtype: torch.dtype | None = None
     out_dtype: torch.dtype | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class BMMW8A16Call(CallSpec):
+    """One batched matmul of bfloat16 activations against block-scaled e4m3 weights."""
+
+    batch: int = 0
+    m: int = 0
+    n: int = 0
+    k: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -431,6 +443,39 @@ class BMMFP8FwdInterface(KernelInterface):
 
         Returns:
             A new ``(call.batch, call.m, call.n)`` tensor in ``call.out_dtype``.
+        """
+
+
+class BMMW8A16FwdInterface(KernelInterface):
+    """Batched matmul of bfloat16 activations against e4m3 weights dequantized by their
+    128x128 block scales."""
+
+    request = BMMW8A16Call
+
+    @abstractmethod
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale: torch.Tensor,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Multiply each activation batch item by its dequantized weight into ``out``, or into
+        a new tensor.
+
+        Every tensor is on ``call.device``. ``b`` and ``scale`` are contiguous; ``a`` has a
+        unit stride along its last axis and any other strides; ``out`` has any strides.
+
+        Args:
+            a: ``(call.batch, call.m, call.k)`` bfloat16.
+            b: ``(call.batch, call.n, call.k)`` e4m3 codes.
+            scale: ``(call.batch, ceil(call.n / 128), call.k / 128)`` float32 block scales.
+            out: ``(call.batch, call.m, call.n)`` bfloat16, sharing no byte with ``a``,
+                ``b`` or ``scale``, or None.
+
+        Returns:
+            ``out`` holding the product, or a new contiguous ``(call.batch, call.m, call.n)``
+            bfloat16 tensor without one.
         """
 
 

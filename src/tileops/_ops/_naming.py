@@ -48,6 +48,7 @@ ABBREVIATIONS = {
     "W4A16": r"W4a16",
     "W4A8": r"W4a8",
     "W8A8": r"W8a8",
+    "W8A16": r"W8a16",
     "WGMMA": r"Wgmma",
     "WS": r"Ws(?=[A-Z0-9]|$)",
     "YaRN": r"Yarn",

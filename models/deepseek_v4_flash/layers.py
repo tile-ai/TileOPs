@@ -286,11 +286,16 @@ class Attention:
 
     Queries come from a low-rank projection; keys and values share one ``head_dim``-wide row
     whose trailing ``rope_head_dim`` dimensions carry interleaved RoPE. The output is rotated
-    back, projected per group by ``wo_a`` and mixed by ``wo_b``. ``wq_a_kv`` stacks the rows of
-    ``wq_a`` and ``wkv``, which read the same input, and ``wq_b_index`` those of ``wq_b`` and
+    back, projected per group by ``wo_a`` and mixed by ``wo_b``. A call of at most 64 tokens reads
+    ``wo_a``'s weights more than it multiplies them, and runs ``BMMW8A16FwdOp`` on the checkpoint's
+    FP8 codes and block scales, half the bytes; a longer call runs the bfloat16 batched matmul on a
+    dequantized copy. The 64 is the W8A16 kernel's tile limit: up to 64 rows it splits K over
+    warpgroups that widen the weights together, and past it the kernel runs slower than the bfloat16
+    batched matmul. Both give the bfloat16 product of the same weights. ``wq_a_kv`` stacks the rows
+    of ``wq_a`` and ``wkv``, which read the same input, and ``wq_b_index`` those of ``wq_b`` and
     ``indexer_wq_b``, the indexer's query projection; each layer of a pair is a row view of its
-    stack. A one-token call quantizes the input once and runs one GEMM for each pair, whose
-    output columns lie in place; a longer call's would be strided, so it runs the two views.
+    stack. A one-token call quantizes the input once and runs one GEMM for each pair, whose output
+    columns lie in place; a longer call's would be strided, so it runs the two views.
     """
 
     def __init__(
@@ -323,6 +328,8 @@ class Attention:
         self.wkv: FP8Linear
         self.kv_norm: torch.Tensor
         self.wo_a: torch.Tensor
+        self.wo_a_codes: torch.Tensor
+        self.wo_a_scales: torch.Tensor
         self.wo_b: FP8Linear
         self.attn_sink: torch.Tensor
         self.kv_cache = torch.zeros(
@@ -388,7 +395,10 @@ class Attention:
         ops.rope(o[..., -rd:], rope.cos, rope.neg_sin, seqlen_offsets=step.starts)
         grouped = o.view(seqlen, self.o_groups, -1).transpose(0, 1)
         projected = torch.empty(seqlen, self.o_groups, self.o_rank, dtype=o.dtype, device=o.device)
-        ops.bmm(grouped, self.wo_a, out=projected.transpose(0, 1))
+        if seqlen <= 64:
+            ops.bmm_w8a16(grouped, self.wo_a_codes, self.wo_a_scales, out=projected.transpose(0, 1))
+        else:
+            ops.bmm(grouped, self.wo_a, out=projected.transpose(0, 1))
         return self.wo_b(ops, projected.view(seqlen, -1))
 
 

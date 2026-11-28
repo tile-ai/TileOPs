@@ -1,4 +1,4 @@
-"""Batched GEMM ops (BMMFwdOp, BMMFP8FwdOp).
+"""Batched GEMM ops (BMMFwdOp, BMMFP8FwdOp, BMMW8A16FwdOp).
 
 Strict 3D-3D batched matrix multiplication matching ``torch.bmm``: every
 batch item is an independent GEMM, no broadcasting.
@@ -24,13 +24,16 @@ from tileops._kernels.gemm import (
     BMMKernel,
     BMMPersistentKernel,
     BMMPingPongKernel,
+    BMMW8A16Call,
+    BMMW8A16FwdInterface,
+    BMMW8A16Kernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
-__all__ = ["BMMFP8FwdOp", "BMMFwdOp"]
+__all__ = ["BMMFP8FwdOp", "BMMFwdOp", "BMMW8A16FwdOp"]
 
 
 class BMMFwdOp(Op):
@@ -233,3 +236,75 @@ class BMMFP8FwdOp(Op):
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.indices["T"])
+
+
+class BMMW8A16FwdOp(Op):
+    """Batched W8A16 NT GEMM: $d_i = a_i \\mathbin{@} \\hat{w}_i^{\\top}$ for $i \\in [0, B)$.
+
+    ``activation`` is $[B \\times M \\times K]$ bfloat16, ``weight`` $[B \\times N \\times K]$
+    e4m3 codes and ``weight_scale`` one float32 per 128x128 block of each weight,
+    $[B \\times \\lceil N/128 \\rceil \\times K/128]$; weight $\\hat{w}$ is each code times its
+    block's scale. The product accumulates in float32 and rounds to bfloat16. With
+    power-of-two scales, as DeepSeek's FP8 checkpoints hold, every $\\hat{w}$ is the bfloat16
+    value dequantizing the checkpoint gives, so the product is the bfloat16 batched matmul on
+    the dequantized weight up to the order of its float32 sums. ``activation`` and ``out``
+    may be strided: a batch-strided view, such as the transpose of an
+    $[M \\times B \\times K]$ tensor, is read or written where it lies. The in-tree kernel
+    needs $N$ to be a multiple of 8.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"bmm_w8a16": BMMW8A16Kernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"bmm_w8a16": BMMW8A16FwdInterface}
+
+    def __init__(
+        self,
+        *,
+        target: Target = None,
+    ) -> None:
+        """Build the op. Shapes are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        super().__init__(target=target)
+
+    def forward(
+        self,
+        activation: torch.Tensor,
+        weight: torch.Tensor,
+        weight_scale: torch.Tensor,
+        *,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Multiply each activation batch item by its dequantized weight.
+
+        Args:
+            activation: $[B \\times M \\times K]$, ``torch.bfloat16``; any strides.
+            weight: $[B \\times N \\times K]$, ``torch.float8_e4m3fn``.
+            weight_scale: $[B \\times \\lceil N/128 \\rceil \\times K/128]$, ``torch.float32``.
+            out: $[B \\times M \\times N]$ bfloat16 buffer the product is written to, any
+                strides, or None.
+
+        Returns:
+            The product, $[B \\times M \\times N]$, ``torch.bfloat16``: ``out`` where given.
+
+        Example:
+            ```python linenums="1"
+            op = BMMW8A16FwdOp()
+            d = op(activation, weight, weight_scale)  # [B,M,K] x [B,N,K] -> [B,M,N]
+            flops, nbytes = op.eval_roofline()        # valid after the forward
+            ```
+        """
+        a = activation if activation.stride(-1) == 1 else activation.contiguous()
+        weight, weight_scale = weight.contiguous(), weight_scale.contiguous()
+        batch, m, k = a.shape
+        kernel = self.kernel_for(
+            "bmm_w8a16",
+            lambda: BMMW8A16Call(batch=batch, m=m, n=weight.shape[1], k=k, device=a.device),
+        )
+        return kernel(a, weight, weight_scale, out)
+
+    def roof_key(self) -> str:
+        """FLOPs are bfloat16 matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(torch.bfloat16)
