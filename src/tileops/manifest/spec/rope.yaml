@@ -3,8 +3,9 @@
 RoPEFwdOp:
   # positions names each token's cos/sin cache row; query and key hold each token's heads
   # flattened, head_size columns a head, whose first rotary_dim columns rotate and the rest
-  # are copied, as RotaryEmbedding.forward_native does. The cache is computed in float32,
-  # rounded to `dtype`, then to the query's dtype.
+  # are copied, as RotaryEmbedding.forward_native does. inplace rewrites only the rotary
+  # columns of query and key and returns them, as RotaryEmbedding.forward_cuda does. The cache
+  # is computed in float32, rounded to `dtype`, then to the query's dtype.
   family: rope
   status: implemented
   ref_api: vllm.model_executor.layers.rotary_embedding.base.RotaryEmbedding
@@ -19,14 +20,15 @@ RoPEFwdOp:
       is_neox_style: {type: bool}
       dtype: {type: "float16 | bfloat16 | float32"}
       init_cache: {type: bool, default: true}
+      inplace: {type: bool, default: false, kw_only: true}
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       positions: {dtype: I, shape: "[*S]", values: "random_ints(S, 0, max_position_embeddings)", requires: ["in_range(0, max_position_embeddings)"]}
-      query: {dtype: T, shape: "[*S, head_size * Hq]"}
-      key: {type: "Tensor | None", dtype: T, shape: "[*S, head_size * Hk]", default: null}
+      query: {dtype: T, shape: "[*S, head_size * Hq]", mutated: inplace}
+      key: {type: "Tensor | None", dtype: T, shape: "[*S, head_size * Hk]", default: null, mutated: inplace}
     outputs:
-      query_out: {dtype: T, shape: "[*S, head_size * Hq]"}
-      key_out: {dtype: T, shape: "[*S, head_size * Hk]", nullable: "present(key)"}
+      query_out: {dtype: T, shape: "[*S, head_size * Hq]", alias: query}
+      key_out: {dtype: T, shape: "[*S, head_size * Hk]", nullable: "present(key)", alias: key}
     shape_rules:
     - "head_size > 0 and 0 < rotary_dim <= head_size and rotary_dim % 2 == 0"
     - "max_position_embeddings > 0 and base > 0"
@@ -37,17 +39,21 @@ RoPEFwdOp:
   # Llama-3-8B: 32 query and 8 key heads of 128.
   - {head_size: 128, rotary_dim: 128, max_position_embeddings: 8192, base: 500000.0, is_neox_style: true, dtype: bfloat16, S: [64], Hq: 32, Hk: 8, some: [key], dtype_cases: [{T: bfloat16, I: int64}], label: llama3-8b-decode-b64}
   - {head_size: 128, rotary_dim: 128, max_position_embeddings: 8192, base: 500000.0, is_neox_style: true, dtype: bfloat16, S: [4096], Hq: 32, Hk: 8, some: [key], dtype_cases: [{T: bfloat16, I: int64}, {T: float16, I: int32}], label: llama3-8b-prefill-4k}
+  # The same call in place, as RotaryEmbedding.forward_cuda makes it.
+  - {head_size: 128, rotary_dim: 128, max_position_embeddings: 8192, base: 500000.0, is_neox_style: true, dtype: bfloat16, S: [4096], Hq: 32, Hk: 8, some: [key], inplace: true, dtype_cases: [{T: bfloat16, I: int64}], label: llama3-8b-inplace-4k}
   # Batched [B, S] positions.
   - {head_size: 128, rotary_dim: 128, max_position_embeddings: 8192, base: 500000.0, is_neox_style: true, dtype: float32, S: [2, 2048], Hq: 32, Hk: 8, some: [key], dtype_cases: [{T: float32, I: int64}], label: llama3-8b-b2-2k}
   # GPT-J-6B: adjacent pairs, the first 64 of 256 columns rotate.
   - {head_size: 256, rotary_dim: 64, max_position_embeddings: 2048, base: 10000.0, is_neox_style: false, dtype: float16, S: [2048], Hq: 16, Hk: 16, some: [key], dtype_cases: [{T: float16, I: int64}], label: gptj-6b-prefill}
+  # In place, only the 64 rotary columns of each head are read and written.
+  - {head_size: 256, rotary_dim: 64, max_position_embeddings: 2048, base: 10000.0, is_neox_style: false, dtype: float16, S: [2048], Hq: 16, Hk: 16, some: [key], inplace: true, dtype_cases: [{T: float16, I: int64}], label: gptj-6b-prefill-inplace}
   - {head_size: 256, rotary_dim: 64, max_position_embeddings: 2048, base: 10000.0, is_neox_style: false, dtype: float16, S: [32], Hq: 16, Hk: 16, some: [key], dtype_cases: [{T: float16, I: int64}], label: gptj-6b-decode-b32}
   # Phi-2: the first 32 of 80 columns rotate; the query alone, as cross-layer KV sharing calls.
   - {head_size: 80, rotary_dim: 32, max_position_embeddings: 2048, base: 10000.0, is_neox_style: true, dtype: bfloat16, S: [1000], Hq: 32, key: null, dtype_cases: [{T: bfloat16, I: int32}], label: phi-2-query-only}
 
   roofline:
-    # Three per rotated value; query and key are read and written whole, and only the cache
-    # rows the positions name are read.
+    # Three per rotated value; query and key are read and written whole, in place only their
+    # rotary columns, and only the cache rows the positions name are read.
     func: "tileops._perf.formulas.rope_positions_roofline"
 
 RoPELlama31FwdOp:

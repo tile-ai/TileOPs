@@ -184,6 +184,13 @@ def _quantize_binder(op: Any, case: Any) -> Implementation:
     return private_inputs(default_binder(op, case).run, case.inputs, *positions)
 
 
+def _rope_positions(op, case) -> Implementation:
+    """The op on private copies of the query and key a call in place rewrites."""
+    inputs = list(case._call.signature.inputs)
+    written = sorted(inputs.index(name) for name in case._call.written)
+    return private_inputs(default_binder(op, case).run, case.inputs, *written)
+
+
 def _rope_cos_sin(op, case) -> Implementation:
     """The op on a private ``x`` where it rotates ``x`` in place."""
     if not case.arguments["inplace"]:
@@ -237,4 +244,5 @@ ENTRIES = {
     "FP8QuantPerTokenGroupFwdOp": Entry(binder=_quantize_binder),
     # rope
     "RoPECosSinFwdOp": Entry(binder=_rope_cos_sin),
+    "RoPEFwdOp": Entry(binder=_rope_positions),
 }

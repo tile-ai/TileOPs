@@ -1353,8 +1353,9 @@ def embedding_roofline(call: CallView) -> tuple[int, int]:
 
 
 def rope_positions_roofline(call: CallView) -> tuple[int, int]:
-    """3 per rotated value of query and key. Both are read and written whole, positions (and
-    offsets) read, and the cache rows they name read once, cos and sin in the query's dtype."""
+    """3 per rotated value of query and key. Both are read and written whole, in place only
+    their rotary columns; positions (and offsets) are read, and the cache rows they name read
+    once, cos and sin in the query's dtype."""
     indices = call.indices
     index = call.metadata_values("positions")
     if call.present("offsets"):
@@ -1367,7 +1368,10 @@ def rope_positions_roofline(call: CallView) -> tuple[int, int]:
         if call.present(name):
             heads = prod(call.tensors[name][0]) // max(tokens * indices["head_size"], 1)
             rotated += tokens * heads * indices["rotary_dim"]
-            moved += 2 * call.bytes(name)
+            if indices.get("inplace", False):
+                moved += 2 * tokens * heads * indices["rotary_dim"] * _elem_bytes(call, name)
+            else:
+                moved += 2 * call.bytes(name)
     for name in ("positions", "offsets"):
         if call.present(name):
             moved += call.bytes(name)

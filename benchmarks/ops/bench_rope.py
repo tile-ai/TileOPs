@@ -4,6 +4,8 @@ Baselines build their cos/sin caches outside the timed window, so only the
 rotation itself is measured.
 """
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -43,6 +45,19 @@ def _vllm_rope(case: bench.Case, cache: torch.Tensor) -> bench.Implementation:
     return private_inputs(run, (index, query, key), 1, 2)
 
 
+def _paired(case: bench.Case, run, writes: frozenset[str]) -> bench.Implementation:
+    """*run*, which writes the inputs *writes*, compared with the call only where the call
+    writes the same inputs, as the manifest marks them; otherwise timed but not compared."""
+    impl = run if isinstance(run, bench.Implementation) else bench.Implementation(run=run)
+    if writes == case._call.written:
+        return impl
+    reason = (
+        f"writes {', '.join(sorted(writes)) or 'no input'}; "
+        f"this call writes {', '.join(sorted(case._call.written)) or 'no input'}"
+    )
+    return dataclasses.replace(impl, noncomparable_reason=reason)
+
+
 def _bench_rope(op_cls, case: bench.Case) -> None:
     """Check and time the rotation against vLLM's kernel, torch and inductor."""
     op = op_cls(**case.arguments)
@@ -53,10 +68,14 @@ def _bench_rope(op_cls, case: bench.Case) -> None:
     def reference(*inputs):
         return rope_reference(params, cos, sin, *inputs)
 
+    # vLLM rewrites query and key in place; the torch implementations return new tensors.
+    rewritten = frozenset(
+        n for n, t in zip(("query", "key"), case.inputs[1:3], strict=True) if t is not None
+    )
     implementations = {
-        "torch-ref": reference,
-        TORCH_COMPILE_TAG: compiled_reference(reference),
-        VLLM_TAG: _vllm_rope(case, cache),
+        "torch-ref": _paired(case, reference, frozenset()),
+        TORCH_COMPILE_TAG: _paired(case, compiled_reference(reference), frozenset()),
+        VLLM_TAG: _paired(case, _vllm_rope(case, cache), rewritten),
     }
     bench.Runner(op, case).compare(implementations)
 
