@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -428,3 +429,51 @@ def test_a_skipped_check_does_not_outrank_an_earlier_success() -> None:
         "false",
         "pre-commit",
     )
+
+
+def _newest_snapshot_check(top: str, tmp_path: Path) -> tuple[str, str]:
+    """Run the publish job's `newest` step for run 100 with the clone replaced by the run id
+    it would have read, `top`, and return what the step wrote to GITHUB_OUTPUT and to stdout."""
+    step = _step(yaml.safe_load(NIGHTLY_WORKFLOW.read_text()), "publish-bench-data", "newest")
+    script, n = re.subn(
+        r"top=\$\(.*?\) \|\| true", lambda _: f"top={shlex.quote(top)}", step["run"], flags=re.S
+    )
+    assert n == 1, "the step no longer reads the snapshot's run id into `top`"
+    out = tmp_path / "github_output"
+    out.write_text("")
+    env = {**os.environ, "GITHUB_RUN_ID": "100", "GITHUB_OUTPUT": str(out)}
+    said = subprocess.run(
+        ["bash", "-c", script], env=env, capture_output=True, text=True, check=True
+    )
+    return out.read_text(), said.stdout
+
+
+def test_a_rerun_publishes_only_while_its_run_is_the_newest(tmp_path: Path) -> None:
+    """A re-run behind a newer snapshot skips the push and the Perf Tracker yet still fails on
+    missing files; an equal, older or unreadable snapshot run lets it publish."""
+    nightly = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())
+    job = nightly["jobs"]["publish-bench-data"]
+    steps = {s["name"]: s for s in job["steps"]}
+    assert (
+        _step(nightly, "publish-bench-data", "newest")["if"] == "${{ github.run_attempt != '1' }}"
+    )
+    assert job["outputs"]["stale"] == "${{ steps.newest.outputs.stale }}"
+    assert steps["Publish the snapshot to TileOPs-nightly"]["if"] == (
+        "${{ steps.assemble.outputs.ok == '1' && steps.newest.outputs.stale != '1' }}"
+    )
+    assert steps["Fail when tonight's snapshot was not published"]["if"] == (
+        "${{ steps.assemble.outputs.ok != '1' }}"
+    )
+    assert nightly["jobs"]["publish-perf-tracker"]["if"] == (
+        "${{ !cancelled() && needs.publish-bench-data.result == 'success'"
+        " && needs.publish-bench-data.outputs.stale != '1' }}"
+    )
+
+    written, said = _newest_snapshot_check("101", tmp_path)
+    assert written == "stale=1\n" and "::warning::the snapshot holds newer run 101" in said
+    assert _newest_snapshot_check("0101", tmp_path)[0] == "stale=1\n"
+    for top in ("100", "99"):
+        assert _newest_snapshot_check(top, tmp_path) == ("", ""), top
+    for top in ("", "abc"):
+        written, said = _newest_snapshot_check(top, tmp_path)
+        assert written == "" and "::warning::cannot read the newest snapshot's run" in said, top
