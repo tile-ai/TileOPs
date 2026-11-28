@@ -3504,7 +3504,7 @@ def test_gemm_offset_operand_runs_as_an_aligned_one(case, shifted: int) -> None:
 )
 def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torch.dtype) -> None:
     """The largest admitted staged ring compiles and preserves GEMV outputs."""
-    test = GEMMWorkload(1, 256, 4096, dtype, trans_b=True)
+    test = GEMMWorkload(1, 256, 16384, dtype, trans_b=True)
     inputs = test.gen_inputs()
     op = GEMMFwdOp(trans_b=True)
     op(*inputs)
@@ -3562,10 +3562,26 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
     ("m", "n", "k", "trans_b", "bias", "out_dtype", "dtype"),
     [
         pytest.param(
-            1, 257, 4100, True, False, None, torch.bfloat16, marks=pytest.mark.smoke, id="bf16"
+            1,
+            257,
+            4100,
+            True,
+            False,
+            None,
+            torch.bfloat16,
+            marks=[pytest.mark.smoke, pytest.mark.sm90],
+            id="bf16",
         ),
         pytest.param(
-            1, 257, 4100, True, False, None, torch.float16, marks=pytest.mark.smoke, id="fp16"
+            1,
+            257,
+            4100,
+            True,
+            False,
+            None,
+            torch.float16,
+            marks=[pytest.mark.smoke, pytest.mark.sm90],
+            id="fp16",
         ),
         pytest.param(
             1,
@@ -3575,7 +3591,7 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             False,
             None,
             torch.bfloat16,
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
             id="256-lane-rows",
         ),
         pytest.param(
@@ -3586,7 +3602,7 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             False,
             torch.float32,
             torch.bfloat16,
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
             id="bursts-float32-out",
         ),
         pytest.param(
@@ -3597,7 +3613,7 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             True,
             None,
             torch.bfloat16,
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
             id="column-bias",
         ),
         pytest.param(
@@ -3608,7 +3624,7 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             True,
             None,
             torch.bfloat16,
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
             id="rhs-col-scalar-bias",
         ),
         pytest.param(
@@ -3619,7 +3635,7 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype, ar
             False,
             None,
             torch.bfloat16,
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
             id="three-unrolled-bursts",
         ),
         pytest.param(
@@ -3659,25 +3675,77 @@ def test_gemv_register_body(
 @pytest.mark.parametrize(
     ("per_sm", "extra", "k", "dtype", "rows"),
     [
-        pytest.param(0, 7, 4096, torch.bfloat16, None, marks=pytest.mark.smoke, id="row-of-4096"),
         pytest.param(
-            15, 0, 24576, torch.float16, 1, marks=pytest.mark.smoke, id="fp16-in-the-window"
-        ),
-        pytest.param(0, 7, 4097, torch.bfloat16, 1, marks=pytest.mark.full, id="row-of-4097"),
-        pytest.param(
-            15, 0, 10240, torch.bfloat16, 1, marks=pytest.mark.full, id="mid-rows-at-15-an-sm"
-        ),
-        pytest.param(
-            12, 0, 24576, torch.bfloat16, 1, marks=pytest.mark.full, id="long-rows-at-12-an-sm"
+            0,
+            7,
+            4096,
+            torch.bfloat16,
+            None,
+            marks=[pytest.mark.smoke, pytest.mark.sm90],
+            id="row-of-4096",
         ),
         pytest.param(
-            12, 1, 24576, torch.bfloat16, None, marks=pytest.mark.full, id="long-rows-past-12-an-sm"
+            15,
+            0,
+            24576,
+            torch.float16,
+            1,
+            marks=[pytest.mark.smoke, pytest.mark.sm90],
+            id="fp16-in-the-window",
         ),
         pytest.param(
-            18, 0, 24576, torch.bfloat16, None, marks=pytest.mark.full, id="long-rows-at-18-an-sm"
+            0,
+            7,
+            4097,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="row-of-4097",
         ),
         pytest.param(
-            18, 1, 24576, torch.bfloat16, 1, marks=pytest.mark.full, id="long-rows-past-18-an-sm"
+            15,
+            0,
+            10240,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="mid-rows-at-15-an-sm",
+        ),
+        pytest.param(
+            12,
+            0,
+            24576,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="long-rows-at-12-an-sm",
+        ),
+        pytest.param(
+            12,
+            1,
+            24576,
+            torch.bfloat16,
+            None,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="long-rows-past-12-an-sm",
+        ),
+        pytest.param(
+            18,
+            0,
+            24576,
+            torch.bfloat16,
+            None,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="long-rows-at-18-an-sm",
+        ),
+        pytest.param(
+            18,
+            1,
+            24576,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="long-rows-past-18-an-sm",
         ),
         pytest.param(
             15,
@@ -3685,39 +3753,107 @@ def test_gemv_register_body(
             12800,
             torch.bfloat16,
             None,
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
             id="window-at-a-stage-multiple",
         ),
         pytest.param(
-            15, 0, 12928, torch.bfloat16, 1, marks=pytest.mark.full, id="window-off-the-stage-width"
+            15,
+            0,
+            12928,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="window-off-the-stage-width",
         ),
         pytest.param(
-            15, 0, 12288, torch.bfloat16, 1, marks=pytest.mark.full, id="window-not-at-12288"
+            15,
+            0,
+            12288,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="window-not-at-12288",
         ),
         pytest.param(
-            15, 0, 24580, torch.bfloat16, 1, marks=pytest.mark.full, id="unaligned-in-the-window"
-        ),
-        pytest.param(0, 7, 49152, torch.bfloat16, 1, marks=pytest.mark.full, id="row-of-49152"),
-        pytest.param(
-            0, 7, 49160, torch.bfloat16, None, marks=pytest.mark.full, id="aligned-row-past-49152"
-        ),
-        pytest.param(
-            0, 7, 49156, torch.bfloat16, None, marks=pytest.mark.full, id="8-byte-row-past-49152"
-        ),
-        pytest.param(
-            0, 7, 49154, torch.bfloat16, 1, marks=pytest.mark.full, id="4-byte-row-past-49152"
+            15,
+            0,
+            24580,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="unaligned-in-the-window",
         ),
         pytest.param(
-            2, 0, 6143, torch.bfloat16, 1, marks=pytest.mark.full, id="odd-rows-at-2-an-sm"
+            0,
+            7,
+            49152,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="row-of-49152",
         ),
         pytest.param(
-            2, 1, 6143, torch.bfloat16, None, marks=pytest.mark.full, id="odd-rows-past-2-an-sm"
+            0,
+            7,
+            49160,
+            torch.bfloat16,
+            None,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="aligned-row-past-49152",
         ),
         pytest.param(
-            12, -1, 6143, torch.bfloat16, None, marks=pytest.mark.full, id="odd-rows-under-12-an-sm"
+            0,
+            7,
+            49156,
+            torch.bfloat16,
+            None,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="8-byte-row-past-49152",
         ),
         pytest.param(
-            12, 0, 6143, torch.bfloat16, 2, marks=pytest.mark.full, id="odd-rows-at-12-an-sm"
+            0,
+            7,
+            49154,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="4-byte-row-past-49152",
+        ),
+        pytest.param(
+            2,
+            0,
+            6143,
+            torch.bfloat16,
+            1,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="odd-rows-at-2-an-sm",
+        ),
+        pytest.param(
+            2,
+            1,
+            6143,
+            torch.bfloat16,
+            None,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="odd-rows-past-2-an-sm",
+        ),
+        pytest.param(
+            12,
+            -1,
+            6143,
+            torch.bfloat16,
+            None,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="odd-rows-under-12-an-sm",
+        ),
+        pytest.param(
+            12,
+            0,
+            6143,
+            torch.bfloat16,
+            2,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="odd-rows-at-12-an-sm",
         ),
         pytest.param(
             8,
@@ -3753,6 +3889,26 @@ def test_gemv_register_dispatch(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
+    ("arch", "k", "staged"),
+    [
+        pytest.param(89, 5120, True, marks=pytest.mark.smoke, id="sm89-keeps-the-ring"),
+        pytest.param(90, 5120, False, marks=pytest.mark.full, id="sm90-reads-registers"),
+        pytest.param(89, 12289, False, marks=pytest.mark.full, id="sm89-odd-two-row-k"),
+    ],
+)
+def test_gemv_register_body_serves_sm90_only(arch: int, k: int, staged: bool) -> None:
+    """The register body is calibrated on SM90: a one-row call an SM90 build target reads
+    into registers stays on the staged ring for an SM89 build target, unless its rows are
+    odd and the ring's two-row blocks cannot copy them."""
+    kernel = object.__new__(GemvKernel)
+    kernel.band, kernel.out_len, kernel.k, kernel.dtype = "lhs_row", 4096, k, torch.bfloat16
+    kernel.build_target = SimpleNamespace(arch=arch, sm_count=128)
+    assert kernel.staged is staged
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
     ("k", "config"),
     [
         pytest.param(
@@ -3772,8 +3928,8 @@ def test_gemv_register_dispatch(
 def test_gemv_tuned_register_body_splits_two_rows_a_block(
     monkeypatch: pytest.MonkeyPatch, k: int, config: dict
 ) -> None:
-    """Tuning a one-row call the register body serves may publish a block that holds two
-    split rows, whose warps find their row and their slots by their place in the block."""
+    """Tuning a one-row call the SM90 register body serves may publish a block that holds
+    two split rows, whose warps find their row and their slots by their place in the block."""
 
     def pick(self, _builder, candidates, seed_config, **_kwargs):
         assert config in candidates
@@ -3789,6 +3945,7 @@ def test_gemv_tuned_register_body_splits_two_rows_a_block(
     assert isinstance(kernel, GemvKernel) and not kernel.staged and kernel.config == config
 
 
+@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("per_sm", "extra", "k"),
@@ -3799,8 +3956,8 @@ def test_gemv_tuned_register_body_splits_two_rows_a_block(
     ],
 )
 def test_gemv_register_body_keeps_the_ring_bits(per_sm: int, extra: int, k: int) -> None:
-    """The register body gives each row the staged ring's bits: the same bf16 rows, read into
-    registers at ``per_sm`` rows an SM and through the ring with ``extra`` rows more (one
+    """On SM90 the register body gives each row the staged ring's bits: the same bf16 rows,
+    read into registers at ``per_sm`` rows an SM and through the ring with ``extra`` rows more (one
     fewer at -1), agree exactly on the rows both calls hold, for a row split over eight
     warps, two rows a warp and a row split over two warps. The output is float32, so a sum
     taken in another order shows."""
