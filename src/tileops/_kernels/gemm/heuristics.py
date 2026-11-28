@@ -826,12 +826,6 @@ def _reduce_threads(k: int) -> int:
     return 64 if k >= 12288 else 256 if k >= 6144 else 128
 
 
-def _stage_values(k: int) -> int:
-    """Values one step of a row of ``k`` covers, on the ring and in registers alike: a
-    16-byte slice of 16-bit values for each reducing lane."""
-    return _reduce_threads(k) * 8
-
-
 def _ring_config(k: int) -> dict:
     """The staged ring's config for one-row bands: two rows a block over five stages at 64
     reducing lanes, else one row over four."""
@@ -839,13 +833,6 @@ def _ring_config(k: int) -> dict:
     if reduce_threads == 64:
         return {"block_n": 2, "reduce_threads": reduce_threads, "num_stages": 5}
     return {"block_n": 1, "reduce_threads": reduce_threads, "num_stages": 4}
-
-
-def _ring_copy_bytes(k: int) -> int:
-    """Bytes the staged ring copies at a time from rows of ``k`` 16-bit values: the largest
-    power of two up to 16 that divides a row's bytes."""
-    row_bytes = 2 * k
-    return min(16, row_bytes & -row_bytes)
 
 
 def _two_rows_a_warp_from(k: int) -> int:
@@ -860,40 +847,28 @@ def gemv_ring_copies(k: int) -> bool:
     return not (k % 2 and _ring_config(k)["block_n"] == 2)
 
 
-def _wave_window(k: int, sm_count: int) -> tuple[int, int]:
-    """Rows over which bf16 default split rows of ``k`` values need a second wave while the
-    staged ring's two-row blocks still fit one: an SM holds 12 split-row blocks and 9 ring
-    blocks (their bf16 builds' register counts)."""
-    return 12 * sm_count, 9 * _ring_config(k)["block_n"] * sm_count
-
-
 def gemv_registers(n: int, k: int, sm_count: int, dtype: str) -> bool:
     """Whether ``GemvKernel``'s one-row bands read ``n`` rows of ``k`` values into registers
-    (``_gemv_row_kernel``) rather than through the staged ring.
-
-    Calibrated on SM90 against the ring at the same ``reduce_threads``. The ring keeps rows
-    of up to 4096 values; odd rows below 12288 values over 2 rows an SM up to where they go
-    two to a warp; rows past what the default split row unrolls that the ring copies 8 bytes
-    or more at a time; and aligned bf16 rows over ``_wave_window``, where the split rows
-    need a second wave and the ring one. The window skips the first two-row K, where the
-    ring's shorter loop unrolls and its registers cut it to 3 blocks an SM, and every K off
-    the ring's stage width, where each of its steady-state copies is predicated. Odd rows
-    the two-row ring cannot copy always take registers.
-    """
+    (``_gemv_row_kernel``) rather than through the staged ring; calibrated on SM90 against the
+    ring at the same ``reduce_threads``."""
     if k <= 4096:
         return False
     if k % 2:
+        # The ring keeps odd rows it can copy from 2 rows an SM until they go two to a warp.
         return not gemv_ring_copies(k) or not (
             2 * sm_count < n < _two_rows_a_warp_from(k) * sm_count
         )
-    stage = _stage_values(k)
-    slices = -(-k // stage)
-    if _ring_copy_bytes(k) >= 8 and not gemv_unrolled(True, slices):
+    stage = _reduce_threads(k) * 8
+    # The ring keeps rows it copies 8 bytes or more at a time past the split row's unroll limit.
+    if k % 4 == 0 and not gemv_unrolled(True, -(-k // stage)):
         return False
+    # Off the stage width the ring predicates every copy; at the first two-row K it fits 3
+    # blocks an SM.
     if dtype != "bfloat16" or k % stage or _ring_config(k - stage)["block_n"] == 1:
         return True
-    low, high = _wave_window(k, sm_count)
-    return not low < n <= high
+    # An SM holds 12 split-row blocks and 9 two-row ring blocks: between, the ring needs one
+    # wave fewer.
+    return not 12 * sm_count < n <= 9 * _ring_config(k)["block_n"] * sm_count
 
 
 def gemv_config(n: int, k: int, sm_count: int, registers: bool) -> dict:

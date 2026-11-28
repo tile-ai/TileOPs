@@ -6,6 +6,7 @@ from tests.misaligned import misaligned
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import BMMCall, BMMW8A16Call
+from tileops._kernels.gemm.w8a16 import _ring_config, _tile_config
 from tileops.backend import OpNotAvailableError
 from tileops.gemm import BMMFP8FwdOp, BMMFwdOp, BMMW8A16FwdOp
 from workloads.device import run_device
@@ -580,6 +581,12 @@ class BMMW8A16Fixture(FixtureBase):
                 pytest.param(1, 300, 72, 256, marks=pytest.mark.full, id="n-in-one-block"),
                 pytest.param(7, 2, 2432, 1408, marks=pytest.mark.full, id="split-k-units-per-cta"),
                 pytest.param(
+                    8, 40, 1024, 4096, marks=pytest.mark.full, id="wrapping-ring-ksplit-4"
+                ),
+                pytest.param(
+                    8, 64, 1024, 4096, marks=pytest.mark.full, id="wrapping-ring-ksplit-2"
+                ),
+                pytest.param(
                     1,
                     2**21 + 128,
                     1024,
@@ -664,55 +671,35 @@ def test_bmm_w8a16_takes_operands_of_any_strides() -> None:
     assert torch.equal(out, expected)
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_bmm_w8a16_k_past_its_ring_is_refused() -> None:
-    """The in-tree kernel refuses a K whose staged scales leave shared memory no ring stage,
-    even with K unsplit."""
-    call = BMMW8A16Call(batch=1, m=64, n=1024, k=128 * 60000, device=run_device())
-    with pytest.raises(OpNotAvailableError, match="ring stages"):
+@pytest.mark.parametrize(
+    "batch, m, n, k, match",
+    [
+        # K whose staged scales leave shared memory no ring stage, even with K unsplit.
+        pytest.param(
+            1, 64, 1024, 128 * 60000, "ring stages", marks=pytest.mark.smoke, id="k-past-ring"
+        ),
+        # The signature admits K = 0, which the reference answers with zeros.
+        pytest.param(1, 4, 128, 0, "positive multiple", marks=pytest.mark.smoke, id="k-zero"),
+        pytest.param(1, 4, 132, 256, "not a multiple of 8", marks=pytest.mark.smoke, id="n-off-8"),
+    ],
+)
+def test_bmm_w8a16_refuses(batch: int, m: int, n: int, k: int, match: str) -> None:
+    """The in-tree kernel refuses calls the signature admits but its program cannot run."""
+    call = BMMW8A16Call(batch=batch, m=m, n=n, k=k, device=run_device())
+    with pytest.raises(OpNotAvailableError, match=match):
         BMMW8A16FwdOp().key_for("bmm_w8a16", call)
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "m",
-    [
-        pytest.param(1, marks=pytest.mark.smoke, id="ds-v4-flash-wo-a-decode"),
-        pytest.param(40, marks=pytest.mark.full, id="ds-v4-flash-wo-a-40"),
-        pytest.param(64, marks=pytest.mark.full, id="ds-v4-flash-wo-a-64"),
-    ],
-)
-def test_bmm_w8a16_ring_gives_each_slot_one_k_part(m: int) -> None:
+@pytest.mark.smoke
+def test_bmm_w8a16_ring_gives_each_slot_one_k_part() -> None:
     """A ring that wraps within a unit holds a whole number of K parts' steps, so a part never
     waits on a slot whose previous fill another part owns: its parity wait would return while
-    that fill's copy is in flight."""
-    test = BMMW8A16Test(8, m, 1024, 4096)
-    op = BMMW8A16FwdOp()
-    test.check(op, *test.gen_inputs())
-    (kernel,) = op.iter_kernels()
-    cfg = kernel.config
-    assert cfg["num_stages"] >= 4096 // 128 or cfg["num_stages"] % cfg["ksplit"] == 0
-
-
-@pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-def test_bmm_w8a16_k_zero_is_refused() -> None:
-    """The in-tree kernel refuses K = 0, which the signature admits and the reference answers
-    with zeros."""
-    test = BMMW8A16Test(1, 4, 128, 0)
-    with pytest.raises(OpNotAvailableError, match="positive multiple"):
-        BMMW8A16FwdOp()(*test.gen_inputs())
-
-
-@pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-def test_bmm_w8a16_n_not_multiple_of_8_is_refused() -> None:
-    """The in-tree kernel refuses an ``n`` that is not a multiple of 8, which the signature
-    admits."""
-    test = BMMW8A16Test(1, 4, 132, 256)
-    with pytest.raises(OpNotAvailableError, match="not a multiple of 8"):
-        BMMW8A16FwdOp()(*test.gen_inputs())
+    that fill's copy is in flight. Checked at DeepSeek-V4-Flash's ``wo_a`` calls on 132 SMs."""
+    for m in (1, 40, 64):
+        tile = _tile_config(m, 1024, 8, 132)
+        cfg = _ring_config(m, 1024, 4096, 8, 132, tile)
+        assert cfg["num_stages"] >= 4096 // 128 or cfg["num_stages"] % cfg["ksplit"] == 0, m
 
 
 @pytest.mark.sm90

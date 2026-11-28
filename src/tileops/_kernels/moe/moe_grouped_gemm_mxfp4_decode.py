@@ -501,15 +501,13 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     exponent.
 
     ``_ROW_TILE`` is the fp8 WGMMA's least N. ``_MAX_ROWS`` is one group, so each run streams its
-    weights once; a group is ``_ROW_TILES`` tiles, sixteen rows, because past them two to four
-    experts holding 8 to 17 rows each lose to the general kernel's 64-row tiles.
-    ``_BLOCKS_PER_SM`` caps registers at 128 so that three CTAs share a SM, which streams a
-    decode step's weights faster than two; their shared memory holds three to K = 32768. A config
-    is ``{num_stages}``, the depth of the ring of row and weight stages, which holds the steps of
-    its ``_CODE_SLOTS`` code boxes: the redo round's first code-box wait targets the last round-0
-    step that read the box, and a ring that deep keeps that step's release one barrier phase
-    behind, where a shallower ring lets round 0's last releases run its barrier two phases ahead
-    and the wait never returns. ``K`` is a whole number of rings, so the redo round starts on the
+    weights once; a group is ``_ROW_TILES`` tiles because past 16 rows the general kernel's
+    64-row tiles are faster. ``_BLOCKS_PER_SM`` caps registers at 128 so that three CTAs share a
+    SM, which streams a decode step's weights faster than two; their shared memory holds three
+    to K = 32768. The ring of row and weight stages, ``num_stages``
+    deep, holds the steps of its ``_CODE_SLOTS`` code boxes: a shallower ring lets round 0's
+    last releases run the redo round's first code-box barrier two phases ahead, and that wait
+    never returns. ``K`` is a whole number of rings, so the redo round starts on the
     ring's and the code boxes' first slots. The run lookup holds ``_LOOKUP_ENDS`` experts' ends a
     thread in registers it frees before the K steps, which serves ``_LOOKUP_ENDS * _THREADS``
     experts. The math warp-group of a CTA that serves a group fills the group's token scales
@@ -530,7 +528,7 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
     _BLOCKS_PER_SM: ClassVar[int] = 3
     _TOKENS_BARRIER: ClassVar[int] = 14
     _VOTE_BARRIER: ClassVar[int] = 15
-    _NUM_STAGES: ClassVar[tuple[int, ...]] = (_CODE_SLOTS * _CODE_STEPS,)
+    _NUM_STAGES: ClassVar[int] = _CODE_SLOTS * _CODE_STEPS
     _SMEM_HEADROOM: ClassVar[int] = MoEGroupedGEMMMXFP4Kernel._SMEM_HEADROOM
 
     @classmethod
@@ -549,12 +547,12 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
         most = cls._LOOKUP_ENDS * cls._THREADS
         if call.num_groups > most:
             return f"looks up a row's run among at most {most} experts, got {call.num_groups}"
-        ring_k = QUANT_SCALE_BLOCK * min(cls._NUM_STAGES)
+        ring_k = QUANT_SCALE_BLOCK * cls._NUM_STAGES
         if call.k <= 0 or call.k % ring_k:
             return f"redoes a tile from the ring's first slot, so needs K a multiple of {ring_k}"
         if call.n % WGMMA_ROWS:
             return f"tiles N by {WGMMA_ROWS} weight rows, got N = {call.n}"
-        least = _decode_smem_bytes(min(cls._NUM_STAGES), call.k // QUANT_SCALE_BLOCK)
+        least = _decode_smem_bytes(cls._NUM_STAGES, call.k // QUANT_SCALE_BLOCK)
         room = call.smem_budget - cls._SMEM_HEADROOM
         if least > room:
             return f"takes {least} bytes of shared memory on its ring, past {room}"
@@ -570,7 +568,6 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
         super().__init__(device_index=call.device_index)
         self.call = call
         self.scale_k = call.k // QUANT_SCALE_BLOCK
-        self.smem_limit = self.build_target.smem_budget - self._SMEM_HEADROOM
         self.kernel = _moe_grouped_gemm_mxfp4_decode_kernel(call.num_groups, call.n, call.k)
         self.init_config()
 
@@ -594,16 +591,12 @@ class MoEGroupedGEMMMXFP4DecodeKernel(Kernel, MGroupedGEMMMXFP4FwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [
-            {"num_stages": stages}
-            for stages in self._NUM_STAGES
-            if self.scale_k % stages == 0
-            and _decode_smem_bytes(stages, self.scale_k) <= self.smem_limit
-        ]
+        # ``refusal`` makes the ring divide the K steps and fit in shared memory.
+        return [self.default_config]
 
     @property
     def default_config(self) -> dict:
-        return {"num_stages": max(c["num_stages"] for c in self.autotune_configs)}
+        return {"num_stages": self._NUM_STAGES}
 
     def forward(
         self,

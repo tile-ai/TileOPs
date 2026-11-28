@@ -187,14 +187,7 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
         self.row_width = heads_kv * dim
         self.physical_tokens = num_pages * page_size
         self.quantized = cache_dtype == torch.float8_e4m3fn
-        self.kernel = _paged_cache_write_kernel(
-            self.row_width,
-            self.physical_tokens,
-            self.dtype_str,
-            self.dtype_to_str(cache_dtype),
-            self.row_width,
-            self.row_width,
-        )
+        self.kernel = self._builder(self.row_width, self.row_width)
         self.init_config(config)
 
     @property
@@ -268,9 +261,8 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
             return rows.contiguous(), self.row_width
         return rows, rows.stride(0) if rows.shape[0] > 1 else self.row_width
 
-    def _compile(self, cfg: dict, k_stride: int, v_stride: int):
-        """The program ``forward`` launches, compiled from *cfg* for rows of k and of v
-        *k_stride* and *v_stride* elements apart."""
+    def _builder(self, k_stride: int, v_stride: int) -> Callable:
+        """The program builder for rows of k and of v *k_stride* and *v_stride* elements apart."""
         return _paged_cache_write_kernel(
             self.row_width,
             self.physical_tokens,
@@ -278,4 +270,8 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
             self.dtype_to_str(self.cache_dtype),
             k_stride,
             v_stride,
-        )(**cfg)
+        )
+
+    def _compile(self, cfg: dict, k_stride: int, v_stride: int):
+        """The program ``forward`` launches, compiled from *cfg* for those row strides."""
+        return self._builder(k_stride, v_stride)(**cfg)
