@@ -68,8 +68,10 @@ class PagedKVCacheWriteFwdOp(Op):
         """Write each token's key and value row into the page-pool row its slot names.
 
         Args:
-            k: New keys, ``(tokens, heads_kv, dim)`` in float16 or bfloat16.
-            v: New values, the same shape and dtype.
+            k: New keys, ``(tokens, heads_kv, dim)`` in float16 or bfloat16. Read where it
+                lies when each token's row is contiguous, as the columns of a fused
+                projection are; copied otherwise.
+            v: New values, the same shape and dtype, read as ``k`` is.
             k_cache: The key page pool, ``(num_pages, page_size, heads_kv, dim)``, written in
                 place. Its dtype is the cache dtype: float16, bfloat16, or float8_e4m3fn.
             v_cache: The value page pool, the same shape and dtype, written in place.
@@ -83,8 +85,6 @@ class PagedKVCacheWriteFwdOp(Op):
         Returns:
             None; both page pools are mutated and no other tensor is touched.
         """
-        k = k.contiguous()
-        v = v.contiguous()
         slot_mapping = slot_mapping.contiguous()
         k_scale = None if k_scale is None else k_scale.contiguous()
         v_scale = None if v_scale is None else v_scale.contiguous()
