@@ -121,16 +121,18 @@ class GatedDeltaNet:
 class GatedAttention:
     """Causal GQA over a paged KV cache, its output gated by ``sigmoid(gate)``.
 
-    ``qkv_proj`` stacks the q rows of HF's ``q_proj`` (the first half of each head's rows),
-    then ``k_proj`` and ``v_proj``; ``gate_proj`` holds the second half of each head's rows.
+    ``qkv_gate_proj`` stacks the q rows of HF's ``q_proj`` (the first half of each head's
+    rows), then ``k_proj`` and ``v_proj``, then the gate rows (the second half of each head's
+    rows of ``q_proj``). A one-token call projects all of them in one product, whose q, k and
+    v part is contiguous; a longer one projects q, k and v apart from the gate, as the q and
+    k norm rewrites them in place and takes them contiguous.
     """
 
     def __init__(self, cfg: Qwen3_8Config, max_seq_len: int, device: torch.device) -> None:
         self.heads = cfg.num_attention_heads
         self.kv_heads = cfg.num_key_value_heads
         self.head_dim = cfg.head_dim
-        self.qkv_proj: torch.Tensor
-        self.gate_proj: torch.Tensor
+        self.qkv_gate_proj: torch.Tensor
         self.q_norm: torch.Tensor
         self.k_norm: torch.Tensor
         self.o_proj: torch.Tensor
@@ -149,8 +151,12 @@ class GatedAttention:
     def __call__(self, ops: ModelOps, x: torch.Tensor, step: Step) -> torch.Tensor:
         tokens = x.shape[0]
         h, hkv, d = self.heads, self.kv_heads, self.head_dim
-        qkv = ops.gemm(x, self.qkv_proj)
-        gate = ops.gemm(x, self.gate_proj)
+        qkv_rows = (h + 2 * hkv) * d
+        if tokens == 1:
+            qkv, gate = ops.gemm(x, self.qkv_gate_proj).split([qkv_rows, h * d], dim=-1)
+        else:
+            qkv = ops.gemm(x, self.qkv_gate_proj[:qkv_rows])
+            gate = ops.gemm(x, self.qkv_gate_proj[qkv_rows:])
         ops.qk_norm_rope(qkv, self.q_norm, self.k_norm, step.cos_sin, step.positions)
         q, k, v = qkv.split([h * d, hkv * d, hkv * d], dim=-1)
         # The block table is the identity, so a token's cache slot is its position.

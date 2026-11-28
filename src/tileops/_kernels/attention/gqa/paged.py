@@ -601,19 +601,19 @@ def _gqa_paged_varlen_kernel(
                     for i in T.Parallel(combine_rows):
                         sink = Sinks[by * group + (row0 + i) % group] * LOG2E
                         lse_max[i] = -T.infinity(accum_dtype)
-                        for k in T.serial(splits):
+                        for k in T.unroll(splits):
                             lse_max[i] = T.max(lse_max[i], glse[bx, by, k, m0 + i])
                         if has_sinks:
                             lse_max[i] = T.max(lse_max[i], sink)
                         # Weights relative to the max keep the normalization term from
                         # rounding away.
                         total[i] = 0
-                        for k in T.serial(splits):
+                        for k in T.unroll(splits):
                             total[i] += T.exp2(glse[bx, by, k, m0 + i] - lse_max[i])
                         if has_sinks:
                             total[i] += T.exp2(sink - lse_max[i])
                         total[i] = T.log2(total[i]) + lse_max[i]
-                        for k in T.serial(splits):
+                        for k in T.unroll(splits):
                             # A row no chunk saw a key for, or an infinite sink, is zero.
                             weight[k, i] = T.if_then_else(
                                 (lse_max[i] < T.cast(no_key_lse, accum_dtype))
@@ -622,7 +622,7 @@ def _gqa_paged_varlen_kernel(
                                 T.exp2(glse[bx, by, k, m0 + i] - total[i]),
                             )
                     T.clear(o_accum)
-                    for k in T.serial(splits):
+                    for k in T.unroll(splits):
                         for i, d in T.Parallel(combine_rows, dim):
                             if row0 + i < rows:
                                 o_accum[i, d] += partial[bx, by, k, m0 + i, d] * weight[k, i]

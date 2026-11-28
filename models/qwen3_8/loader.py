@@ -61,10 +61,14 @@ def load_layer(layer: DecoderLayer, t: dict[str, torch.Tensor]) -> None:
         q, gate = (
             t.pop("self_attn.q_proj.weight").view(mixer.heads, 2, mixer.head_dim, -1).unbind(1)
         )
-        mixer.qkv_proj = torch.cat(
-            [q.flatten(0, 1), t.pop("self_attn.k_proj.weight"), t.pop("self_attn.v_proj.weight")]
+        mixer.qkv_gate_proj = torch.cat(
+            [
+                q.flatten(0, 1),
+                t.pop("self_attn.k_proj.weight"),
+                t.pop("self_attn.v_proj.weight"),
+                gate.flatten(0, 1),
+            ]
         )
-        mixer.gate_proj = gate.flatten(0, 1).contiguous()
         mixer.q_norm = t.pop("self_attn.q_norm.weight")
         mixer.k_norm = t.pop("self_attn.k_norm.weight")
         mixer.o_proj = t.pop("self_attn.o_proj.weight")
