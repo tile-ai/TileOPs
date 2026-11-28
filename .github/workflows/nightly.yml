@@ -544,6 +544,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      stale: ${{ steps.newest.outputs.stale }}
     steps:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -570,6 +572,23 @@ jobs:
           name: tileops_nightly_report_${{ github.run_id }}
           path: _report
         continue-on-error: true
+
+      - name: Check whether a newer run has published
+        id: newest
+        if: ${{ github.run_attempt != '1' }}
+        run: |
+          set -euo pipefail
+          top=$(timeout 300 git clone --quiet --depth 1 --branch snapshots \
+              https://github.com/tile-ai/TileOPs-nightly.git .newest_snapshot \
+            && python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("run_id", ""))' \
+              .newest_snapshot/meta.json) || true
+          if [[ ! "$top" =~ ^[0-9]+$ ]]; then
+            echo "::warning::cannot read the newest snapshot's run, so run ${GITHUB_RUN_ID} publishes"
+          elif (( 10#$top > GITHUB_RUN_ID )); then
+            echo "::warning::the snapshot holds newer run ${top}, so run ${GITHUB_RUN_ID} does not publish"
+            echo "stale=1" >> "$GITHUB_OUTPUT"
+          fi
+        shell: bash
 
       - name: Assemble publish payload
         id: assemble
@@ -611,7 +630,7 @@ jobs:
       # would cost 314 KB a night packed — 112 MB a year against a 9 MB
       # repository that everyone clones.
       - name: Publish the snapshot to TileOPs-nightly
-        if: ${{ steps.assemble.outputs.ok == '1' }}
+        if: ${{ steps.assemble.outputs.ok == '1' && steps.newest.outputs.stale != '1' }}
         uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           # GITHUB_TOKEN cannot reach another repository.
@@ -640,7 +659,7 @@ jobs:
   # =========================================================================
   publish-perf-tracker:
     # A failed benchmark or op-test job still publishes a snapshot; follow the publish job only.
-    if: ${{ !cancelled() && needs.publish-bench-data.result == 'success' }}
+    if: ${{ !cancelled() && needs.publish-bench-data.result == 'success' && needs.publish-bench-data.outputs.stale != '1' }}
     needs: [publish-bench-data]
     runs-on: ubuntu-latest
     # Pushing to the wiki repository needs write access to this repository's contents.
