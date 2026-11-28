@@ -896,7 +896,6 @@ _WRITTEN_PAIRS = {
         "out",
         "x",
     ),
-    "out between strided x": ({"outputs": _OUT}, _into_out, (0, 2), (1, 2), "out", "x"),
     "written x on read w": (_READ_AND_WRITTEN, _add_into_x, (0, 1), (2, 1), "x", "w"),
     "written x on written w": (_BOTH_WRITTEN, _add_into_both, (2, 1), (0, 1), "x", "w"),
 }
@@ -986,6 +985,29 @@ def test_a_written_tensor_overlapping_itself_is_rejected_before_the_call():
     assert storage.tolist() == [1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0]
     empty = torch.zeros(0, 1).expand(0, 2)
     assert op(empty, torch.ones(0, 2)) is empty
+
+
+def test_written_views_interleaving_without_a_shared_byte_are_written():
+    """Views whose spans meet run where their bytes interleave apart: alternate elements of one
+    storage, and column slices of one matrix, as vLLM's query and key are slices of one qkv
+    buffer. Column slices sharing a column still raise before the call."""
+    storage = torch.arange(8.0)
+    op = _probe(_into_out, outputs=_OUT)()
+    op(storage[1:7:2], out=storage[0:6:2])
+    assert storage.tolist() == [1.0, 1.0, 3.0, 3.0, 5.0, 5.0, 6.0, 7.0]
+    matrix = {"dtype": "T", "shape": "[A, M]"}
+    both = _probe(
+        _add_into_both,
+        forall={"A": "Dim", "M": "Dim", "T": "DType[float32]"},
+        inputs={"x": {**matrix, "mutated": True}, "w": {**matrix, "mutated": True}},
+        outputs={},
+    )()
+    qkv = torch.zeros(4, 7)
+    both(qkv[:, :3], qkv[:, 3:6])
+    assert qkv[:, :6].eq(1).all() and qkv[:, 6].eq(0).all()
+    with pytest.raises(ValueError, match="x must not overlap w"):
+        both(qkv[:, :3], qkv[:, 2:5])
+    assert qkv[:, :6].eq(1).all()
 
 
 def test_a_written_tensor_ending_where_another_call_tensor_starts_is_written():

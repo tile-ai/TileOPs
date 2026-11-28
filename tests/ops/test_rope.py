@@ -206,7 +206,7 @@ def test_rope_zero_tokens(key_heads) -> None:
 def test_rope_inplace_rewrites_only_the_rotary_columns_of_strided_rows(
     neox, rotary_dim, dtype, tokens, spare, heads
 ) -> None:
-    """``inplace`` returns query and key, views of wider rows, with the out-of-place values in
+    """``inplace`` returns query and key, views of wider rows, with the reference's values in
     their rotary columns and every other column of the wider rows as it was."""
     changes = {"rotary_dim": rotary_dim, "is_neox_style": neox}
     op, params = _op("RoPEFwdOp", dtype, **changes, inplace=True)
@@ -218,7 +218,7 @@ def test_rope_inplace_rewrites_only_the_rotary_columns_of_strided_rows(
     key = None if heads[1] is None else rows[1][..., : widths[1]]
     before = [r.clone() for r in rows]
     copies = (query.clone(), None if key is None else key.clone())
-    want = _op("RoPEFwdOp", dtype, **changes)[0](positions, *copies)
+    want = _reference("RoPEFwdOp", params, positions, *copies)
     got = op(positions, query, key)
     assert got[0] is query and got[1] is key
     for out, ref in zip(got, want, strict=True):
@@ -228,6 +228,32 @@ def test_rope_inplace_rewrites_only_the_rotary_columns_of_strided_rows(
         untouched = torch.ones_like(row, dtype=torch.bool)
         untouched[..., :w].unflatten(-1, (w // hs, hs))[..., :rotary_dim] = False
         assert torch.equal(row[untouched], old[untouched])
+
+
+@pytest.mark.parametrize("start", [0, 1], ids=["aligned", "off-a-vector"])
+@pytest.mark.smoke
+def test_rope_inplace_rotates_query_and_key_sliced_from_one_qkv_buffer(start) -> None:
+    """vLLM's layout: query, key and value are column slices of one qkv row. Query and key are
+    rotated in place; every other column, the value's included, keeps its value. Starting one
+    column in, every slice starts off a 16-byte boundary while its rows, padded to 8 columns,
+    stay 16 bytes apart, so the kernel's 16-byte vectors are legal only on the executor's
+    aligned copy."""
+    dtype, q_heads, kv_heads, tokens = torch.float16, 4, 2, 37
+    op, params = _op("RoPEFwdOp", dtype, rotary_dim=32, is_neox_style=False, inplace=True)
+    hs = params["head_size"]
+    q_end, k_end = start + q_heads * hs, start + (q_heads + kv_heads) * hs
+    width = -(-(k_end + kv_heads * hs) // 8) * 8
+    qkv = torch.randn(tokens, width, device=run_device(), dtype=dtype)
+    query, key = qkv[:, start:q_end], qkv[:, q_end:k_end]
+    positions = torch.randint(0, 4096, (tokens,), device=run_device())
+    before = qkv.clone()
+    want = _reference("RoPEFwdOp", params, positions, query.clone(), key.clone())
+    got = op(positions, query, key)
+    assert got[0] is query and got[1] is key
+    compare_outputs(got, want, rope_verification())
+    untouched = torch.ones_like(qkv, dtype=torch.bool)
+    untouched[:, start:k_end].unflatten(-1, (q_heads + kv_heads, hs))[..., :32] = False
+    assert torch.equal(qkv[untouched], before[untouched])
 
 
 @pytest.mark.smoke

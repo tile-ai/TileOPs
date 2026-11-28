@@ -124,14 +124,46 @@ def _overlaps_itself(t: torch.Tensor) -> bool:
     return False
 
 
+def _byte_layout(t: torch.Tensor) -> tuple:
+    """``(dims, element bytes)`` of *t*: each dimension of more than one element as
+    ``(elements, stride in bytes)``."""
+    size = t.element_size()
+    dims = tuple((n, s * size) for n, s in zip(t.shape, t.stride(), strict=True) if n > 1)
+    return dims, size
+
+
+def _apart(a: int, first: tuple, b: int, second: tuple) -> bool:
+    """Whether tensors of byte layouts *first* and *second* (:func:`_byte_layout`) starting
+    at addresses *a* and *b* provably share no byte though their spans meet.
+
+    They do where some period ``p``, one of their strides, divides every stride of either at
+    least ``p``: each tensor's bytes then lie, modulo ``p``, on one arc from its start's
+    residue, as long as its strides below ``p``, which leave no other trace, span; two arcs
+    that do not meet hold no common byte. Column slices of one row-major buffer pass with the
+    row as ``p``.
+    """
+    (dims_a, size_a), (dims_b, size_b) = first, second
+    for p in sorted({s for _, s in (*dims_a, *dims_b) if s > 0}):
+        arcs = []
+        for dims, size in ((dims_a, size_a), (dims_b, size_b)):
+            if any(s >= p and s % p for _, s in dims):
+                break
+            arcs.append(sum((n - 1) * s for n, s in dims if s < p) + size)
+        else:
+            gap = (b - a) % p
+            if arcs[0] <= gap and arcs[1] <= p - gap:
+                return True
+    return False
+
+
 def _overlap_checks(
     op_name: str, names: tuple, tensors: tuple, written: frozenset, overlaps: Mapping
 ) -> tuple:
-    """The ``(position, other position, span, other span, message)`` of each pair of *tensors*,
-    in slots *names*, that must share no byte: one of the two is in *written*, neither names
-    the other in its *overlaps* entry, and both hold elements on one device off the meta
-    device. A span is the bytes from a tensor's first element to the end of its last, so a
-    strided tensor counts its holes.
+    """The ``(position, other position, span, other span, layout, other layout, message)`` of
+    each pair of *tensors*, in slots *names*, that must share no byte: one of the two is in
+    *written*, neither names the other in its *overlaps* entry, and both hold elements on one
+    device off the meta device. A span is the bytes from a tensor's first element to the end of
+    its last; a layout is its :func:`_byte_layout`, which tells interleaved tensors apart.
     """
     if not written:
         return ()
@@ -153,7 +185,8 @@ def _overlap_checks(
                 continue
             if tensors[i].device == tensors[j].device:
                 message = f"{op_name}: {name} must not overlap {other} in memory"
-                checks.append((i, j, spans[i], spans[j], message))
+                layouts = (_byte_layout(tensors[i]), _byte_layout(tensors[j]))
+                checks.append((i, j, spans[i], spans[j], *layouts, message))
     return tuple(checks)
 
 
@@ -1116,9 +1149,11 @@ class Op(ABC):
                 if addresses is None:
                     # A call no observer read.
                     addresses = list(map(_address, leaves((*inputs, *writes.values()))))
-                for i, j, span, other, message in plan.overlaps:
+                for i, j, span, other, layout, other_layout, message in plan.overlaps:
                     a, b = addresses[i], addresses[j]
-                    if a is not None and b is not None and a < b + other and b < a + span:
+                    if a is None or b is None or not (a < b + other and b < a + span):
+                        continue
+                    if not _apart(a, layout, b, other_layout):
                         raise CheckError(message)
             signature = type(self)._signature
             values = signature.values.get(plan.call.branch_key)
