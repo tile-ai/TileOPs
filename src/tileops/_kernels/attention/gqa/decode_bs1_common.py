@@ -88,9 +88,9 @@ def make_gqa_decode_bs1_split(
     """Create the context-split schedule around a layout-specific KV loader.
 
     A producer of ``threads - 128`` threads feeds one 128-thread WGMMA consumer warpgroup
-    through a ring of ``RING_DEPTH`` slots. A dense cache splits whole key tiles as evenly
-    as possible. A *paged* one reads each request's length from a buffer, gives every split
-    the same whole tiles and the last the rest, and zeroes the value rows past the cache.
+    through a ring of ``RING_DEPTH`` slots. The splits share a request's whole key tiles as
+    evenly as possible; a *paged* cache reads each request's length from a buffer and zeroes
+    the value rows past the cache.
     RoPE makes the producer a warpgroup, whose first warp copies and whose threads all
     rotate K, so the rotation overlaps the consumer and the consumer reads K through WGMMA
     alone.
@@ -270,18 +270,8 @@ def make_gqa_decode_bs1_split(
             ss = T.alloc_fragment([block_m], accum_dtype)
             logsum = T.alloc_fragment([block_m], accum_dtype)
 
-            if paged:
-                seqlen_kv_b = real_seqlen_kv[bid]
-                base_len = seqlen_kv_b // (ctx_splits * block_n) * block_n
-                this_len = T.if_then_else(
-                    sid == ctx_splits - 1,
-                    seqlen_kv_b - (ctx_splits - 1) * base_len,
-                    base_len,
-                )
-                base = base_len * sid
-            else:
-                seqlen_kv_b = real_seqlen_kv
-                base, this_len = balanced_split(seqlen_kv_b, block_n, ctx_splits, sid)
+            seqlen_kv_b = real_seqlen_kv[bid] if paged else real_seqlen_kv
+            base, this_len = balanced_split(seqlen_kv_b, block_n, ctx_splits, sid)
             loop_range = T.ceildiv(this_len, block_n)
             tx = T.get_thread_binding()
 

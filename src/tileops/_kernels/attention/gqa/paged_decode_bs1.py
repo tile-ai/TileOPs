@@ -1,7 +1,7 @@
 """Warp-specialized batch=1 paged GQA decode kernel (SM90), context-split.
 
-``GQADecodePagedBs1Kernel`` runs the context split for page-table capacities >= 1024 and
-the generic paged non-split decode kernel for shorter ones.
+``GQADecodePagedBs1Kernel`` cuts every page table into a power-of-two number of splits of
+whole key tiles, at most one per table tile, up to 32.
 """
 
 import tilelang
@@ -19,10 +19,7 @@ from tileops._kernels.attention.gqa.decode_bs1_common import (
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
 )
-from tileops._kernels.attention.gqa.paged_decode import (
-    gqa_decode_paged_block_ns,
-    gqa_decode_paged_kernel,
-)
+from tileops._kernels.attention.gqa.paged_decode import gqa_decode_paged_block_ns
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -131,10 +128,6 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
     supported_archs: list[int] = [90]
     # The batch-1 shape, inside what the packed kernel also serves.
     preferred_over = frozenset({"gqa_paged_varlen_kernel"})
-    # A table shorter than this runs the single-pass program; longer ones split the context.
-    _MIN_CTX = 1024
-    # Split counts, largest first; the first that divides the table into whole key tiles wins.
-    _CTX_SPLIT_CANDIDATES = (32, 16, 8)
 
     @classmethod
     def refusal(cls, call) -> "str | None":
@@ -142,19 +135,25 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             return f"serves one query position, got {call.max_seqlen_q}"
         if call.paged_decode_refusal is not None:
             return call.paged_decode_refusal
-        if not call.decode_bs1_region:
+        if not call.batch1_decode((torch.float16, torch.bfloat16), (128, 256)):
             return "serves the batch-1 decode region only"
         # The warp-specialized softmax reduces raw QK before applying the scale.
         # Zero needs scores cleared before masking; the general paged path does this.
         if call.sm_scale is not None and call.sm_scale <= 0.0:
             return f"requires a positive sm_scale, got {call.sm_scale}"
-        if cls.block_n_for_page_size(call.page_size) is None:
+        if cls.block_n_for_page_size(call.page_size, call.dim) is None:
             return f"no key tile covers page size {call.page_size}"
         return super().refusal(call)
 
     @staticmethod
-    def block_n_for_page_size(page_size: int) -> int | None:
-        """Return a page-contained WGMMA N tile, or None when the fast path is unsafe."""
+    def block_n_for_page_size(page_size: int, dim: int) -> int | None:
+        """Return a page-contained WGMMA N tile, or None when the fast path is unsafe.
+
+        Past head dimension 128 the tile is 64 rows, which keeps the K and V rings in shared
+        memory, so a page must hold whole 64-row tiles.
+        """
+        if dim > 128:
+            return 64 if page_size % 64 == 0 else None
         try:
             block_n = gqa_decode_paged_block_ns(page_size)[0]
         except ValueError:
@@ -219,18 +218,20 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        block_n = self.block_n_for_page_size(self.page_size)
+        block_n = self.block_n_for_page_size(self.page_size, self.dim)
         if block_n is None:
-            raise ValueError("batch=1 paged decode requires page_size=64 or a multiple of 128")
+            raise ValueError(
+                f"no key tile covers page size {self.page_size} at head dim {self.dim}"
+            )
         return {"block_M": 64, "block_N": block_n, "threads": 160}
 
     def _ctx_splits_for(self, capacity: int) -> int:
-        """The most splits that divide a table of *capacity* keys into whole key tiles."""
-        block_n = self.config["block_N"]
-        for ctx_splits in self._CTX_SPLIT_CANDIDATES:
-            if capacity % (ctx_splits * block_n) == 0:
-                return ctx_splits
-        return self._CTX_SPLIT_CANDIDATES[-1]
+        """The most splits up to 32, a power of two as the combine's reductions take, that
+        still give each split a key tile of a table of *capacity* keys. A call's live keys
+        are shared out among the splits by whole tiles, so a split streams fewer tiles as the
+        live length falls, and the splits a short call leaves empty only launch."""
+        tiles = capacity // self.config["block_N"]
+        return min(32, 1 << (tiles.bit_length() - 1))
 
     def forward(
         self,
@@ -249,33 +250,10 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         Q = Q.contiguous()
-        capacity = self.max_pages_per_req * self.page_size
-        if capacity < self._MIN_CTX:
-            q = Q.view(self.batch, 1, self.heads, self.dim)
-            program = self.program(self._compile_short)
-            return program(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
-
-        ctx_splits = self._ctx_splits_for(capacity)
+        ctx_splits = self._ctx_splits_for(self.max_pages_per_req * self.page_size)
         glse, Output_partial = allocate_partials(Q, self.batch, self.heads, self.dim, ctx_splits)
         program = self.program(self._compile, ctx_splits)
         return program(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial)
-
-    def _compile_short(self, cfg: dict):
-        """The single-pass program for a table shorter than ``_MIN_CTX`` rows."""
-        return gqa_decode_paged_kernel(
-            self.batch,
-            self.heads,
-            self.groups,
-            1,
-            self.seqlen_kv,
-            self.dim,
-            self.page_size,
-            self.max_pages_per_req,
-            False,
-            self.sm_scale,
-            0.0,  # the batch-1 region has no softcap
-            self.dtype_str,
-        )(64, cfg["block_N"], 2, 128)
 
     def _compile(self, cfg: dict, ctx_splits: int):
         """The context split for *cfg* over *ctx_splits* splits."""

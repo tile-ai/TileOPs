@@ -1228,18 +1228,87 @@ def test_gqa_paged_calls_overlapping_on_two_streams_each_claim_every_tile() -> N
 @pytest.mark.parametrize(
     ("cache_len", "reverse_pages"),
     [
-        pytest.param(512, False, id="no-split"),
+        pytest.param(512, False, id="four-splits"),
         pytest.param(4096, True, id="ctx-reversed-pages"),
     ],
 )
 def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None:
-    """Both batch-1 tiers, including a page translation that changes the output."""
+    """A 4-split and a 32-split table, the second with reversed pages, a page translation
+    that changes the output."""
     torch.manual_seed(0)
     workload = _decode(1, 32, 4, [cache_len], 128, 256)
     inputs = list(workload.gen_inputs())
     if reverse_pages:
         inputs[3] = inputs[3].flip(-1).contiguous()
     op = GQAPagedFwdOp(is_causal=True)
+    _check(op, workload, inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("heads", "heads_kv", "dim", "page_size", "pages", "cache_len", "dtype"),
+    [
+        pytest.param(
+            24, 4, 256, 64, 65, 4097, torch.bfloat16, marks=pytest.mark.smoke, id="bf16-full-table"
+        ),
+        pytest.param(
+            24, 4, 256, 64, 65, 4097, torch.float16, marks=pytest.mark.smoke, id="fp16-full-table"
+        ),
+        pytest.param(
+            24,
+            4,
+            256,
+            64,
+            65,
+            513,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="bf16-short-of-table",
+        ),
+        pytest.param(
+            32, 8, 128, 64, 64, 1000, torch.bfloat16, marks=pytest.mark.full, id="bf16-head-dim-128"
+        ),
+        pytest.param(
+            24, 4, 256, 128, 16, 1000, torch.bfloat16, marks=pytest.mark.full, id="128-row-pages"
+        ),
+        pytest.param(
+            24, 4, 256, 64, 15, 900, torch.bfloat16, marks=pytest.mark.full, id="short-table"
+        ),
+        pytest.param(
+            32, 8, 128, 64, 2, 127, torch.bfloat16, marks=pytest.mark.full, id="two-page-table"
+        ),
+        pytest.param(
+            32, 8, 128, 64, 8, 300, torch.float16, marks=pytest.mark.full, id="fp16-short-table"
+        ),
+        pytest.param(
+            32, 8, 128, 64, 1, 1, torch.float16, marks=pytest.mark.full, id="one-page-table"
+        ),
+    ],
+)
+def test_gqa_paged_decode_bs1_wider_region(
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    page_size: int,
+    pages: int,
+    cache_len: int,
+    dtype: torch.dtype,
+) -> None:
+    """The batch-1 kernel, whose warp-specialized producer feeds SM90 WGMMA through TMA,
+    serves bfloat16 and head dimension 256: Qwen3.8-27B's decode attention over a full and
+    an eighth-full table, bfloat16 at head dimension 128, 128-row pages at head dimension
+    256, and short tables, down to one page. NaN in every row past the cache keeps a split
+    that reads one key too many from passing."""
+    torch.manual_seed(0)
+    workload = GQAPagedFwdWorkload(
+        heads, heads_kv, dim, [1], [cache_len], page_size, pages, pages, dtype
+    )
+    inputs = _poisoned_inputs(workload)
+    op = GQAPagedFwdOp(is_causal=True)
+    q, k_cache, _, block_table, _, _, _, k_scale, _, rope_cos, _, sinks = inputs
+    call = op._paged_call(q, k_cache, block_table, k_scale, rope_cos, sinks)
+    assert op.key_for("gqa_paged", call) == "gqa_decode_paged_bs1_kernel"
     _check(op, workload, inputs)
 
 
@@ -1290,6 +1359,16 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
             {},
             marks=pytest.mark.full,
             id="page-no-tile-fits",
+        ),
+        pytest.param(
+            [1],
+            [300],
+            32,
+            256,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="batch-1-head-dim-256-on-32-row-pages",
         ),
         # The only shape where the causal bound and the window bound both bind: a request
         # with one query token sees its whole cache, so its causal bound masks nothing.
@@ -1361,7 +1440,8 @@ def test_gqa_paged_packed_query_lengths(
     dtype: torch.dtype,
     op_kwargs: dict,
 ) -> None:
-    """Calls the decode region does not serve: ragged lengths, windows, and odd pages."""
+    """Calls the decode region does not serve: ragged lengths, windows, and odd pages, among
+    them a batch-1 head-dimension-256 decode on pages that hold no whole 64-row key tile."""
     width = -(-max(cache_lens) // page_size)
     workload = GQAPagedFwdWorkload(
         32, 8, dim, q_lens, cache_lens, page_size, width, len(q_lens) * width, dtype, **op_kwargs
