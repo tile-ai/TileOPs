@@ -35,6 +35,7 @@ from tileops._kernels.moe.moe_grouped_gemm_mxfp4 import (
     MoEGroupedGEMMMXFP4Kernel,
     MoEGroupedGEMMMXFP4SharedDecodeKernel,
 )
+from tileops._kernels.moe.moe_grouped_gemm_mxfp4_decode import MoEGroupedGEMMMXFP4DecodeKernel
 from tileops._kernels.moe.permute_align import MoEPermuteAlignKernel
 from tileops._kernels.moe.permute_contiguous import MoEPrePermuteContiguousKernel
 from tileops._kernels.moe.shared_expert_mlp import SharedExpertMLPKernel
@@ -63,6 +64,7 @@ __all__ = [
     "MoEGroupedGEMMFP8MMAKernel",
     "MoEGroupedGEMMKernel",
     "MoEGroupedGEMMMMAKernel",
+    "MoEGroupedGEMMMXFP4DecodeKernel",
     "MoEGroupedGEMMMXFP4Kernel",
     "MoEGroupedGEMMMXFP4SharedDecodeKernel",
     "MoEPermuteAlignKernel",

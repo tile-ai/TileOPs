@@ -176,14 +176,14 @@ class MGroupedGEMMMXFP4Call(_MGroupedLayoutCall):
     """Complete selection facts for one MXFP4 M-grouped GEMM invocation.
 
     ``scale_dtype`` is the dtype of both
-    scale tensors, ``float8_e8m0fnu`` or ``float32``. ``m``, the materialized row count, is a
-    fact of the call and not of the built kernel, so it is excluded from this record's
-    equality.
+    scale tensors, ``float8_e8m0fnu`` or ``float32``. ``m``, the materialized row count, takes
+    part in this record's equality, as a kernel may serve only few rows; a kernel built for every
+    row count keys its entry on the call with ``m`` zero.
     """
 
     scale_dtype: torch.dtype | None = None
     num_groups: int = 0
-    m: int = dataclasses.field(default=0, compare=False)
+    m: int = 0
     n: int = 0
     k: int = 0
 
