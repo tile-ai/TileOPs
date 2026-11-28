@@ -105,3 +105,24 @@ def test_nonfinite_values_take_vllms_codes(n, quant_dtype) -> None:
     weight[7] = float("inf")
     got = FusedAddRMSNormPerTokenQuantFwdOp(quant_dtype=quant_dtype)(x, residual, weight)
     compare_outputs(got, workload.ref_program(x, residual, weight), workload.verification(x))
+
+
+@pytest.mark.smoke
+def test_int8_codes_round_half_to_even() -> None:
+    """A value halfway between two INT8 codes takes the even one, as vLLM's conversion does.
+
+    Rows of ``x + residual = 1024`` normalize to exactly 1, so ``y`` is the weight, and a
+    weight of 127 makes the scale exactly 1: the codes are the weights rounded. The
+    workload's verification allows a code one step off, so the codes are compared exactly.
+    """
+    n = 1024
+    workload = FusedAddRMSNormPerTokenQuantWorkload((4, n), torch.float16, INT8)
+    x, residual, weight = workload.gen_inputs()
+    x.fill_(512.0)
+    residual.fill_(512.0)
+    ties = torch.tensor([127.0, 0.5, 1.5, 2.5, -0.5, -1.5, -2.5, 126.5], dtype=torch.float16)
+    weight.copy_(ties.repeat(n // len(ties)))
+    got = FusedAddRMSNormPerTokenQuantFwdOp(quant_dtype=INT8)(x, residual, weight)
+    expected = workload.ref_program(x, residual, weight)
+    assert expected[0][0, : len(ties)].tolist() == [127, 0, 2, 2, 0, -2, -2, 126]
+    assert torch.equal(got[0], expected[0])

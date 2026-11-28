@@ -176,18 +176,8 @@ def _codes(y, at, wide, codes, inv_scale, vec, quant_dtype, fp8, nan_clamp):
         for i in T.vectorized(vec):
             codes[i] = T.cast(wide[i], quant_dtype)
     else:
-        # Round half to even and saturate; a NaN becomes 0, as vLLM's cvt.rni.sat makes it.
-        # Adding 1.5 * 2^23 rounds a value within +-2^22 half to even into the low bits of
-        # the sum, whose low byte is then the int8 code.
         for i in T.unroll(vec):
-            codes[i] = T.cast(
-                T.reinterpret(
-                    T.if_then_else(T.isnan(wide[i]), T.float32(0), T.clamp(wide[i], -128.0, 127.0))
-                    + T.float32(12582912.0),
-                    "int32",
-                ),
-                quant_dtype,
-            )
+            codes[i] = T.call_extern("int8", "tileops::round_sat_s8", wide[i])
 
 
 @T.macro
@@ -236,7 +226,8 @@ def _fused_add_rms_norm_quant_kernel(M, N, eps, dtype, quant_dtype, scale_ub, ve
     chunk = N // cluster
 
     @tilelang.jit(
-        out_idx=[3, 4, 5], compile_flags=csrc_include("cluster_partials.h", "streaming_load.h")
+        out_idx=[3, 4, 5],
+        compile_flags=csrc_include("cluster_partials.h", "int8_round.h", "streaming_load.h"),
     )
     def _func(threads):
         steps = -(-chunk // (threads * vec))
@@ -385,7 +376,7 @@ def _fused_add_rms_norm_quant_stream_kernel(M, N, eps, dtype, quant_dtype, scale
     """
     fp8, qmax, min_scale, bound = _constants(quant_dtype, scale_ub)
 
-    @tilelang.jit(out_idx=[3, 4, 5], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[3, 4, 5], compile_flags=csrc_include("int8_round.h", "streaming_load.h"))
     def _func(threads, accesses):
         tile = threads * accesses * vec
         tiles = -(-N // tile)
